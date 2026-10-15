@@ -14,4 +14,4 @@ USER 10001
 EXPOSE 8000
 # Apply pending migrations, then serve. Migrations hold a Postgres advisory lock, so
 # replicas starting at the same time run them one after another.
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn vaultgate_api.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "alembic upgrade head && exec python -m vaultgate_api"]

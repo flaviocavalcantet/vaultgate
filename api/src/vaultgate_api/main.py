@@ -7,6 +7,7 @@ through this service; the Tornado gateway handles those.
 
 from fastapi import FastAPI
 
+from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.routers import health
 
 app = FastAPI(
@@ -15,6 +16,7 @@ app = FastAPI(
     description="Identity, access policies, file metadata, share links and audit log.",
 )
 
+app.add_middleware(RequestContextMiddleware)
 app.include_router(health.router)
 
 # Health: /healthz (liveness) and /readyz (database reachable).

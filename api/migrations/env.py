@@ -1,7 +1,7 @@
 """Alembic environment: runs migrations over the API's async engine."""
 
 import asyncio
-from logging.config import fileConfig
+import logging
 
 from alembic import context
 from sqlalchemy import pool, text
@@ -9,11 +9,13 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from vaultgate_api.config import settings
+from vaultgate_api.logs import configure_logging
 from vaultgate_api.models import Base
 
 config = context.config
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name, disable_existing_loggers=False)
+# Same log format as the API, so migration output on container start is collected too.
+configure_logging(settings.log_level, settings.log_format)
+logging.getLogger("alembic").setLevel(logging.INFO)
 
 target_metadata = Base.metadata
 
