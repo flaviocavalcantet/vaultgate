@@ -88,6 +88,16 @@ The API and gateway serve Prometheus metrics on a separate port, `VAULTGATE_METR
 | `vaultgate_gateway_upload_size_bytes` | histogram | | gateway |
 | `vaultgate_build_info` | info | `service`, `version` | both |
 
+### Centralized logs
+
+Locally, [Grafana Alloy](https://grafana.com/docs/alloy/) reads the stdout/stderr of every container in the compose project and ships it to Loki. JSON lines get the `service` and `level` labels from their own fields; plain-text logs (Postgres, Keycloak) are labelled with their compose service name. `request_id` is stored as structured metadata, so it is searchable without creating a stream per request. In Grafana → Explore → Loki:
+
+```logql
+{service="api", level="error"}                       # API errors
+{service=~"api|gateway"} | request_id="<id>"         # one request across services
+{service="gateway"} | json | status >= 500           # gateway 5xx with parsed fields
+```
+
 `route` is the path template (`/uploads/{upload_id}`), never the raw path; anything that matches no route is counted as `<unmatched>`, so clients cannot create new time series by probing URLs. Standard `process_*` and `python_*` metrics are included, which is how gateway memory is shown to stay flat under load.
 
 ## Repository layout
@@ -113,7 +123,7 @@ Everything runs on your machine at no cost: PostgreSQL, LocalStack (S3, KMS, SQS
 Requirements: Docker, Python 3.12+, Go 1.23+, Terraform 1.6+. For Kubernetes: k3d or kind, Helm.
 
 ```bash
-make up         # start Postgres, LocalStack, Keycloak, API and gateway
+make up         # start Postgres, LocalStack, Keycloak, API, gateway and the observability stack
 make tf-local   # create the S3 bucket and KMS key in LocalStack
 make test       # run all test suites
 ```
@@ -127,6 +137,9 @@ VAULTGATE_TEST_DATABASE_URL=postgresql+asyncpg://vaultgate:vaultgate@localhost:5
 - API docs: http://localhost:8000/docs (readiness: http://localhost:8000/readyz)
 - Gateway health: http://localhost:8888/healthz
 - Keycloak admin: http://localhost:8080 (admin / admin)
+- Grafana: http://localhost:3000 (admin / admin), with Prometheus and Loki already set up as data sources
+- Prometheus: http://localhost:9090 (Status → Targets shows every scraped service)
+- Alloy pipeline UI: http://localhost:12345
 
 Try the scanner on its own:
 
@@ -142,7 +155,7 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
 - [ ] **M1.5 — Observability:** centralized logging and metrics, so every later milestone ships observable
   - [x] Structured JSON logs from all three services, correlated by request ID
   - [x] Prometheus metrics endpoints on the API and gateway
-  - [ ] Local stack: Prometheus, Loki (via Grafana Alloy) and Grafana
+  - [x] Local stack: Prometheus, Loki (via Grafana Alloy) and Grafana
   - [ ] Provisioned Grafana dashboards, alert rules and Kubernetes scrape config
 - [ ] **M2 — Streaming vault:** upload intents, chunked envelope encryption, S3 multipart upload, streaming download
 - [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation

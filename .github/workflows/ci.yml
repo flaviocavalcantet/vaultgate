@@ -69,6 +69,13 @@ jobs:
       - run: terraform init -backend=false
       - run: terraform validate
 
+  observability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: make obs-check
+
   helm:
     runs-on: ubuntu-latest
     steps:
