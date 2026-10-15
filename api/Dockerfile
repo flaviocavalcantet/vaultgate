@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir .
 RUN useradd --uid 10001 --no-create-home app
 USER 10001
 
-EXPOSE 8000
+EXPOSE 8000 9100
 # Apply pending migrations, then serve. Migrations hold a Postgres advisory lock, so
 # replicas starting at the same time run them one after another.
 CMD ["sh", "-c", "alembic upgrade head && exec python -m vaultgate_api"]

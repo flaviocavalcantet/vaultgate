@@ -5,6 +5,7 @@ description = "VaultGate data plane: streaming uploads and downloads with consta
 requires-python = ">=3.12"
 dependencies = [
     "tornado>=6.4",
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]
