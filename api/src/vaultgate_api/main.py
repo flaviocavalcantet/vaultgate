@@ -17,6 +17,7 @@ app = FastAPI(
 
 app.include_router(health.router)
 
+# Health: /healthz (liveness) and /readyz (database reachable).
 # Planned routers (see README roadmap):
 #   auth     - OIDC login callback, token validation, session introspection
 #   policies - CRUD for access rules (IP range, time window, group, device posture)
