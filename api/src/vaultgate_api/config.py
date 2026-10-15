@@ -6,7 +6,9 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="VAULTGATE_")
 
-    database_url: str = "postgresql://vaultgate:vaultgate@localhost:5432/vaultgate"
+    # SQLAlchemy URL; the asyncpg driver is required because the API is fully async.
+    database_url: str = "postgresql+asyncpg://vaultgate:vaultgate@localhost:5432/vaultgate"
+    database_echo: bool = False
     oidc_issuer: str = "http://localhost:8080/realms/vaultgate"
     oidc_audience: str = "vaultgate-api"
 

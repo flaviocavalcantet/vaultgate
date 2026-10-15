@@ -90,7 +90,13 @@ make tf-local   # create the S3 bucket and KMS key in LocalStack
 make test       # run all test suites
 ```
 
-- API docs: http://localhost:8000/docs
+The API applies its database migrations (Alembic) on startup. To run them by hand against a local Postgres, use `make migrate`. API database tests need a disposable database:
+
+```bash
+VAULTGATE_TEST_DATABASE_URL=postgresql+asyncpg://vaultgate:vaultgate@localhost:5432/vaultgate_test make test
+```
+
+- API docs: http://localhost:8000/docs (readiness: http://localhost:8000/readyz)
 - Gateway health: http://localhost:8888/healthz
 - Keycloak admin: http://localhost:8080 (admin / admin)
 

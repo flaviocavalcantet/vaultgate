@@ -31,7 +31,7 @@ services:
   api:
     build: ./api
     environment:
-      VAULTGATE_DATABASE_URL: postgresql://vaultgate:vaultgate@postgres:5432/vaultgate
+      VAULTGATE_DATABASE_URL: postgresql+asyncpg://vaultgate:vaultgate@postgres:5432/vaultgate
       VAULTGATE_OIDC_ISSUER: http://keycloak:8080/realms/vaultgate
     ports: ["8000:8000"]
     depends_on:

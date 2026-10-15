@@ -14,6 +14,22 @@ jobs:
     strategy:
       matrix:
         service: [api, gateway]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vaultgate
+          POSTGRES_PASSWORD: vaultgate
+          POSTGRES_DB: vaultgate_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U vaultgate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Only the API has database tests; they are skipped when this is empty.
+      VAULTGATE_TEST_DATABASE_URL: ${{ matrix.service == 'api' && 'postgresql+asyncpg://vaultgate:vaultgate@localhost:5432/vaultgate_test' || '' }}
     defaults:
       run:
         working-directory: ${{ matrix.service }}
