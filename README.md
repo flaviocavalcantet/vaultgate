@@ -62,6 +62,18 @@ Scanning is CPU-bound and runs over every byte of every upload. A small, statica
 - **Containers:** non-root user, read-only root filesystem, all Linux capabilities dropped.
 - **Audit:** append-only table; the application role has `INSERT` but no `UPDATE` or `DELETE`.
 
+## Observability
+
+All services log one JSON object per line (stdout for the API and gateway, stderr for the scanner, whose stdout carries findings):
+
+```json
+{"ts": "2026-10-15T01:40:23.250+00:00", "level": "info", "service": "api", "logger": "vaultgate.access", "msg": "request", "request_id": "demo-1", "method": "GET", "path": "/readyz", "status": 200, "duration_ms": 56.79, "client_ip": "127.0.0.1"}
+```
+
+- **Request IDs:** every HTTP response carries `X-Request-ID`. A caller-supplied ID is reused if it is 1–64 characters of `[A-Za-z0-9._-]`, otherwise a new one is generated. Pass the same ID from API to gateway to scanner to follow one action across services.
+- **What is never logged:** query strings (they will carry share-link signatures), tokens, file contents, and PII values (the scanner logs counts per kind, never matches).
+- **Settings:** `VAULTGATE_LOG_LEVEL` (default `INFO`) and `VAULTGATE_LOG_FORMAT` (`json` by default, `text` for reading in a terminal).
+
 ## Repository layout
 
 ```
@@ -110,11 +122,17 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
 
 - [x] **M0 — Foundation:** service skeletons, CI, Helm chart, ArgoCD app, Terraform storage module, local stack
 - [ ] **M1 — Identity:** OIDC login with Keycloak, token validation, users and groups in PostgreSQL
+  - [x] PostgreSQL persistence layer: users, groups, Alembic migrations
+- [ ] **M1.5 — Observability:** centralized logging and metrics, so every later milestone ships observable
+  - [x] Structured JSON logs from all three services, correlated by request ID
+  - [ ] Prometheus metrics endpoints on the API and gateway
+  - [ ] Local stack: Prometheus, Loki (via Grafana Alloy) and Grafana
+  - [ ] Provisioned Grafana dashboards, alert rules and Kubernetes scrape config
 - [ ] **M2 — Streaming vault:** upload intents, chunked envelope encryption, S3 multipart upload, streaming download
 - [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
-- [ ] **M6 — Audit and observability:** append-only audit log, OpenTelemetry traces across all three services, Prometheus metrics
+- [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
 
