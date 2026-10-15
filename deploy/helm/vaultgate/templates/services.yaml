@@ -1,0 +1,38 @@
+{{- range $name := list "api" "gateway" }}
+{{- $svc := index $.Values $name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/part-of: vaultgate }
+spec:
+  replicas: {{ $svc.replicas }}
+  selector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }} }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/part-of: vaultgate }
+    spec:
+      securityContext: {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.image.registry }}/vaultgate-{{ $name }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports: [{ containerPort: {{ $svc.port }} }]
+          readinessProbe: { httpGet: { path: /healthz, port: {{ $svc.port }} } }
+          livenessProbe: { httpGet: { path: /healthz, port: {{ $svc.port }} } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources: {{- toYaml $svc.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+spec:
+  selector: { app.kubernetes.io/name: {{ $name }} }
+  ports: [{ port: {{ $svc.port }}, targetPort: {{ $svc.port }} }]
+{{- end }}

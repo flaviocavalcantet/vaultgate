@@ -1,0 +1,24 @@
+image:
+  registry: ghcr.io/flaviocavalcantet
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+api:
+  replicas: 2
+  port: 8000
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+gateway:
+  replicas: 2
+  port: 8888
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    # Memory stays flat regardless of upload size; that is the point of streaming.
+    limits: { memory: 256Mi }
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  seccompProfile: { type: RuntimeDefault }

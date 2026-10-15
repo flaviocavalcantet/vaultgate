@@ -1,0 +1,6 @@
+apiVersion: v2
+name: vaultgate
+description: Secure file vault with SSO, streaming gateway and PII scanning
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,18 @@
+# GitOps: ArgoCD watches this repo and keeps the cluster in sync with the Helm chart.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vaultgate
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/flaviocavalcantet/vaultgate
+    targetRevision: main
+    path: deploy/helm/vaultgate
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vaultgate
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: ["CreateNamespace=true"]
