@@ -8,6 +8,7 @@ through this service; the Tornado gateway handles those.
 from fastapi import FastAPI
 
 from vaultgate_api.logs import RequestContextMiddleware
+from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
 from vaultgate_api.routers import health
 
 app = FastAPI(
@@ -16,6 +17,11 @@ app = FastAPI(
     description="Identity, access policies, file metadata, share links and audit log.",
 )
 
+BUILD_INFO.info({"service": "api", "version": app.version})
+
+# Starlette runs the last-added middleware first, so the request ID is assigned
+# before metrics and handlers run.
+app.add_middleware(MetricsMiddleware)
 app.add_middleware(RequestContextMiddleware)
 app.include_router(health.router)
 

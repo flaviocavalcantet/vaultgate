@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     database_echo: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
+    # Prometheus scrape endpoint; kept off the public port on purpose.
+    metrics_port: int = 9100
     log_level: str = "INFO"
     # "json" for machines (default, what the log pipeline expects); "text" for reading locally.
     log_format: str = "json"

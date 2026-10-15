@@ -5,6 +5,7 @@ in the same JSON format as the application's instead of its default text format.
 """
 
 import uvicorn
+from prometheus_client import start_http_server
 
 from vaultgate_api.config import settings
 from vaultgate_api.logs import configure_logging
@@ -12,6 +13,7 @@ from vaultgate_api.logs import configure_logging
 
 def main() -> None:
     configure_logging(settings.log_level, settings.log_format)
+    start_http_server(settings.metrics_port)
     uvicorn.run(
         "vaultgate_api.main:app",
         host=settings.host,

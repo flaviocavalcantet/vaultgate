@@ -74,6 +74,22 @@ All services log one JSON object per line (stdout for the API and gateway, stder
 - **What is never logged:** query strings (they will carry share-link signatures), tokens, file contents, and PII values (the scanner logs counts per kind, never matches).
 - **Settings:** `VAULTGATE_LOG_LEVEL` (default `INFO`) and `VAULTGATE_LOG_FORMAT` (`json` by default, `text` for reading in a terminal).
 
+### Metrics
+
+The API and gateway serve Prometheus metrics on a separate port, `VAULTGATE_METRICS_PORT` (default `9100`), so the scrape endpoint is never reachable through the public port.
+
+| Metric | Type | Labels | Service |
+|---|---|---|---|
+| `vaultgate_http_requests_total` | counter | `method`, `route`, `status` | both |
+| `vaultgate_http_request_duration_seconds` | histogram | `method`, `route` | both |
+| `vaultgate_http_requests_in_progress` | gauge | | API |
+| `vaultgate_gateway_uploads_in_progress` | gauge | | gateway |
+| `vaultgate_gateway_upload_bytes_total` | counter | | gateway |
+| `vaultgate_gateway_upload_size_bytes` | histogram | | gateway |
+| `vaultgate_build_info` | info | `service`, `version` | both |
+
+`route` is the path template (`/uploads/{upload_id}`), never the raw path; anything that matches no route is counted as `<unmatched>`, so clients cannot create new time series by probing URLs. Standard `process_*` and `python_*` metrics are included, which is how gateway memory is shown to stay flat under load.
+
 ## Repository layout
 
 ```
@@ -125,7 +141,7 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
   - [x] PostgreSQL persistence layer: users, groups, Alembic migrations
 - [ ] **M1.5 — Observability:** centralized logging and metrics, so every later milestone ships observable
   - [x] Structured JSON logs from all three services, correlated by request ID
-  - [ ] Prometheus metrics endpoints on the API and gateway
+  - [x] Prometheus metrics endpoints on the API and gateway
   - [ ] Local stack: Prometheus, Loki (via Grafana Alloy) and Grafana
   - [ ] Provisioned Grafana dashboards, alert rules and Kubernetes scrape config
 - [ ] **M2 — Streaming vault:** upload intents, chunked envelope encryption, S3 multipart upload, streaming download
