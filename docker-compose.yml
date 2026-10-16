@@ -22,20 +22,31 @@ services:
       SERVICES: s3,kms,sqs
     ports: ["4566:4566"]
 
-  # OIDC identity provider for local SSO testing.
+  # OIDC identity provider for local SSO testing. The `vaultgate` realm (clients,
+  # groups, seed users) is imported from infra/keycloak on every start; dev mode keeps
+  # no state between runs.
   keycloak:
-    image: quay.io/keycloak/keycloak:25.0
-    command: start-dev
+    image: quay.io/keycloak/keycloak:26.0.7
+    command: ["start-dev", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-    ports: ["8080:8080"]
+      # Tokens always carry iss=http://localhost:8080/realms/vaultgate, whether Keycloak
+      # is reached from the browser (localhost:8080) or from other containers
+      # (keycloak:8080); back-channel URLs such as the JWKS endpoint follow the caller.
+      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    volumes:
+      - ./infra/keycloak:/opt/keycloak/data/import:ro
+    # Admin console with admin/admin: loopback only.
+    ports: ["127.0.0.1:8080:8080"]
 
   api:
     build: ./api
     environment:
       VAULTGATE_DATABASE_URL: postgresql+asyncpg://vaultgate:vaultgate@postgres:5432/vaultgate
-      VAULTGATE_OIDC_ISSUER: http://keycloak:8080/realms/vaultgate
+      # Must equal the token's iss claim, which is fixed by KC_HOSTNAME above.
+      VAULTGATE_OIDC_ISSUER: http://localhost:8080/realms/vaultgate
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }

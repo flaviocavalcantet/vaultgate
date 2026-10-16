@@ -155,10 +155,29 @@ VAULTGATE_TEST_DATABASE_URL=postgresql+asyncpg://vaultgate:vaultgate@localhost:5
 
 - API docs: http://localhost:8000/docs (readiness: http://localhost:8000/readyz)
 - Gateway health: http://localhost:8888/healthz
-- Keycloak admin: http://localhost:8080 (admin / admin)
+- Keycloak admin: http://localhost:8080 (admin / admin), realm `vaultgate`
 - Grafana: http://localhost:3000 (admin / admin), with Prometheus and Loki already set up and the VaultGate dashboards in the **VaultGate** folder
 - Prometheus: http://localhost:9090 (Status → Targets shows every scraped service)
 - Alloy pipeline UI: http://localhost:12345
+
+### Local identity provider
+
+`make up` starts Keycloak with the `vaultgate` realm from `infra/keycloak/vaultgate-realm.json`, re-imported on every start:
+
+- **`vaultgate-web`**: public client for the web app and CLI. Authorization code flow with PKCE (S256) only; password grant and implicit flow are disabled, and only the registered redirect URIs are accepted.
+- **`vaultgate-api`**: the API as a resource server. Access tokens for `vaultgate-web` carry `aud: vaultgate-api`, a `groups` claim with full group paths, and live 5 minutes.
+- **Issuer:** always `http://localhost:8080/realms/vaultgate`, also for containers that reach Keycloak as `keycloak:8080`.
+- Brute-force protection is on, and passwords need at least 12 characters.
+
+Seed users, **for local development only**:
+
+| User | Password | Groups |
+|---|---|---|
+| alice | `alice-dev-password` | `/finance` |
+| bob | `bob-dev-password` | `/legal` |
+| carol | `carol-dev-password` | `/engineering`, `/vaultgate-admins` |
+
+`make keycloak-check` (also run in CI) starts Keycloak and logs in as each user through the real PKCE flow, then checks the token's issuer, audience, lifetime and groups, and that password grant, requests without PKCE and unknown redirect URIs are refused.
 
 Try the scanner on its own:
 
@@ -171,6 +190,7 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
 - [x] **M0 — Foundation:** service skeletons, CI, Helm chart, ArgoCD app, Terraform storage module, local stack
 - [ ] **M1 — Identity:** OIDC login with Keycloak, token validation, users and groups in PostgreSQL
   - [x] PostgreSQL persistence layer: users, groups, Alembic migrations
+  - [x] Local Keycloak realm: PKCE-only public client, API audience, group claims, seed users
 - [x] **M1.5 — Observability:** centralized logging and metrics, so every later milestone ships observable
   - [x] Structured JSON logs from all three services, correlated by request ID
   - [x] Prometheus metrics endpoints on the API and gateway
