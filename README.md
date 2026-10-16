@@ -55,7 +55,7 @@ Scanning is CPU-bound and runs over every byte of every upload. A small, statica
 
 ## Security model
 
-- **Authentication:** OIDC authorization code flow with PKCE. The API validates tokens against the issuer's JWKS and checks audience and expiry.
+- **Authentication:** OIDC authorization code flow with PKCE. The API validates tokens against the issuer's JWKS and checks signature algorithm, issuer, audience and expiry on every request (see [Calling the API](#calling-the-api)).
 - **Authorization:** deny by default. Policies are evaluated on every request, not cached in the session.
 - **Encryption:** AES-256-GCM per file, with the data key wrapped by KMS. S3 server-side encryption and a public access block on top.
 - **PII handling:** the scanner reports finding types and positions only. Matched values are never logged or stored.
@@ -177,7 +177,19 @@ Seed users, **for local development only**:
 | bob | `bob-dev-password` | `/legal` |
 | carol | `carol-dev-password` | `/engineering`, `/vaultgate-admins` |
 
-`make keycloak-check` (also run in CI) starts Keycloak and logs in as each user through the real PKCE flow, then checks the token's issuer, audience, lifetime and groups, and that password grant, requests without PKCE and unknown redirect URIs are refused.
+`make auth-check` (also run in CI) starts Keycloak and the API, logs in as each user through the real PKCE flow, and checks the token's issuer, audience, lifetime and groups. It then calls the API's `GET /me` with the access token (accepted) and the ID token (refused, wrong audience), and checks that password grant, requests without PKCE and unknown redirect URIs are refused.
+
+### Calling the API
+
+Every API route except `/healthz`, `/readyz` and the OpenAPI docs requires `Authorization: Bearer <access token>`. A token is accepted only when:
+
+- it is signed with an asymmetric algorithm (`RS256` by default; `none` and HMAC are never accepted) by a key from the provider's JWKS;
+- `iss` equals `VAULTGATE_OIDC_ISSUER` and `aud` contains `VAULTGATE_OIDC_AUDIENCE`;
+- `exp`, `iat` and `sub` are present and the token is within its validity window (30 s clock leeway).
+
+Missing or invalid tokens get `401` with a `WWW-Authenticate: Bearer` challenge; if the provider's keys cannot be fetched at all, `503`. Rejections are logged with a reason (never the token) and counted in `vaultgate_auth_failures_total{reason}`. Keys are cached for 5 minutes; an unknown key ID triggers a refresh for key rotation, at most once every 30 s.
+
+`VAULTGATE_OIDC_DISCOVERY_URL` sets where the API fetches discovery and keys when that differs from the public issuer (in compose: `http://keycloak:8080/...`, because `localhost` inside the API container is the API itself).
 
 Try the scanner on its own:
 
@@ -191,6 +203,7 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
 - [ ] **M1 — Identity:** OIDC login with Keycloak, token validation, users and groups in PostgreSQL
   - [x] PostgreSQL persistence layer: users, groups, Alembic migrations
   - [x] Local Keycloak realm: PKCE-only public client, API audience, group claims, seed users
+  - [x] Bearer token validation (JWKS, issuer, audience, expiry), deny-by-default routes, `GET /me`
 - [x] **M1.5 — Observability:** centralized logging and metrics, so every later milestone ships observable
   - [x] Structured JSON logs from all three services, correlated by request ID
   - [x] Prometheus metrics endpoints on the API and gateway

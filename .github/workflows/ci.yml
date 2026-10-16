@@ -76,13 +76,13 @@ jobs:
       - run: docker compose config --quiet
       - run: make obs-check
 
-  keycloak:
+  auth-e2e:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: make keycloak-check
+      - run: make auth-check
       - if: failure()
-        run: docker compose logs keycloak
+        run: docker compose logs keycloak api
 
   helm:
     runs-on: ubuntu-latest
