@@ -5,6 +5,7 @@
 - Work milestone by milestone from the README roadmap. Every feature gets its own branch
   from `main`, named `feature/<milestone>_<name>/<branch_name>`
   (e.g. `feature/m1_identity/token_validation`, `feature/m1_5_observability/grafana_dashboards`).
+  Work outside a milestone (developer tooling, CI) uses `feature/tooling/<branch_name>`.
 - One PR per branch. The owner reviews; merge with **squash** only after approval and green CI.
 - Commits and PRs are authored as the repository owner. Do **not** add `Co-Authored-By`,
   `Claude-Session` or "Generated with Claude Code" lines to commit messages, PR descriptions
@@ -25,5 +26,8 @@ and security review on GitHub. Then:
 
 - `ruff check . && ruff format --check . && pytest -q` in `api/` and `gateway/`
   (API database tests need `VAULTGATE_TEST_DATABASE_URL`, see README).
-- `gofmt -l . && go vet ./... && go test -race ./...` in `scanner/`.
-- `make obs-check` for `observability/` configs (needs Docker).
+- `test -z "$(gofmt -l .)" && go vet ./... && go test -race ./...` in `scanner/`.
+- `terraform fmt -check -recursive` and `terraform validate` in `infra/terraform/` when
+  Terraform changes; `helm lint deploy/helm/vaultgate` when the chart changes.
+- `make obs-check` for the `observability/` configs once the observability stack is merged
+  (needs Docker).
