@@ -14,6 +14,12 @@ A token is accepted only if all of these hold:
 Keys come from the provider's JWKS, found through its discovery document. They are
 cached; an unknown key ID triggers one refresh (key rotation) but refreshes are rate
 limited, so random key IDs cannot be used to hammer the provider.
+
+Trade-off of that limit: if the provider rotates its signing key within 30 s of the
+last refresh, tokens signed with the new key are rejected (reason `unknown_key`)
+until the next refresh is allowed, i.e. for at most 30 s. Rejections for rotation show
+up as `unknown_key` in logs and `vaultgate_auth_failures_total`, distinct from forged
+or tampered tokens (`bad_signature`).
 """
 
 import asyncio
