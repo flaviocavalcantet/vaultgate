@@ -1,0 +1,80 @@
+// Grafana Alloy: collects the JSON logs every VaultGate container writes to
+// stdout/stderr and ships them to Loki.
+//
+// Labels stay low-cardinality (service, level, stream). Per-request values such as
+// request_id travel as structured metadata: searchable, but they never create new
+// streams in Loki.
+
+discovery.docker "containers" {
+	host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "vaultgate" {
+	targets = discovery.docker.containers.targets
+
+	// Only containers of this compose project.
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+		regex         = "vaultgate"
+		action        = "keep"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		target_label  = "service"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_log_stream"]
+		target_label  = "stream"
+	}
+}
+
+loki.source.docker "containers" {
+	host          = "unix:///var/run/docker.sock"
+	targets       = discovery.relabel.vaultgate.output
+	relabel_rules = discovery.relabel.vaultgate.rules
+	forward_to    = [loki.process.json.receiver]
+}
+
+loki.process "json" {
+	// Our services log JSON; third-party containers (Postgres, Keycloak) log plain
+	// text and pass through with only the container labels.
+	stage.json {
+		expressions = {
+			service    = "service",
+			level      = "level",
+			request_id = "request_id",
+			ts         = "ts",
+		}
+	}
+
+	// Overrides the compose service name with the log's own "service" field when
+	// present; lines without the field keep the compose name.
+	stage.labels {
+		values = {
+			service = "",
+			level   = "",
+		}
+	}
+
+	stage.structured_metadata {
+		values = {
+			request_id = "",
+		}
+	}
+
+	stage.timestamp {
+		source            = "ts"
+		format            = "RFC3339Nano"
+		action_on_failure = "skip"
+	}
+
+	forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}
