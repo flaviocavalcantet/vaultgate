@@ -47,6 +47,9 @@ services:
       VAULTGATE_DATABASE_URL: postgresql+asyncpg://vaultgate:vaultgate@postgres:5432/vaultgate
       # Must equal the token's iss claim, which is fixed by KC_HOSTNAME above.
       VAULTGATE_OIDC_ISSUER: http://localhost:8080/realms/vaultgate
+      # Inside this network localhost:8080 is the API container itself, so discovery
+      # and JWKS are fetched from the keycloak service directly.
+      VAULTGATE_OIDC_DISCOVERY_URL: http://keycloak:8080/realms/vaultgate/.well-known/openid-configuration
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }

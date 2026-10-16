@@ -4,12 +4,17 @@ Logs in as a seeded user through the real authorization code + PKCE flow, the wa
 browser would, and checks the access token the API will receive: issuer, audience,
 expiry and the `groups` claim. Also checks that the insecure flows are refused.
 
-    python3 scripts/keycloak_smoke.py [http://localhost:8080]
+    python3 scripts/keycloak_smoke.py [http://localhost:8080] [--api http://localhost:8000]
+
+With --api, each user's access token is also sent to the API's GET /me, which must
+accept it and report the same identity, and the ID token (wrong audience) must be
+refused: an end-to-end check of the realm and the API's token validation together.
 
 Standard library only, so it runs in CI without installing anything. It drives
 Keycloak's login form, so it is a test tool, not a client implementation.
 """
 
+import argparse
 import base64
 import hashlib
 import html
@@ -120,7 +125,7 @@ def login(discovery: dict, username: str, password: str) -> dict:
     return tokens
 
 
-def check_user(discovery: dict, username: str) -> None:
+def check_user(discovery: dict, username: str, api: str | None = None) -> None:
     tokens = login(discovery, username, f"{username}-dev-password")
     claims = jwt_claims(tokens["access_token"])
     audience = claims["aud"] if isinstance(claims["aud"], list) else [claims["aud"]]
@@ -131,6 +136,26 @@ def check_user(discovery: dict, username: str) -> None:
     assert 0 < claims["exp"] - claims["iat"] <= 300, "access token lives longer than 5 min"
     assert sorted(claims.get("groups", [])) == EXPECTED_GROUPS[username], claims.get("groups")
     print(f"ok  {username}: aud={audience} groups={claims['groups']}")
+    if api:
+        check_api(api, username, tokens)
+
+
+def check_api(api: str, username: str, tokens: dict) -> None:
+    def get_me(token: str) -> tuple[int, dict | None]:
+        request = urllib.request.Request(f"{api}/me", headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, None
+
+    status, identity = get_me(tokens["access_token"])
+    assert status == 200, f"API refused {username}'s access token: {status}"
+    assert identity["username"] == username, identity
+    assert identity["groups"] == EXPECTED_GROUPS[username], identity
+    status, _ = get_me(tokens["id_token"])
+    assert status == 401, f"API accepted an ID token (audience vaultgate-web): {status}"
+    print(f"ok  {username}: API /me accepts the access token and refuses the ID token")
 
 
 def check_refusals(discovery: dict) -> None:
@@ -178,14 +203,33 @@ def check_refusals(discovery: dict) -> None:
     print("ok  unregistered redirect URI refused")
 
 
-def main(base: str) -> int:
-    discovery = wait_for(base.rstrip("/"))
+def wait_for_api(api: str, timeout: float = 120) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with urllib.request.urlopen(f"{api}/readyz"):
+                return
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(2)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("keycloak", nargs="?", default="http://localhost:8080")
+    parser.add_argument("--api", help="also check the API's /me at this base URL")
+    args = parser.parse_args(argv)
+    discovery = wait_for(args.keycloak.rstrip("/"))
     print(f"issuer {discovery['issuer']}")
+    api = args.api.rstrip("/") if args.api else None
+    if api:
+        wait_for_api(api)
     for username in EXPECTED_GROUPS:
-        check_user(discovery, username)
+        check_user(discovery, username, api)
     check_refusals(discovery)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8080"))
+    sys.exit(main(sys.argv[1:]))

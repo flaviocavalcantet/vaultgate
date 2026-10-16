@@ -5,16 +5,36 @@ which files exist, and who they were shared with. Large byte streams never pass
 through this service; the Tornado gateway handles those.
 """
 
-from fastapi import FastAPI
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
+import httpx
+from fastapi import APIRouter, Depends, FastAPI
+
+from vaultgate_api.auth import build_validator, get_principal
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
-from vaultgate_api.routers import health
+from vaultgate_api.routers import health, me
+
+# Routes that answer without a token. Everything else is mounted on `protected`,
+# so a new router is authenticated unless it is deliberately added here.
+PUBLIC_PATHS = frozenset(
+    {"/healthz", "/readyz", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"}
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        app.state.token_validator = build_validator(client)
+        yield
+
 
 app = FastAPI(
     title="VaultGate API",
     version="0.1.0",
     description="Identity, access policies, file metadata, share links and audit log.",
+    lifespan=lifespan,
 )
 
 BUILD_INFO.info({"service": "api", "version": app.version})
@@ -25,9 +45,14 @@ app.add_middleware(MetricsMiddleware)
 app.add_middleware(RequestContextMiddleware)
 app.include_router(health.router)
 
-# Health: /healthz (liveness) and /readyz (database reachable).
+# Deny by default: every router below requires a valid bearer token.
+protected = APIRouter(dependencies=[Depends(get_principal)])
+protected.include_router(me.router)
+app.include_router(protected)
+
+# Public: /healthz (liveness), /readyz (database reachable).
+# Protected: /me (caller identity from the access token).
 # Planned routers (see README roadmap):
-#   auth     - OIDC login callback, token validation, session introspection
 #   policies - CRUD for access rules (IP range, time window, group, device posture)
 #   files    - file metadata, upload intents, scan status
 #   shares   - signed, expiring share links with download limits
