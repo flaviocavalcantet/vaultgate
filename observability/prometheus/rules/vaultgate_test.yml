@@ -1,0 +1,98 @@
+# Unit tests for vaultgate.yml: `promtool test rules vaultgate_test.yml`
+rule_files:
+  - vaultgate.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: target down fires after 2 minutes, not before
+    interval: 1m
+    input_series:
+      - series: 'up{job="api", instance="api:9100"}'
+        values: "1 0 0 0 0"
+      - series: 'up{job="gateway", instance="gateway:9100"}'
+        values: "1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VaultGateTargetDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: VaultGateTargetDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: api, instance: "api:9100" }
+            exp_annotations:
+              summary: "api metrics endpoint is down"
+              description: "Prometheus has not scraped api:9100 for 2 minutes; the service is down or its metrics port is unreachable."
+
+  - name: error ratio above 5 percent fires per service
+    interval: 1m
+    input_series:
+      # api: 100 req/min, 10 of them 5xx (10%)
+      - series: 'vaultgate_http_requests_total{job="api", method="GET", route="/readyz", status="200"}'
+        values: "0+90x20"
+      - series: 'vaultgate_http_requests_total{job="api", method="GET", route="/readyz", status="503"}'
+        values: "0+10x20"
+      # gateway: 100 req/min, 1 of them 5xx (1%)
+      - series: 'vaultgate_http_requests_total{job="gateway", method="GET", route="/healthz", status="200"}'
+        values: "0+99x20"
+      - series: 'vaultgate_http_requests_total{job="gateway", method="GET", route="/healthz", status="500"}'
+        values: "0+1x20"
+    promql_expr_test:
+      - expr: round(vaultgate:http_error_ratio:rate5m, 0.001)
+        eval_time: 10m
+        exp_samples:
+          - labels: '{job="api"}'
+            value: 0.1
+          - labels: '{job="gateway"}'
+            value: 0.01
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: VaultGateHighErrorRate
+        exp_alerts:
+          - exp_labels: { severity: critical, job: api }
+            exp_annotations:
+              summary: "api is failing 10% of requests"
+              description: "More than 5% of api requests returned 5xx over the last 5 minutes."
+
+  - name: error ratio is 0, not absent, when there are no 5xx responses
+    interval: 1m
+    input_series:
+      - series: 'vaultgate_http_requests_total{job="api", method="GET", route="/healthz", status="200"}'
+        values: "0+60x10"
+    promql_expr_test:
+      - expr: vaultgate:http_error_ratio:rate5m
+        eval_time: 8m
+        exp_samples:
+          - labels: 'vaultgate:http_error_ratio:rate5m{job="api"}'
+            value: 0
+
+  - name: slow uploads do not count as high latency
+    interval: 1m
+    input_series:
+      # every upload takes > 10s; every other request is fast (< 5ms)
+      - series: 'vaultgate_http_request_duration_seconds_bucket{job="gateway", method="PUT", route="/uploads/{upload_id}", le="10"}'
+        values: "0x30"
+      - series: 'vaultgate_http_request_duration_seconds_bucket{job="gateway", method="PUT", route="/uploads/{upload_id}", le="+Inf"}'
+        values: "0+10x30"
+      - series: 'vaultgate_http_request_duration_seconds_bucket{job="gateway", method="GET", route="/healthz", le="0.005"}'
+        values: "0+60x30"
+      - series: 'vaultgate_http_request_duration_seconds_bucket{job="gateway", method="GET", route="/healthz", le="+Inf"}'
+        values: "0+60x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: VaultGateHighLatency
+        exp_alerts: []
+
+  - name: gateway memory above 200 MiB fires
+    interval: 1m
+    input_series:
+      - series: 'process_resident_memory_bytes{job="gateway", instance="gateway:9100"}'
+        values: "100000000 250000000 250000000 250000000 250000000 250000000 250000000 250000000"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: VaultGateGatewayMemoryHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, job: gateway, instance: "gateway:9100" }
+            exp_annotations:
+              summary: "Gateway gateway:9100 uses 238.4MiB of memory"
+              description: "Resident memory is above 200 MiB (limit 256 MiB). Streaming should keep it flat regardless of upload size."

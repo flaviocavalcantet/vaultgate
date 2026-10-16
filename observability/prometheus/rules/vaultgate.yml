@@ -1,0 +1,76 @@
+# Alert rules for VaultGate. Evaluated by Prometheus; unit tests live next to this
+# file (vaultgate_test.yml) and run with `promtool test rules` in CI.
+#
+# No Alertmanager yet: firing alerts are visible in Prometheus (Alerts tab) and in
+# Grafana. Routing to on-call channels comes with the Kubernetes milestone (M7).
+groups:
+  - name: vaultgate.availability
+    rules:
+      - alert: VaultGateTargetDown
+        expr: up{job=~"api|gateway"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} metrics endpoint is down"
+          description: "Prometheus has not scraped {{ $labels.instance }} for 2 minutes; the service is down or its metrics port is unreachable."
+
+      - alert: VaultGateObservabilityDown
+        expr: up{job=~"loki|alloy"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Log pipeline component {{ $labels.job }} is down"
+          description: "Logs are not being collected or stored while {{ $labels.instance }} is down."
+
+  - name: vaultgate.requests
+    rules:
+      # Share of requests answered with a 5xx, per service, over 5 minutes.
+      # The `or ... * 0` makes it 0 rather than absent when there are no 5xx series.
+      - record: vaultgate:http_error_ratio:rate5m
+        expr: |
+          (
+            sum by (job) (rate(vaultgate_http_requests_total{status=~"5.."}[5m]))
+            or
+            sum by (job) (rate(vaultgate_http_requests_total[5m])) * 0
+          )
+          /
+          sum by (job) (rate(vaultgate_http_requests_total[5m]))
+
+      - record: vaultgate:http_request_duration_seconds:p95_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (job, le) (rate(vaultgate_http_request_duration_seconds_bucket{route!="/uploads/{upload_id}"}[5m])))
+
+      - alert: VaultGateHighErrorRate
+        expr: vaultgate:http_error_ratio:rate5m > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is failing {{ $value | humanizePercentage }} of requests"
+          description: "More than 5% of {{ $labels.job }} requests returned 5xx over the last 5 minutes."
+
+      # Uploads are excluded: a multi-GB upload legitimately takes minutes.
+      - alert: VaultGateHighLatency
+        expr: vaultgate:http_request_duration_seconds:p95_5m > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} p95 latency is {{ $value | humanizeDuration }}"
+          description: "95th percentile latency of non-upload requests has been above 1s for 10 minutes."
+
+  - name: vaultgate.gateway
+    rules:
+      # The gateway streams uploads with constant memory; growth means buffering
+      # crept in. 200 MiB is the warning line under the 256 MiB container limit.
+      - alert: VaultGateGatewayMemoryHigh
+        expr: process_resident_memory_bytes{job="gateway"} > 200 * 1024 * 1024
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway {{ $labels.instance }} uses {{ $value | humanize1024 }}B of memory"
+          description: "Resident memory is above 200 MiB (limit 256 MiB). Streaming should keep it flat regardless of upload size."
