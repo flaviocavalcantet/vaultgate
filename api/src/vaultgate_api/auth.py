@@ -181,11 +181,16 @@ class TokenValidator:
         if not isinstance(kid, str):
             raise TokenError("missing_key_id")
         key = await self._keys.get_key(kid)
+        # The header's algorithm must be the one the key is for. Otherwise, with several
+        # algorithm families allowed, an ES256 header naming an RSA key would reach the
+        # crypto library with a key of the wrong type.
+        if header["alg"] != key.algorithm_name:
+            raise TokenError("algorithm_key_mismatch")
         try:
             claims = jwt.decode(
                 token,
                 key=key.key,
-                algorithms=self._algorithms,
+                algorithms=[key.algorithm_name],
                 audience=self._audience,
                 issuer=self._issuer,
                 leeway=self._leeway,
@@ -203,7 +208,7 @@ class TokenValidator:
             raise TokenError("missing_claim") from None
         except jwt.InvalidSignatureError:
             raise TokenError("bad_signature") from None
-        except jwt.InvalidTokenError:
+        except jwt.PyJWTError:
             raise TokenError("invalid") from None
         return _principal(claims)
 

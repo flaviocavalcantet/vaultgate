@@ -319,3 +319,19 @@ def test_every_route_requires_a_token_unless_public(api) -> None:
         for method in route.methods:
             response = api.request(method, route.path)
             assert response.status_code == 401, f"{method} {route.path} answered without a token"
+
+
+async def test_algorithm_key_mismatch_is_rejected_not_crash(provider) -> None:
+    """With several algorithm families allowed, an ES256 header naming an RSA key is a 401."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(provider.handler))
+    validator = TokenValidator(
+        JwksCache(client, DISCOVERY_URL),
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        algorithms=["RS256", "ES256"],
+    )
+    _, payload, signature = provider.token().split(".")
+    es256_header = jwt.utils.base64url_encode(b'{"alg":"ES256","kid":"key-1"}').decode()
+    with pytest.raises(TokenError) as exc:
+        await validator.validate(f"{es256_header}.{payload}.{signature}")
+    assert exc.value.reason == "algorithm_key_mismatch"
