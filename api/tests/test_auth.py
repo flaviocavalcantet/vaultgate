@@ -25,6 +25,7 @@ class FakeProvider:
         self.keys: dict[str, rsa.RSAPrivateKey] = {}
         self.requests: list[str] = []
         self.down = False
+        self.jwks_override = None  # a raw JSON body served instead of the real JWKS
         self.add_key("key-1")
 
     def add_key(self, kid: str) -> None:
@@ -44,6 +45,8 @@ class FakeProvider:
         if str(request.url) == DISCOVERY_URL:
             return httpx.Response(200, json={"issuer": ISSUER, "jwks_uri": JWKS_URI})
         if str(request.url) == JWKS_URI:
+            if self.jwks_override is not None:
+                return httpx.Response(200, content=self.jwks_override)
             return httpx.Response(200, json=self.jwks())
         return httpx.Response(404)
 
@@ -255,6 +258,22 @@ async def test_provider_down_is_not_retried_on_every_request(provider, validator
     assert len(provider.requests) == 1
     clock.now += 31
     provider.down = False
+    await validator.validate(provider.token())
+
+
+@pytest.mark.parametrize(
+    "body", [b'["not", "a", "jwks"]', b'{"keys": null}', b'{"keys": ["x"]}', b"<html>"]
+)
+async def test_malformed_jwks_is_unavailable_not_a_crash(provider, validator, body) -> None:
+    provider.jwks_override = body
+    with pytest.raises(KeySetUnavailable):
+        await validator.validate(provider.token())
+
+
+async def test_malformed_jwks_later_keeps_cached_keys(provider, validator, clock) -> None:
+    await validator.validate(provider.token())
+    provider.jwks_override = b'["proxy", "error"]'
+    clock.now += 301
     await validator.validate(provider.token())
 
 

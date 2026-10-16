@@ -123,14 +123,16 @@ class JwksCache:
                 if self._jwks_uri is None:
                     discovery = await self._get_json(self._discovery_url)
                     self._jwks_uri = discovery["jwks_uri"]
-                jwks = await self._get_json(self._jwks_uri)
-            except (httpx.HTTPError, KeyError, ValueError) as exc:
+                keys = _signing_keys(await self._get_json(self._jwks_uri))
+            except (httpx.HTTPError, KeyError, ValueError, TypeError, AttributeError) as exc:
+                # Unreachable provider, bad status, or a response that is not the JSON
+                # shape we expect (e.g. a proxy error page): all mean "no fresh keys".
                 if not self._keys:
                     raise KeySetUnavailable(str(exc)) from exc
                 # Keep serving with the cached keys; retry after the interval.
                 logger.warning("jwks refresh failed, using cached keys", extra={"error": str(exc)})
                 return
-            self._keys = _signing_keys(jwks)
+            self._keys = keys
             self._fetched_at = now
             logger.info("jwks refreshed", extra={"keys": len(self._keys)})
 
@@ -140,15 +142,20 @@ class JwksCache:
         return response.json()
 
 
-def _signing_keys(jwks: dict[str, Any]) -> dict[str, jwt.PyJWK]:
+def _signing_keys(jwks: Any) -> dict[str, jwt.PyJWK]:
+    if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
+        raise TypeError("JWKS document has no keys list")
     keys = {}
-    for data in jwks.get("keys", []):
-        if data.get("use", "sig") != "sig" or "kid" not in data:
+    for data in jwks["keys"]:
+        if not isinstance(data, dict) or data.get("use", "sig") != "sig" or "kid" not in data:
             continue  # encryption keys and keys without an ID are never used here
         try:
             keys[data["kid"]] = jwt.PyJWK(data)
         except jwt.PyJWKError:
             continue  # unsupported key type
+    if not keys:
+        # Treated like an outage: keep any cached keys rather than drop them all.
+        raise ValueError("JWKS document has no usable signing keys")
     return keys
 
 
