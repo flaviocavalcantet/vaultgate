@@ -88,6 +88,8 @@ The API and gateway serve Prometheus metrics on a separate port, `VAULTGATE_METR
 | `vaultgate_gateway_upload_size_bytes` | histogram | | gateway |
 | `vaultgate_build_info` | info | `service`, `version` | both |
 
+`route` is the path template (`/uploads/{upload_id}`), never the raw path; anything that matches no route is counted as `<unmatched>`, so clients cannot create new time series by probing URLs. Standard `process_*` and `python_*` metrics are included, which is how gateway memory is shown to stay flat under load.
+
 ### Centralized logs
 
 Locally, [Grafana Alloy](https://grafana.com/docs/alloy/) reads the stdout/stderr of every container in the compose project and ships it to Loki. JSON lines get the `service` and `level` labels from their own fields; plain-text logs (Postgres, Keycloak) are labelled with their compose service name. `request_id` is stored as structured metadata, so it is searchable without creating a stream per request. In Grafana → Explore → Loki:
@@ -97,8 +99,6 @@ Locally, [Grafana Alloy](https://grafana.com/docs/alloy/) reads the stdout/stder
 {service=~"api|gateway"} | request_id="<id>"         # one request across services
 {service="gateway"} | json | status >= 500           # gateway 5xx with parsed fields
 ```
-
-`route` is the path template (`/uploads/{upload_id}`), never the raw path; anything that matches no route is counted as `<unmatched>`, so clients cannot create new time series by probing URLs. Standard `process_*` and `python_*` metrics are included, which is how gateway memory is shown to stay flat under load.
 
 ## Repository layout
 
