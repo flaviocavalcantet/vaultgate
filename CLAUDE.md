@@ -27,7 +27,8 @@ and security review on GitHub. Then:
 - `ruff check . && ruff format --check . && pytest -q` in `api/` and `gateway/`
   (API database tests need `VAULTGATE_TEST_DATABASE_URL`, see README).
 - `test -z "$(gofmt -l .)" && go vet ./... && go test -race ./...` in `scanner/`.
-- `terraform fmt -check -recursive` and `terraform validate` in `infra/terraform/` when
-  Terraform changes; `helm lint deploy/helm/vaultgate` when the chart changes.
+- `terraform fmt -check -recursive infra/terraform` and `terraform validate` in
+  `infra/terraform/envs/local` when Terraform changes; `helm lint deploy/helm/vaultgate`
+  when the chart changes.
 - `make obs-check` for the `observability/` configs once the observability stack is merged
   (needs Docker).
