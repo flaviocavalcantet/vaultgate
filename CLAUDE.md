@@ -13,14 +13,22 @@
 
 ## PR review loop
 
-After opening a PR (and after pushing significant changes to it), run the `pr-reviewer`
-subagent (`.claude/agents/pr-reviewer.md`) with the PR number. It posts an architecture
-and security review on GitHub. Then:
+The **Claude review** GitHub Action (`.github/workflows/claude-review.yml`) is the only
+automatic reviewer. It reviews every non-draft PR on open and on each push, posting as
+`claude[bot]` with the guidelines in `.github/claude-review.md`. Do not run any other
+reviewer (subagent, `/code-review`, `/security-review`) on a PR unless the owner asks:
+it would duplicate the Action's review.
+
+After opening a PR, subscribe the session to its activity so the review arrives as an
+event, then:
 
 1. Fix every 🔴 blocking finding that holds up, and the 🟡 suggestions that are cheap and
    clearly right; push.
 2. Reply on each thread: what changed (with the commit), or why it stays as is.
 3. Tell the owner which findings were acted on and which were declined, and why.
+
+If the Action fails or posts nothing, report it to the owner instead of reviewing in its
+place.
 
 ## Checks before pushing
 
