@@ -1,0 +1,13 @@
+# Loads every dashboard JSON in observability/grafana/dashboards on startup.
+# Edits made in the Grafana UI are not saved back: change the JSON in the repo.
+apiVersion: 1
+
+providers:
+  - name: vaultgate
+    folder: VaultGate
+    type: file
+    allowUiUpdates: false
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards/vaultgate

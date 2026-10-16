@@ -100,6 +100,25 @@ Locally, [Grafana Alloy](https://grafana.com/docs/alloy/) reads the stdout/stder
 {service="gateway"} | json | status >= 500           # gateway 5xx with parsed fields
 ```
 
+### Dashboards and alerts
+
+Grafana loads the dashboards in `observability/grafana/dashboards/` on startup (edit the JSON in the repo; changes made in the UI are not saved):
+
+- **VaultGate / Service overview:** up/down, request rate, 5xx ratio and latency per service and route, plus recent error logs from Loki.
+- **VaultGate / Gateway uploads:** upload throughput, concurrency, size and duration, and gateway memory, which should stay flat however large the uploads are.
+
+Prometheus evaluates the rules in `observability/prometheus/rules/vaultgate.yml`; `make obs-check` runs their unit tests. Firing alerts show in Prometheus → Alerts (Alertmanager routing arrives with M7).
+
+| Alert | Fires when | Severity |
+|---|---|---|
+| `VaultGateTargetDown` | API or gateway metrics unreachable for 2 min | critical |
+| `VaultGateHighErrorRate` | more than 5% of a service's requests return 5xx for 5 min | critical |
+| `VaultGateHighLatency` | p95 of non-upload requests above 1 s for 10 min | warning |
+| `VaultGateGatewayMemoryHigh` | gateway resident memory above 200 MiB (limit 256 MiB) for 5 min | warning |
+| `VaultGateObservabilityDown` | Loki or Alloy down for 5 min | warning |
+
+In Kubernetes, the Helm chart exposes the metrics port on each Service (never through an Ingress) and adds `prometheus.io/*` pod annotations. With the Prometheus Operator, set `metrics.serviceMonitor.enabled=true` (and `metrics.podAnnotations=false`); the ServiceMonitors keep `job="api"`/`job="gateway"`, so the same dashboards and rules work in the cluster.
+
 ## Repository layout
 
 ```
@@ -137,7 +156,7 @@ VAULTGATE_TEST_DATABASE_URL=postgresql+asyncpg://vaultgate:vaultgate@localhost:5
 - API docs: http://localhost:8000/docs (readiness: http://localhost:8000/readyz)
 - Gateway health: http://localhost:8888/healthz
 - Keycloak admin: http://localhost:8080 (admin / admin)
-- Grafana: http://localhost:3000 (admin / admin), with Prometheus and Loki already set up as data sources
+- Grafana: http://localhost:3000 (admin / admin), with Prometheus and Loki already set up and the VaultGate dashboards in the **VaultGate** folder
 - Prometheus: http://localhost:9090 (Status → Targets shows every scraped service)
 - Alloy pipeline UI: http://localhost:12345
 
@@ -152,11 +171,11 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
 - [x] **M0 — Foundation:** service skeletons, CI, Helm chart, ArgoCD app, Terraform storage module, local stack
 - [ ] **M1 — Identity:** OIDC login with Keycloak, token validation, users and groups in PostgreSQL
   - [x] PostgreSQL persistence layer: users, groups, Alembic migrations
-- [ ] **M1.5 — Observability:** centralized logging and metrics, so every later milestone ships observable
+- [x] **M1.5 — Observability:** centralized logging and metrics, so every later milestone ships observable
   - [x] Structured JSON logs from all three services, correlated by request ID
   - [x] Prometheus metrics endpoints on the API and gateway
   - [x] Local stack: Prometheus, Loki (via Grafana Alloy) and Grafana
-  - [ ] Provisioned Grafana dashboards, alert rules and Kubernetes scrape config
+  - [x] Provisioned Grafana dashboards, alert rules and Kubernetes scrape config
 - [ ] **M2 — Streaming vault:** upload intents, chunked envelope encryption, S3 multipart upload, streaming download
 - [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)

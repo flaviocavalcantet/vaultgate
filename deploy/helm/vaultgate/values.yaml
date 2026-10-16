@@ -6,6 +6,8 @@ image:
 api:
   replicas: 2
   port: 8000
+  # /readyz also checks the database, so a pod without one receives no traffic.
+  readinessPath: /readyz
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { memory: 256Mi }
@@ -13,6 +15,7 @@ api:
 gateway:
   replicas: 2
   port: 8888
+  readinessPath: /healthz
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     # Memory stays flat regardless of upload size; that is the point of streaming.
@@ -22,3 +25,16 @@ podSecurityContext:
   runAsNonRoot: true
   runAsUser: 10001
   seccompProfile: { type: RuntimeDefault }
+
+# Prometheus metrics, served on a separate port that is never routed publicly.
+metrics:
+  port: 9100
+  # prometheus.io/* pod annotations, for Prometheus setups that discover by annotation.
+  # Turn off when using the ServiceMonitor below, or pods may be scraped twice.
+  podAnnotations: true
+  # ServiceMonitor objects for the Prometheus Operator (needs its CRDs installed).
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    # Extra labels, e.g. the `release` label your Prometheus selects ServiceMonitors by.
+    labels: {}
