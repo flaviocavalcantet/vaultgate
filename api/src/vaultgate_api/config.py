@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +29,22 @@ class Settings(BaseSettings):
     oidc_jwks_ttl_seconds: int = 300
     # Members of any of these identity-provider groups may use the /admin endpoints.
     admin_groups: list[str] = ["/vaultgate-admins"]
+
+    # Internal API for the gateway (validate and consume transfer intents, report
+    # results). Served on its own port, never routed publicly, and every request must
+    # carry this shared secret. Unset means the internal API refuses everything.
+    internal_port: int = 8001
+    internal_token: SecretStr | None = None
+
+    # Files
+    gateway_public_url: str = "http://localhost:8888"
+    max_upload_bytes: int = 5 * 1024**3
+    upload_intent_ttl_seconds: int = 900
+    # Live uploads a user may have at once; more get 429. Abandoned ones do not count:
+    # a pending file whose intent expired, or an upload started longer ago than
+    # upload_stale_after_seconds.
+    max_open_uploads_per_user: int = 20
+    upload_stale_after_seconds: int = 6 * 3600
 
 
 settings = Settings()
