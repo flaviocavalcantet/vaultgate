@@ -204,6 +204,17 @@ The identity provider is the source of truth. On every authenticated request the
 - A user whose `is_active` is set to false in the database is refused with `403` even with a valid token: a local kill switch that works without touching the identity provider.
 - `GET /admin/users`, `GET /admin/users/{id}` and `GET /admin/groups` (with member counts) are read-only and paginated (`limit` up to 100, `offset`). They require membership in one of `VAULTGATE_ADMIN_GROUPS` (default `["/vaultgate-admins"]`), so admin rights are granted and revoked in the identity provider.
 
+### Files and transfer intents
+
+The API owns file metadata and decides who may move which bytes; the gateway only moves them (ADR 0001).
+
+- `POST /files` with `{name, size, content_type}` registers a file and returns a **single-use upload intent**: the gateway URL (`/uploads/{file_id}`), a token and its expiry (15 minutes, `VAULTGATE_UPLOAD_INTENT_TTL_SECONDS`). Sizes above `VAULTGATE_MAX_UPLOAD_BYTES` (5 GiB) get `413`. Names are display names only: path separators and control characters are rejected, and the object key is always `files/<id>`.
+- `GET /files` and `GET /files/{id}` show the caller's own files. Another user's file is reported as `404`, exactly like a missing one.
+- Intent tokens are 256 random bits, shown once. Only their SHA-256 is stored. Each is bound to one file and one direction, and is consumed atomically, so two concurrent uses cannot both succeed.
+- **Internal API** (port `VAULTGATE_INTERNAL_PORT`, 8001): the gateway calls `POST /internal/intents/consume` before accepting any bytes, then `POST /internal/files/{id}/complete` (size, SHA-256, KMS-wrapped data key) or `/fail`. Every call needs `Authorization: Bearer $VAULTGATE_INTERNAL_TOKEN`; with no token configured the internal API refuses everything. It has no OpenAPI docs and is never published on the host or through an ingress.
+
+File statuses: `pending` (intent issued) → `uploading` (gateway consumed the intent) → `uploaded` or `failed`.
+
 `VAULTGATE_OIDC_DISCOVERY_URL` sets where the API fetches discovery and keys when that differs from the public issuer (in compose: `http://keycloak:8080/...`, because `localhost` inside the API container is the API itself).
 
 Try the scanner on its own:
@@ -227,6 +238,7 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
   - [x] Local stack: Prometheus, Loki (via Grafana Alloy) and Grafana
   - [x] Provisioned Grafana dashboards, alert rules and Kubernetes scrape config
 - [ ] **M2 — Streaming vault:** upload intents, chunked envelope encryption, S3 multipart upload, streaming download
+  - [x] Files and single-use upload intents in the API; internal API for the gateway
 - [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification

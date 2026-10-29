@@ -50,6 +50,9 @@ services:
       # Inside this network localhost:8080 is the API container itself, so discovery
       # and JWKS are fetched from the keycloak service directly.
       VAULTGATE_OIDC_DISCOVERY_URL: http://keycloak:8080/realms/vaultgate/.well-known/openid-configuration
+      # Shared secret for the internal API (port 8001, gateway only, not published on
+      # the host). Local development value; real deployments inject a random secret.
+      VAULTGATE_INTERNAL_TOKEN: dev-internal-token-change-me
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }
