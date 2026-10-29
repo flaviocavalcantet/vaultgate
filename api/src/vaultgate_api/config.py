@@ -40,8 +40,11 @@ class Settings(BaseSettings):
     gateway_public_url: str = "http://localhost:8888"
     max_upload_bytes: int = 5 * 1024**3
     upload_intent_ttl_seconds: int = 900
-    # Files a user may have in pending/uploading at once; more get 429.
+    # Live uploads a user may have at once; more get 429. Abandoned ones do not count:
+    # a pending file whose intent expired, or an upload started longer ago than
+    # upload_stale_after_seconds.
     max_open_uploads_per_user: int = 20
+    upload_stale_after_seconds: int = 6 * 3600
 
 
 settings = Settings()

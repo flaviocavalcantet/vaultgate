@@ -6,17 +6,17 @@ be probed for existence.
 
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import and_, exists, func, or_, select
 
 from vaultgate_api import intents
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
-from vaultgate_api.models import File
+from vaultgate_api.models import File, TransferIntent
 from vaultgate_api.provisioning import CurrentUserDep
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -87,14 +87,40 @@ class FilePage(BaseModel):
     offset: int
 
 
+async def _live_uploads(session, owner_id: uuid.UUID) -> int:
+    """Uploads that can still finish: pending with an unused, unexpired intent, or
+    uploading and started recently. Abandoned ones must not lock the user out."""
+    now = datetime.now(UTC)
+    intent = TransferIntent
+    live_pending = and_(
+        File.status == "pending",
+        exists().where(
+            intent.file_id == File.id,
+            intent.kind == "upload",
+            intent.consumed_at.is_(None),
+            intent.expires_at > now,
+        ),
+    )
+    recent_uploading = and_(
+        File.status == "uploading",
+        exists().where(
+            intent.file_id == File.id,
+            intent.kind == "upload",
+            intent.consumed_at > now - timedelta(seconds=settings.upload_stale_after_seconds),
+        ),
+    )
+    count = await session.scalar(
+        select(func.count())
+        .select_from(File)
+        .where(File.owner_id == owner_id, or_(live_pending, recent_uploading))
+    )
+    return count or 0
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_file(body: FileCreate, user: CurrentUserDep, session: SessionDep) -> FileCreated:
     """Register a file and get a single-use upload intent for the gateway."""
-    open_uploads = await session.scalar(
-        select(func.count())
-        .select_from(File)
-        .where(File.owner_id == user.id, File.status.in_(("pending", "uploading")))
-    )
+    open_uploads = await _live_uploads(session, user.id)
     if open_uploads >= settings.max_open_uploads_per_user:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,

@@ -133,6 +133,33 @@ async def test_open_uploads_per_user_are_capped(clients, provider, monkeypatch) 
     await create(public, provider, sub="bob")
 
 
+async def test_abandoned_uploads_do_not_count_towards_the_cap(
+    clients, provider, session, monkeypatch
+) -> None:
+    public, internal = clients
+    monkeypatch.setattr(settings, "max_open_uploads_per_user", 2)
+    expired = await create(public, provider)
+    stalled = await create(public, provider, name="stalled.pdf")
+    await consume(internal, stalled)
+    blocked = await public.post("/files", json={"name": "x", "size": 1}, headers=as_user(provider))
+    assert blocked.status_code == 429
+
+    long_ago = datetime.now(UTC) - timedelta(seconds=settings.upload_stale_after_seconds + 1)
+    await session.execute(
+        update(TransferIntent)
+        .where(TransferIntent.file_id == uuid.UUID(expired["file"]["id"]))
+        .values(expires_at=datetime.now(UTC) - timedelta(seconds=1))
+    )
+    await session.execute(
+        update(TransferIntent)
+        .where(TransferIntent.file_id == uuid.UUID(stalled["file"]["id"]))
+        .values(consumed_at=long_ago)
+    )
+    # An expired pending upload and a long-stalled one no longer hold the user back.
+    await create(public, provider, name="fresh-1.pdf")
+    await create(public, provider, name="fresh-2.pdf")
+
+
 async def test_users_only_see_their_own_files(clients, provider) -> None:
     public, _ = clients
     mine = await create(public, provider, sub="alice")
