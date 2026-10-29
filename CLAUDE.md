@@ -30,6 +30,10 @@ event, then:
    the commit or PR link.
 3. Tell the owner which findings were acted on and which were declined, and why.
 
+Replies on PR threads are posted as the owner, so write them like a person would:
+one or two short sentences (what changed and the commit, or why it stays), no long
+explanations. Give the owner the detailed reasoning in the session instead.
+
 If the Action fails or posts nothing, report it to the owner instead of reviewing in its
 place.
 

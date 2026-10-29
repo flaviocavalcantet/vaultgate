@@ -91,13 +91,18 @@ def _update_profile(user: User, principal: Principal, now: datetime) -> bool:
 
 
 async def _sync_groups(session: AsyncSession, user: User, names: tuple[str, ...]) -> None:
-    """Make the user's memberships exactly `names`, creating groups as needed."""
+    """Make the user's memberships exactly `names`, creating groups as needed.
+
+    Rows are inserted in sorted order: concurrent first logins that name the same new
+    groups in a different order would otherwise lock them in opposite orders and
+    deadlock.
+    """
     group_ids = []
     if names:
         await session.execute(
-            insert(Group).values([{"name": n} for n in names]).on_conflict_do_nothing()
+            insert(Group).values([{"name": n} for n in sorted(set(names))]).on_conflict_do_nothing()
         )
-        group_ids = list(await session.scalars(select(Group.id).where(Group.name.in_(names))))
+        group_ids = sorted(await session.scalars(select(Group.id).where(Group.name.in_(names))))
         await session.execute(
             insert(user_groups)
             .values([{"user_id": user.id, "group_id": gid} for gid in group_ids])
