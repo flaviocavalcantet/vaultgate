@@ -177,7 +177,7 @@ Seed users, **for local development only**:
 | bob | `bob-dev-password` | `/legal` |
 | carol | `carol-dev-password` | `/engineering`, `/vaultgate-admins` |
 
-`make auth-check` (also run in CI) starts Keycloak and the API, logs in as each user through the real PKCE flow, and checks the token's issuer, audience, lifetime and groups. It then calls the API's `GET /me` with the access token (accepted) and the ID token (refused, wrong audience), and checks that password grant, requests without PKCE and unknown redirect URIs are refused.
+`make auth-check` (also run in CI) starts Keycloak and the API, logs in as each user through the real PKCE flow, and checks the token's issuer, audience, lifetime and groups. It then calls the API's `GET /me` with the access token (accepted, returning the provisioned user) and the ID token (refused, wrong audience), checks that `/admin/users` is refused for alice and lists every user for carol, and checks that password grant, requests without PKCE and unknown redirect URIs are refused.
 
 ### Calling the API
 
@@ -188,6 +188,14 @@ Every API route except `/healthz`, `/readyz` and the OpenAPI docs requires `Auth
 - `exp`, `iat` and `sub` are present and the token is within its validity window (30 s clock leeway).
 
 Missing or invalid tokens get `401` with a `WWW-Authenticate: Bearer` challenge; if the provider's keys cannot be fetched at all, `503`. Rejections are logged with a reason (never the token) and counted in `vaultgate_auth_failures_total{reason}`. Keys are cached for 5 minutes; an unknown key ID triggers a refresh for key rotation, at most once every 30 s.
+
+### Users and groups
+
+The identity provider is the source of truth. On every authenticated request the API looks up the caller by `(issuer, subject)` and creates or updates their record to match the token: login name, email and display name, and group memberships, which are set to exactly the token's `groups` (groups are created the first time any token names them). Unchanged callers cost one read; `last_login_at` is refreshed at most every 5 minutes.
+
+- `GET /me` returns the caller's stored record: `id`, `issuer`, `subject`, `username`, `email`, `name`, `groups`, `is_active`, `created_at`, `last_login_at`.
+- A user whose `is_active` is set to false in the database is refused with `403` even with a valid token: a local kill switch that works without touching the identity provider.
+- `GET /admin/users`, `GET /admin/users/{id}` and `GET /admin/groups` (with member counts) are read-only and paginated (`limit` up to 100, `offset`). They require membership in one of `VAULTGATE_ADMIN_GROUPS` (default `["/vaultgate-admins"]`), so admin rights are granted and revoked in the identity provider.
 
 `VAULTGATE_OIDC_DISCOVERY_URL` sets where the API fetches discovery and keys when that differs from the public issuer (in compose: `http://keycloak:8080/...`, because `localhost` inside the API container is the API itself).
 
@@ -204,6 +212,7 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
   - [x] PostgreSQL persistence layer: users, groups, Alembic migrations
   - [x] Local Keycloak realm: PKCE-only public client, API audience, group claims, seed users
   - [x] Bearer token validation (JWKS, issuer, audience, expiry), deny-by-default routes, `GET /me`
+  - [x] Just-in-time user provisioning and group sync from tokens; read-only admin endpoints
 - [x] **M1.5 — Observability:** centralized logging and metrics, so every later milestone ships observable
   - [x] Structured JSON logs from all three services, correlated by request ID
   - [x] Prometheus metrics endpoints on the API and gateway

@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     oidc_algorithms: list[str] = ["RS256"]
     oidc_leeway_seconds: int = 30
     oidc_jwks_ttl_seconds: int = 300
+    # Members of any of these identity-provider groups may use the /admin endpoints.
+    admin_groups: list[str] = ["/vaultgate-admins"]
 
 
 settings = Settings()

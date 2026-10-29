@@ -50,8 +50,12 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     issuer: Mapped[str] = mapped_column(String(512))
     subject: Mapped[str] = mapped_column(String(255))
+    # The provider's login name (Keycloak: preferred_username). Display only: it can
+    # change, so identity is always (issuer, subject).
+    username: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
     display_name: Mapped[str | None] = mapped_column(String(255))
+    # Local kill switch: an inactive user is refused even with a valid token.
     is_active: Mapped[bool] = mapped_column(default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -69,6 +73,8 @@ class Group(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Never loaded implicitly: a large group would pull in every member row. Code that
+    # needs members asks for them (selectinload) or counts them with a join.
     members: Mapped[list[User]] = relationship(
-        secondary=user_groups, back_populates="groups", lazy="selectin"
+        secondary=user_groups, back_populates="groups", lazy="raise"
     )

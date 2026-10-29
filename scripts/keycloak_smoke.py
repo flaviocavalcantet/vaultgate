@@ -7,8 +7,10 @@ expiry and the `groups` claim. Also checks that the insecure flows are refused.
     python3 scripts/keycloak_smoke.py [http://localhost:8080] [--api http://localhost:8000]
 
 With --api, each user's access token is also sent to the API's GET /me, which must
-accept it and report the same identity, and the ID token (wrong audience) must be
-refused: an end-to-end check of the realm and the API's token validation together.
+accept it and return the provisioned user record with the same identity and groups,
+and the ID token (wrong audience) must be refused. Then /admin/users must be refused
+for non-admins and list every seed user for carol (vaultgate-admins): an end-to-end
+check of the realm, token validation and user provisioning together.
 
 Standard library only, so it runs in CI without installing anything. It drives
 Keycloak's login form, so it is a test tool, not a client implementation.
@@ -125,7 +127,7 @@ def login(discovery: dict, username: str, password: str) -> dict:
     return tokens
 
 
-def check_user(discovery: dict, username: str, api: str | None = None) -> None:
+def check_user(discovery: dict, username: str, api: str | None = None) -> dict:
     tokens = login(discovery, username, f"{username}-dev-password")
     claims = jwt_claims(tokens["access_token"])
     audience = claims["aud"] if isinstance(claims["aud"], list) else [claims["aud"]]
@@ -138,24 +140,37 @@ def check_user(discovery: dict, username: str, api: str | None = None) -> None:
     print(f"ok  {username}: aud={audience} groups={claims['groups']}")
     if api:
         check_api(api, username, tokens)
+    return tokens
+
+
+def api_get(api: str, path: str, token: str) -> tuple[int, dict | None]:
+    request = urllib.request.Request(f"{api}{path}", headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as error:
+        return error.code, None
 
 
 def check_api(api: str, username: str, tokens: dict) -> None:
-    def get_me(token: str) -> tuple[int, dict | None]:
-        request = urllib.request.Request(f"{api}/me", headers={"Authorization": f"Bearer {token}"})
-        try:
-            with urllib.request.urlopen(request) as response:
-                return response.status, json.load(response)
-        except urllib.error.HTTPError as error:
-            return error.code, None
-
-    status, identity = get_me(tokens["access_token"])
+    status, user = api_get(api, "/me", tokens["access_token"])
     assert status == 200, f"API refused {username}'s access token: {status}"
-    assert identity["username"] == username, identity
-    assert identity["groups"] == EXPECTED_GROUPS[username], identity
-    status, _ = get_me(tokens["id_token"])
+    assert user["username"] == username, user
+    assert user["groups"] == EXPECTED_GROUPS[username], user
+    assert user["id"] and user["is_active"], user
+    status, _ = api_get(api, "/me", tokens["id_token"])
     assert status == 401, f"API accepted an ID token (audience vaultgate-web): {status}"
-    print(f"ok  {username}: API /me accepts the access token and refuses the ID token")
+    print(f"ok  {username}: API /me returns user {user['id']}; ID token refused")
+
+
+def check_admin(api: str, tokens_by_user: dict[str, dict]) -> None:
+    status, _ = api_get(api, "/admin/users", tokens_by_user["alice"]["access_token"])
+    assert status == 403, f"non-admin alice got {status} from /admin/users"
+    status, page = api_get(api, "/admin/users?limit=100", tokens_by_user["carol"]["access_token"])
+    assert status == 200, f"admin carol got {status} from /admin/users"
+    listed = {u["username"] for u in page["items"]}
+    assert set(EXPECTED_GROUPS) <= listed, listed
+    print(f"ok  /admin/users: refused for alice, carol sees {sorted(listed)}")
 
 
 def check_refusals(discovery: dict) -> None:
@@ -225,8 +240,9 @@ def main(argv: list[str]) -> int:
     api = args.api.rstrip("/") if args.api else None
     if api:
         wait_for_api(api)
-    for username in EXPECTED_GROUPS:
-        check_user(discovery, username, api)
+    tokens = {username: check_user(discovery, username, api) for username in EXPECTED_GROUPS}
+    if api:
+        check_admin(api, tokens)
     check_refusals(discovery)
     return 0
 
