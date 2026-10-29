@@ -73,6 +73,8 @@ class Group(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Never loaded implicitly: a large group would pull in every member row. Code that
+    # needs members asks for them (selectinload) or counts them with a join.
     members: Mapped[list[User]] = relationship(
-        secondary=user_groups, back_populates="groups", lazy="selectin"
+        secondary=user_groups, back_populates="groups", lazy="raise"
     )

@@ -2,8 +2,9 @@ import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.orm import selectinload
 
 from tests.conftest import requires_db
 from vaultgate_api.models import Base, Group, User
@@ -52,8 +53,21 @@ async def test_group_membership(session: AsyncSession) -> None:
     await session.flush()
     session.expunge_all()
 
-    loaded = (await session.execute(select(Group).where(Group.name == "/finance"))).scalar_one()
+    loaded = (
+        await session.execute(
+            select(Group).where(Group.name == "/finance").options(selectinload(Group.members))
+        )
+    ).scalar_one()
     assert [m.subject for m in loaded.members] == ["sub-2"]
+
+
+async def test_group_members_are_never_loaded_implicitly(session: AsyncSession) -> None:
+    session.add(User(issuer=ISSUER, subject="sub-4", groups=[Group(name="/staff")]))
+    await session.flush()
+    session.expunge_all()
+    group = (await session.execute(select(Group).where(Group.name == "/staff"))).scalar_one()
+    with pytest.raises(InvalidRequestError):
+        _ = group.members
 
 
 async def test_deleting_user_removes_memberships(session: AsyncSession) -> None:
@@ -66,5 +80,9 @@ async def test_deleting_user_removes_memberships(session: AsyncSession) -> None:
     await session.flush()
     session.expunge_all()
 
-    loaded = (await session.execute(select(Group).where(Group.name == "/legal"))).scalar_one()
+    loaded = (
+        await session.execute(
+            select(Group).where(Group.name == "/legal").options(selectinload(Group.members))
+        )
+    ).scalar_one()
     assert loaded.members == []
