@@ -47,7 +47,7 @@ flowchart LR
 
 ### Why two Python frameworks?
 
-They handle different traffic. FastAPI fits the control plane: many small, validated JSON endpoints with an OpenAPI spec. Tornado fits the data plane: `@stream_request_body` processes a multi-gigabyte upload chunk by chunk, so memory stays flat no matter the file size. The gateway never makes authorization decisions; it asks the API to validate a short-lived upload intent first. Full reasoning in [ADR 0001](docs/adr/0001-tornado-and-fastapi.md).
+They handle different traffic. FastAPI fits the control plane: many small, validated JSON endpoints with an OpenAPI spec. Tornado fits the data plane: `@stream_request_body` processes a multi-gigabyte upload chunk by chunk, so memory stays flat no matter the file size. The gateway never makes authorization decisions; it asks the API to validate a short-lived upload intent first. Full reasoning in [ADR 0001](docs/adr/0001-tornado-and-fastapi.md); how authentication is split between the identity provider and the API is in [ADR 0002](docs/adr/0002-api-as-oidc-resource-server.md).
 
 ### Why Go for the scanner?
 
@@ -181,6 +181,13 @@ Seed users, **for local development only**:
 
 ### Calling the API
 
+Get a token in the browser and call the API with it (details in [docs/authentication.md](docs/authentication.md)):
+
+```bash
+TOKEN=$(make -s token)    # log in as alice, bob or carol
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/me
+```
+
 Every API route except `/healthz`, `/readyz` and the OpenAPI docs requires `Authorization: Bearer <access token>`. A token is accepted only when:
 
 - it is signed with an asymmetric algorithm (`RS256` by default; `none` and HMAC are never accepted) by a key from the provider's JWKS;
@@ -208,11 +215,12 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
 ## Roadmap
 
 - [x] **M0 — Foundation:** service skeletons, CI, Helm chart, ArgoCD app, Terraform storage module, local stack
-- [ ] **M1 — Identity:** OIDC login with Keycloak, token validation, users and groups in PostgreSQL
+- [x] **M1 — Identity:** OIDC login with Keycloak, token validation, users and groups in PostgreSQL
   - [x] PostgreSQL persistence layer: users, groups, Alembic migrations
   - [x] Local Keycloak realm: PKCE-only public client, API audience, group claims, seed users
   - [x] Bearer token validation (JWKS, issuer, audience, expiry), deny-by-default routes, `GET /me`
   - [x] Just-in-time user provisioning and group sync from tokens; read-only admin endpoints
+  - [x] Terminal login helper (`make token`) and [authentication docs](docs/authentication.md)
 - [x] **M1.5 — Observability:** centralized logging and metrics, so every later milestone ships observable
   - [x] Structured JSON logs from all three services, correlated by request ID
   - [x] Prometheus metrics endpoints on the API and gateway
