@@ -1,5 +1,7 @@
 # Automatic architecture and security review of every pull request by Claude.
-# This is the repository's only automatic reviewer. Comments are posted by the
+# This is the repository's only automatic reviewer. It keeps exactly one summary comment
+# per PR: the only comment command it may run edits its last comment (or creates the
+# first), so a re-review can never add a second summary. Comments are posted by the
 # Claude GitHub App (claude[bot]); the criteria live in .github/claude-review.md.
 name: Claude review
 
@@ -51,8 +53,9 @@ jobs:
             - Post each new finding as an inline comment with
               `mcp__github_inline_comment__create_inline_comment` (confirmed: true),
               anchored on a changed line.
-            - Summary: if you already posted one on this PR, update it with
-              `gh pr comment ${{ github.event.pull_request.number }} --edit-last --body ...`;
-              otherwise post it with `gh pr comment ${{ github.event.pull_request.number }} --body ...`.
+            - Summary: always write it with exactly
+              `gh pr comment ${{ github.event.pull_request.number }} --edit-last --create-if-none --body "..."`.
+              It replaces your previous summary on this PR, or creates the first one.
+              This is the only way you are allowed to post a PR comment.
           claude_args: |
-            --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments --paginate)"
+            --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment ${{ github.event.pull_request.number }} --edit-last --create-if-none --body:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments --paginate)"
