@@ -6,6 +6,9 @@ expiry and the `groups` claim. Also checks that the insecure flows are refused.
 
     python3 scripts/keycloak_smoke.py [http://localhost:8080] [--api http://localhost:8000]
 
+It also runs scripts/vaultgate_login.py (the developer login helper) headless and
+completes its login as a browser would, checking the token it prints.
+
 With --api, each user's access token is also sent to the API's GET /me, which must
 accept it and return the provisioned user record with the same identity and groups,
 and the ID token (wrong audience) must be refused. Then /admin/users must be refused
@@ -24,12 +27,16 @@ import http.cookiejar
 import json
 import re
 import secrets
+import socket
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
+HELPER = Path(__file__).resolve().parent / "vaultgate_login.py"
 REALM = "vaultgate"
 CLIENT_ID = "vaultgate-web"
 REDIRECT_URI = "http://127.0.0.1:8765/callback"
@@ -78,24 +85,12 @@ def wait_for(base: str, timeout: float = 120) -> dict:
             time.sleep(2)
 
 
-def login(discovery: dict, username: str, password: str) -> dict:
-    """Authorization code + PKCE through the login form; returns the token response."""
+def browser_login(auth_url: str, username: str, password: str) -> str:
+    """Do what a browser does with an authorization URL: show the login form, submit
+    the credentials, and return the redirect Location carrying the code."""
     jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), NoRedirect)
-    verifier = b64url(secrets.token_bytes(32))
-    state = secrets.token_urlsafe(16)
-    query = urllib.parse.urlencode(
-        {
-            "client_id": CLIENT_ID,
-            "response_type": "code",
-            "scope": "openid",
-            "redirect_uri": REDIRECT_URI,
-            "state": state,
-            "code_challenge": b64url(hashlib.sha256(verifier.encode()).digest()),
-            "code_challenge_method": "S256",
-        }
-    )
-    with opener.open(f"{discovery['authorization_endpoint']}?{query}") as response:
+    with opener.open(auth_url) as response:
         page = response.read().decode()
     # Keycloak marks its session cookies Secure even on http://localhost, which browsers
     # accept (localhost counts as a secure context) but Python's cookie jar does not.
@@ -109,7 +104,25 @@ def login(discovery: dict, username: str, password: str) -> dict:
     except urllib.error.HTTPError as redirect:
         if redirect.code != 302:
             raise
-        location = redirect.headers["Location"]
+        return redirect.headers["Location"]
+
+
+def login(discovery: dict, username: str, password: str) -> dict:
+    """Authorization code + PKCE through the login form; returns the token response."""
+    verifier = b64url(secrets.token_bytes(32))
+    state = secrets.token_urlsafe(16)
+    query = urllib.parse.urlencode(
+        {
+            "client_id": CLIENT_ID,
+            "response_type": "code",
+            "scope": "openid",
+            "redirect_uri": REDIRECT_URI,
+            "state": state,
+            "code_challenge": b64url(hashlib.sha256(verifier.encode()).digest()),
+            "code_challenge_method": "S256",
+        }
+    )
+    location = browser_login(f"{discovery['authorization_endpoint']}?{query}", username, password)
     params = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
     assert location.startswith(REDIRECT_URI), location
     assert params["state"] == [state], "state mismatch"
@@ -125,6 +138,56 @@ def login(discovery: dict, username: str, password: str) -> dict:
     )
     assert status == 200, tokens
     return tokens
+
+
+def start_helper(issuer: str) -> tuple[subprocess.Popen, str]:
+    """Start scripts/vaultgate_login.py headless; return it and the login URL it printed."""
+    helper = subprocess.Popen(
+        [sys.executable, str(HELPER), "--issuer", issuer, "--no-browser", "--timeout", "60"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    line = helper.stderr.readline()
+    assert line.startswith("Log in at: "), f"unexpected helper output: {line!r}"
+    return helper, line.removeprefix("Log in at: ").strip()
+
+
+def check_login_helper(discovery: dict, api: str | None) -> None:
+    """The CLI helper, driven as a person would: open its URL, log in, follow the redirect.
+
+    A callback that does not answer this login's request (stale tab, forged redirect)
+    arrives first: it must be refused without aborting the real login that follows.
+    An idle connection (like a browser preconnect) stays open throughout and must not
+    hold up the real redirect.
+    """
+    helper, url = start_helper(discovery["issuer"])
+    idle = socket.create_connection(("127.0.0.1", 8765))
+    forged = f"{REDIRECT_URI}?code=forged&state=not-the-one-we-sent"
+    try:
+        urllib.request.urlopen(forged)
+        raise AssertionError("helper accepted a callback with the wrong state")
+    except urllib.error.HTTPError as error:
+        assert error.code == 400, error.code
+    assert helper.poll() is None, "a forged callback ended the login"
+
+    location = browser_login(url, "bob", "bob-dev-password")
+    assert location.startswith(REDIRECT_URI), location
+    with urllib.request.urlopen(location) as response:  # the browser following the redirect
+        assert response.status == 200
+    out, err = helper.communicate(timeout=30)
+    idle.close()
+    assert helper.returncode == 0, err
+    token = out.strip()
+    claims = jwt_claims(token)
+    assert claims["preferred_username"] == "bob" and claims["azp"] == CLIENT_ID, claims
+    if api:
+        status, user = api_get(api, "/me", token)
+        assert status == 200 and user["username"] == "bob", (status, user)
+    print(
+        "ok  login helper: forged callback refused, idle connection ignored, "
+        "browser login yields a token the API accepts"
+    )
 
 
 def check_user(discovery: dict, username: str, api: str | None = None) -> dict:
@@ -243,6 +306,7 @@ def main(argv: list[str]) -> int:
     tokens = {username: check_user(discovery, username, api) for username in EXPECTED_GROUPS}
     if api:
         check_admin(api, tokens)
+    check_login_helper(discovery, api)
     check_refusals(discovery)
     return 0
 

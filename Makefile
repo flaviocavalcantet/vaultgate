@@ -1,4 +1,4 @@
-.PHONY: up down test lint migrate tf-local obs-check auth-check
+.PHONY: up down test lint migrate tf-local obs-check auth-check token
 
 up:          ## Start the local stack (services, dependencies and Prometheus/Loki/Alloy/Grafana)
 	docker compose up --build -d
@@ -25,6 +25,9 @@ obs-check:   ## Check Prometheus config and alert rules (with unit tests), Loki,
 	docker run --rm -v $(CURDIR)/observability/loki/loki.yml:/cfg/loki.yml:ro grafana/loki:3.3.2 -config.file=/cfg/loki.yml -verify-config
 	docker run --rm -v $(CURDIR)/observability/alloy:/cfg:ro grafana/alloy:v1.5.1 fmt -t /cfg/config.alloy
 	python3 scripts/check_dashboards.py observability/grafana/dashboards
+
+token:       ## Log in through Keycloak in the browser and print an access token (TOKEN=$$(make -s token))
+	@python3 scripts/vaultgate_login.py
 
 auth-check:  ## Log in as every seed user through Keycloak and call the API with the tokens (needs Docker)
 	docker compose up -d --build keycloak api
