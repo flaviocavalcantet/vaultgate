@@ -81,6 +81,8 @@ def wait_for_code(expected_state: str, timeout: float) -> str:
     done = threading.Event()
 
     class Callback(http.server.BaseHTTPRequestHandler):
+        timeout = 5  # an idle connection is dropped instead of holding a worker
+
         def do_GET(self) -> None:
             url = urllib.parse.urlparse(self.path)
             if url.path != "/callback":
@@ -116,7 +118,10 @@ def wait_for_code(expected_state: str, timeout: float) -> str:
             pass  # keep the terminal clean; the URL carries the one-time code
 
     try:
-        server = http.server.HTTPServer((CALLBACK_HOST, CALLBACK_PORT), Callback)
+        # Threaded, so a connection that never sends a request (a browser preconnect,
+        # another local process) cannot hold up the real redirect.
+        server = http.server.ThreadingHTTPServer((CALLBACK_HOST, CALLBACK_PORT), Callback)
+        server.daemon_threads = True
     except OSError as exc:
         raise LoginError(f"cannot listen on {REDIRECT_URI}: {exc}") from None
     thread = threading.Thread(target=server.serve_forever, daemon=True)

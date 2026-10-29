@@ -27,6 +27,7 @@ import http.cookiejar
 import json
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import time
@@ -158,8 +159,11 @@ def check_login_helper(discovery: dict, api: str | None) -> None:
 
     A callback that does not answer this login's request (stale tab, forged redirect)
     arrives first: it must be refused without aborting the real login that follows.
+    An idle connection (like a browser preconnect) stays open throughout and must not
+    hold up the real redirect.
     """
     helper, url = start_helper(discovery["issuer"])
+    idle = socket.create_connection(("127.0.0.1", 8765))
     forged = f"{REDIRECT_URI}?code=forged&state=not-the-one-we-sent"
     try:
         urllib.request.urlopen(forged)
@@ -173,6 +177,7 @@ def check_login_helper(discovery: dict, api: str | None) -> None:
     with urllib.request.urlopen(location) as response:  # the browser following the redirect
         assert response.status == 200
     out, err = helper.communicate(timeout=30)
+    idle.close()
     assert helper.returncode == 0, err
     token = out.strip()
     claims = jwt_claims(token)
@@ -180,7 +185,10 @@ def check_login_helper(discovery: dict, api: str | None) -> None:
     if api:
         status, user = api_get(api, "/me", token)
         assert status == 200 and user["username"] == "bob", (status, user)
-    print("ok  login helper: forged callback refused, browser login yields a token the API accepts")
+    print(
+        "ok  login helper: forged callback refused, idle connection ignored, "
+        "browser login yields a token the API accepts"
+    )
 
 
 def check_user(discovery: dict, username: str, api: str | None = None) -> dict:
