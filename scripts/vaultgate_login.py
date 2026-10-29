@@ -75,66 +75,76 @@ def authorization_url(discovery: dict, challenge: str, state: str) -> str:
     return f"{discovery['authorization_endpoint']}?{query}"
 
 
-def wait_for_code(expected_state: str, timeout: float) -> str:
-    """Serve exactly one /callback request on the loopback port and return its code."""
-    result: dict[str, str] = {}
-    done = threading.Event()
+class CallbackServer:
+    """One-shot loopback listener for the redirect.
 
-    class Callback(http.server.BaseHTTPRequestHandler):
-        timeout = 5  # an idle connection is dropped instead of holding a worker
+    Bound on construction, before the browser is sent anywhere: a busy port fails
+    before the user logs in, and the redirect can never arrive before we listen.
+    """
 
-        def do_GET(self) -> None:
-            url = urllib.parse.urlparse(self.path)
-            if url.path != "/callback":
-                self.send_error(404)
-                return
-            params = urllib.parse.parse_qs(url.query)
-            if params.get("state") != [expected_state]:
-                # Not the response to our request (stale tab, or a forged redirect):
-                # refuse it but keep waiting, so it cannot abort the real login.
-                self._reply(400, "Login failed", "The response did not match this login.")
-                return
-            if "error" in params:
-                self._reply(400, "Login failed", "The identity provider refused the login.")
-                result["error"] = params["error"][0]
-            elif "code" not in params:
-                self._reply(400, "Login failed", "No authorization code was returned.")
-                result["error"] = "no code"
-            else:
-                self._reply(200, "Logged in", "You can close this tab and return to the terminal.")
-                result["code"] = params["code"][0]
-            done.set()
+    def __init__(self, expected_state: str) -> None:
+        self._result: dict[str, str] = {}
+        self._done = threading.Event()
+        result, done = self._result, self._done
 
-        def _reply(self, status: int, title: str, body: str) -> None:
-            content = PAGE.format(title=title, body=body).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(content)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(content)
+        class Callback(http.server.BaseHTTPRequestHandler):
+            timeout = 5  # an idle connection is dropped instead of holding a worker
 
-        def log_message(self, *args) -> None:
-            pass  # keep the terminal clean; the URL carries the one-time code
+            def do_GET(self) -> None:
+                url = urllib.parse.urlparse(self.path)
+                if url.path != "/callback":
+                    self.send_error(404)
+                    return
+                params = urllib.parse.parse_qs(url.query)
+                if params.get("state") != [expected_state]:
+                    # Not the response to our request (stale tab, or a forged redirect):
+                    # refuse it but keep waiting, so it cannot abort the real login.
+                    self._reply(400, "Login failed", "The response did not match this login.")
+                    return
+                if "error" in params:
+                    self._reply(400, "Login failed", "The identity provider refused the login.")
+                    result["error"] = params["error"][0]
+                elif "code" not in params:
+                    self._reply(400, "Login failed", "No authorization code was returned.")
+                    result["error"] = "no code"
+                else:
+                    self._reply(
+                        200, "Logged in", "You can close this tab and return to the terminal."
+                    )
+                    result["code"] = params["code"][0]
+                done.set()
 
-    try:
-        # Threaded, so a connection that never sends a request (a browser preconnect,
-        # another local process) cannot hold up the real redirect.
-        server = http.server.ThreadingHTTPServer((CALLBACK_HOST, CALLBACK_PORT), Callback)
-        server.daemon_threads = True
-    except OSError as exc:
-        raise LoginError(f"cannot listen on {REDIRECT_URI}: {exc}") from None
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        if not done.wait(timeout):
-            raise LoginError(f"no login completed within {timeout:.0f}s")
-    finally:
-        server.shutdown()
-        server.server_close()
-    if "error" in result:
-        raise LoginError(f"login failed: {result['error']}")
-    return result["code"]
+            def _reply(self, status: int, title: str, body: str) -> None:
+                content = PAGE.format(title=title, body=body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(content)
+
+            def log_message(self, *args) -> None:
+                pass  # keep the terminal clean; the URL carries the one-time code
+
+        try:
+            # Threaded, so a connection that never sends a request (a browser preconnect,
+            # another local process) cannot hold up the real redirect.
+            self._server = http.server.ThreadingHTTPServer((CALLBACK_HOST, CALLBACK_PORT), Callback)
+        except OSError as exc:
+            raise LoginError(f"cannot listen on {REDIRECT_URI}: {exc}") from None
+        self._server.daemon_threads = True
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def wait_for_code(self, timeout: float) -> str:
+        try:
+            if not self._done.wait(timeout):
+                raise LoginError(f"no login completed within {timeout:.0f}s")
+        finally:
+            self._server.shutdown()
+            self._server.server_close()
+        if "error" in self._result:
+            raise LoginError(f"login failed: {self._result['error']}")
+        return self._result["code"]
 
 
 def exchange(discovery: dict, code: str, verifier: str) -> dict:
@@ -183,11 +193,12 @@ def main(argv: list[str]) -> int:
         discovery = discover(args.issuer)
         verifier, challenge = pkce_pair()
         state = secrets.token_urlsafe(16)
+        callback = CallbackServer(state)  # listen before sending the browser anywhere
         url = authorization_url(discovery, challenge, state)
         print(f"Log in at: {url}", file=sys.stderr, flush=True)
         if not args.no_browser:
             webbrowser.open(url)
-        code = wait_for_code(state, args.timeout)
+        code = callback.wait_for_code(args.timeout)
         tokens = exchange(discovery, code, verifier)
     except (LoginError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

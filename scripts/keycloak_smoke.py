@@ -150,7 +150,6 @@ def start_helper(issuer: str) -> tuple[subprocess.Popen, str]:
     )
     line = helper.stderr.readline()
     assert line.startswith("Log in at: "), f"unexpected helper output: {line!r}"
-    time.sleep(0.5)  # let the callback listener bind before the redirect arrives
     return helper, line.removeprefix("Log in at: ").strip()
 
 
