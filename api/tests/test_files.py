@@ -121,6 +121,18 @@ async def test_size_above_limit_is_413(clients, provider) -> None:
     assert response.status_code == 413
 
 
+async def test_open_uploads_per_user_are_capped(clients, provider, monkeypatch) -> None:
+    public, _ = clients
+    monkeypatch.setattr(settings, "max_open_uploads_per_user", 2)
+    await create(public, provider)
+    await create(public, provider)
+    payload = {"name": "third.pdf", "size": 1}
+    response = await public.post("/files", json=payload, headers=as_user(provider))
+    assert response.status_code == 429
+    # The cap is per user.
+    await create(public, provider, sub="bob")
+
+
 async def test_users_only_see_their_own_files(clients, provider) -> None:
     public, _ = clients
     mine = await create(public, provider, sub="alice")

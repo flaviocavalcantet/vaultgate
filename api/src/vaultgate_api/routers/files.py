@@ -90,6 +90,16 @@ class FilePage(BaseModel):
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_file(body: FileCreate, user: CurrentUserDep, session: SessionDep) -> FileCreated:
     """Register a file and get a single-use upload intent for the gateway."""
+    open_uploads = await session.scalar(
+        select(func.count())
+        .select_from(File)
+        .where(File.owner_id == user.id, File.status.in_(("pending", "uploading")))
+    )
+    if open_uploads >= settings.max_open_uploads_per_user:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many uploads in progress; finish or wait for some before starting more",
+        )
     if body.size > settings.max_upload_bytes:
         raise HTTPException(
             413,
