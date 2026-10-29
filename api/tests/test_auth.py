@@ -4,79 +4,21 @@ import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 
+from tests.fake_oidc import (
+    AUDIENCE,
+    DISCOVERY_URL,
+    ISSUER,
+    JWKS_URI,
+    Clock,
+    FakeProvider,
+    make_validator,
+)
 from vaultgate_api.auth import JwksCache, KeySetUnavailable, TokenError, TokenValidator
 from vaultgate_api.main import PUBLIC_PATHS, app
-
-ISSUER = "http://localhost:8080/realms/vaultgate"
-DISCOVERY_URL = "http://keycloak:8080/realms/vaultgate/.well-known/openid-configuration"
-JWKS_URI = "http://keycloak:8080/realms/vaultgate/protocol/openid-connect/certs"
-AUDIENCE = "vaultgate-api"
-
-
-class FakeProvider:
-    """An identity provider: signing keys, a JWKS endpoint and a token factory."""
-
-    def __init__(self) -> None:
-        self.keys: dict[str, rsa.RSAPrivateKey] = {}
-        self.requests: list[str] = []
-        self.down = False
-        self.jwks_override = None  # a raw JSON body served instead of the real JWKS
-        self.add_key("key-1")
-
-    def add_key(self, kid: str) -> None:
-        self.keys[kid] = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-    def jwks(self) -> dict:
-        keys = []
-        for kid, private in self.keys.items():
-            jwk = jwt.algorithms.RSAAlgorithm.to_jwk(private.public_key(), as_dict=True)
-            keys.append({**jwk, "kid": kid, "use": "sig", "alg": "RS256"})
-        return {"keys": keys}
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(str(request.url))
-        if self.down:
-            return httpx.Response(503)
-        if str(request.url) == DISCOVERY_URL:
-            return httpx.Response(200, json={"issuer": ISSUER, "jwks_uri": JWKS_URI})
-        if str(request.url) == JWKS_URI:
-            if self.jwks_override is not None:
-                return httpx.Response(200, content=self.jwks_override)
-            return httpx.Response(200, json=self.jwks())
-        return httpx.Response(404)
-
-    def token(self, kid: str = "key-1", headers: dict | None = None, **overrides) -> str:
-        now = int(time.time())
-        claims = {
-            "iss": ISSUER,
-            "aud": [AUDIENCE],
-            "sub": "user-123",
-            "iat": now,
-            "exp": now + 300,
-            "preferred_username": "alice",
-            "email": "alice@example.com",
-            "name": "Alice Finance",
-            "groups": ["/finance"],
-            "azp": "vaultgate-web",
-        }
-        claims.update(overrides)
-        claims = {k: v for k, v in claims.items() if v is not None}
-        return jwt.encode(
-            claims, self.keys[kid], algorithm="RS256", headers={"kid": kid, **(headers or {})}
-        )
-
-
-class Clock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
 
 
 @pytest.fixture
@@ -91,9 +33,7 @@ def clock() -> Clock:
 
 @pytest.fixture
 def validator(provider: FakeProvider, clock: Clock) -> TokenValidator:
-    client = httpx.AsyncClient(transport=httpx.MockTransport(provider.handler))
-    keys = JwksCache(client, DISCOVERY_URL, ttl_seconds=300, min_refresh_interval=30, clock=clock)
-    return TokenValidator(keys, issuer=ISSUER, audience=AUDIENCE, algorithms=["RS256"])
+    return make_validator(provider, clock)
 
 
 @pytest.fixture
@@ -285,19 +225,6 @@ async def test_provider_down_later_keeps_cached_keys(provider, validator, clock)
 
 
 # --- HTTP behaviour -----------------------------------------------------------
-
-
-def test_me_returns_identity(provider, api) -> None:
-    response = api.get("/me", headers={"Authorization": f"Bearer {provider.token()}"})
-    assert response.status_code == 200
-    assert response.json() == {
-        "issuer": ISSUER,
-        "subject": "user-123",
-        "username": "alice",
-        "email": "alice@example.com",
-        "name": "Alice Finance",
-        "groups": ["/finance"],
-    }
 
 
 def test_missing_token_is_401_with_challenge(api) -> None:

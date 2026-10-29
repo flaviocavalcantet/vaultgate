@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from vaultgate_api.auth import build_validator, get_principal
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
-from vaultgate_api.routers import health, me
+from vaultgate_api.routers import admin, health, me
 
 # Routes that answer without a token. Everything else is mounted on `protected`,
 # so a new router is authenticated unless it is deliberately added here.
@@ -48,10 +48,12 @@ app.include_router(health.router)
 # Deny by default: every router below requires a valid bearer token.
 protected = APIRouter(dependencies=[Depends(get_principal)])
 protected.include_router(me.router)
+protected.include_router(admin.router)
 app.include_router(protected)
 
 # Public: /healthz (liveness), /readyz (database reachable).
-# Protected: /me (caller identity from the access token).
+# Protected: /me (caller's user record, provisioned from the access token),
+#            /admin/users, /admin/groups (members of VAULTGATE_ADMIN_GROUPS only).
 # Planned routers (see README roadmap):
 #   policies - CRUD for access rules (IP range, time window, group, device posture)
 #   files    - file metadata, upload intents, scan status
