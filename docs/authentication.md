@@ -66,4 +66,4 @@ The seed users and their passwords are in the README (local development only).
 `make auth-check` (CI job `auth-e2e`) exercises the whole path with real containers:
 each seed user logs in through the PKCE flow, the API accepts their access tokens and
 provisions them, refuses ID tokens and non-admins on `/admin`, and the login helper
-completes a browser login and rejects a callback with the wrong `state`.
+refuses a callback with the wrong `state` without aborting, then completes a browser login.

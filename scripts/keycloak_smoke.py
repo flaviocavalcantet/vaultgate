@@ -154,8 +154,20 @@ def start_helper(issuer: str) -> tuple[subprocess.Popen, str]:
 
 
 def check_login_helper(discovery: dict, api: str | None) -> None:
-    """The CLI helper, driven as a person would: open its URL, log in, follow the redirect."""
+    """The CLI helper, driven as a person would: open its URL, log in, follow the redirect.
+
+    A callback that does not answer this login's request (stale tab, forged redirect)
+    arrives first: it must be refused without aborting the real login that follows.
+    """
     helper, url = start_helper(discovery["issuer"])
+    forged = f"{REDIRECT_URI}?code=forged&state=not-the-one-we-sent"
+    try:
+        urllib.request.urlopen(forged)
+        raise AssertionError("helper accepted a callback with the wrong state")
+    except urllib.error.HTTPError as error:
+        assert error.code == 400, error.code
+    assert helper.poll() is None, "a forged callback ended the login"
+
     location = browser_login(url, "bob", "bob-dev-password")
     assert location.startswith(REDIRECT_URI), location
     with urllib.request.urlopen(location) as response:  # the browser following the redirect
@@ -168,20 +180,7 @@ def check_login_helper(discovery: dict, api: str | None) -> None:
     if api:
         status, user = api_get(api, "/me", token)
         assert status == 200 and user["username"] == "bob", (status, user)
-    print("ok  login helper: browser login on 127.0.0.1:8765 yields a token the API accepts")
-
-    # A callback that does not answer this login's request (stale tab, forged redirect)
-    # must fail the login rather than be exchanged.
-    helper, _ = start_helper(discovery["issuer"])
-    forged = f"{REDIRECT_URI}?code=forged&state=not-the-one-we-sent"
-    try:
-        urllib.request.urlopen(forged)
-        raise AssertionError("helper accepted a callback with the wrong state")
-    except urllib.error.HTTPError as error:
-        assert error.code == 400, error.code
-    helper.communicate(timeout=30)
-    assert helper.returncode == 1, helper.returncode
-    print("ok  login helper: callback with the wrong state is rejected")
+    print("ok  login helper: forged callback refused, browser login yields a token the API accepts")
 
 
 def check_user(discovery: dict, username: str, api: str | None = None) -> dict:

@@ -88,10 +88,11 @@ def wait_for_code(expected_state: str, timeout: float) -> str:
                 return
             params = urllib.parse.parse_qs(url.query)
             if params.get("state") != [expected_state]:
-                # Not the response to our request (stale tab, or a forged redirect).
+                # Not the response to our request (stale tab, or a forged redirect):
+                # refuse it but keep waiting, so it cannot abort the real login.
                 self._reply(400, "Login failed", "The response did not match this login.")
-                result["error"] = "state mismatch"
-            elif "error" in params:
+                return
+            if "error" in params:
                 self._reply(400, "Login failed", "The identity provider refused the login.")
                 result["error"] = params["error"][0]
             elif "code" not in params:
