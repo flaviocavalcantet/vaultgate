@@ -17,16 +17,25 @@
                                         end-to-end checks
       .\scripts\local_check.ps1 down    stop the stack and delete its data
 
+    With Docker Desktop (and a license where one is needed) instead, prepare it
+    once with .\scripts\docker_desktop_setup.ps1 and add -Engine desktop.
+
     Every check runs even if an earlier one fails; a summary is printed at the end
     and the exit code is 1 if anything failed. The stack is left running after
     `full` so you can explore it; `down` removes it.
 
+.PARAMETER Engine
+    wsl (default): Docker Engine inside WSL2, no Docker Desktop needed.
+    desktop: Docker Desktop's docker command, switched to Linux containers.
+
 .PARAMETER Distro
-    The WSL distribution that runs Docker Engine (default: Ubuntu).
+    The WSL distribution that runs Docker Engine with -Engine wsl (default: Ubuntu).
 #>
 param(
     [ValidateSet('setup', 'quick', 'full', 'down')]
     [string]$Mode = 'full',
+    [ValidateSet('wsl', 'desktop')]
+    [string]$Engine = 'wsl',
     [string]$Distro = 'Ubuntu'
 )
 
@@ -110,8 +119,8 @@ function Test-Tools([bool]$NeedDocker) {
     if ($NeedDocker) {
         $tf = Get-ToolVersion 'terraform' @('version') 'Terraform v(\d+\.\d+\.\d+)'
         if (-not $tf -or $tf -lt [version]'1.6') { $missing += 'Terraform 1.6+ (winget install Hashicorp.Terraform)' }
-        $wslProblem = Test-WslDocker
-        if ($wslProblem) { $missing += $wslProblem }
+        $dockerProblem = Test-DockerReady
+        if ($dockerProblem) { $missing += $dockerProblem }
     }
     if ($missing.Count -gt 0) {
         Write-Host 'Missing:'
@@ -149,10 +158,37 @@ function Get-WslRepoPath {
     return $path
 }
 
-# docker inside WSL, in the repository directory (compose files and bind mounts).
+# docker for the chosen engine, in the repository directory (compose files and bind
+# mounts): inside WSL, or Docker Desktop's own docker command.
 function Invoke-Docker([string[]]$Arguments) {
-    & wsl.exe -d $Distro -u root --cd $script:WslRepo -- docker @Arguments | Out-Host
+    if ($Engine -eq 'desktop') {
+        & docker @Arguments | Out-Host
+    } else {
+        & wsl.exe -d $Distro -u root --cd $script:WslRepo -- docker @Arguments | Out-Host
+    }
     return ($LASTEXITCODE -eq 0)
+}
+
+# The repository as the engine sees it, for bind mounts.
+function Get-EngineRepoPath {
+    if ($Engine -eq 'desktop') { return ($RepoRoot -replace '\\', '/') }
+    return $script:WslRepo
+}
+
+# Returns a description of what is missing, or $null when Docker Desktop is usable.
+function Test-DesktopDocker {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        return 'Docker Desktop (with a license), prepared by: .\scripts\docker_desktop_setup.ps1'
+    }
+    $os = (& docker info --format '{{.OSType}}' 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { return 'Docker Desktop running (start it, or run .\scripts\docker_desktop_setup.ps1)' }
+    if ($os -ne 'linux') { return 'Docker Desktop in Linux containers mode (run .\scripts\docker_desktop_setup.ps1)' }
+    return $null
+}
+
+function Test-DockerReady {
+    if ($Engine -eq 'desktop') { return Test-DesktopDocker }
+    return Test-WslDocker
 }
 
 # Returns a description of what is missing, or $null when Docker Engine is usable.
@@ -218,6 +254,14 @@ function Invoke-Setup {
     if (-not $go -or $go -lt [version]'1.23') { Install-WingetPackage 'GoLang.Go' }
     $tf = Get-ToolVersion 'terraform' @('version') 'Terraform v(\d+\.\d+\.\d+)'
     if (-not $tf -or $tf -lt [version]'1.6') { Install-WingetPackage 'Hashicorp.Terraform' }
+
+    if ($Engine -eq 'desktop') {
+        & (Join-Path $PSScriptRoot 'docker_desktop_setup.ps1')
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        Write-Host "`nOpen a new PowerShell (so PATH picks up new tools) and run:"
+        Write-Host '  .\scripts\local_check.ps1 full -Engine desktop'
+        exit 0
+    }
 
     Say "WSL2 and $Distro"
     $found = Get-WslDistros | Where-Object { $_.Name -eq $Distro }
@@ -313,7 +357,7 @@ function Wait-ForUrl([string]$Url, [int]$Seconds) {
 }
 
 function Start-Stack {
-    if (-not (Start-DockerEngine)) { return $false }
+    if ($Engine -eq 'wsl' -and -not (Start-DockerEngine)) { return $false }
     if (-not (Invoke-Docker @('compose', 'up', '--build', '-d'))) { return $false }
     Write-Host 'waiting for the services (the first run builds images and takes a few minutes)...'
     return ((Wait-ForUrl 'http://localhost:4566/_localstack/health' 180) -and
@@ -330,8 +374,10 @@ function Invoke-Terraform {
 }
 
 function Test-ApiDatabase {
-    $exists = (& wsl.exe -d $Distro -u root --cd $script:WslRepo -- docker compose exec -T postgres `
-            psql -U vaultgate -d vaultgate -tAc "SELECT 1 FROM pg_database WHERE datname = 'vaultgate_test'" | Out-String).Trim()
+    $query = @('compose', 'exec', '-T', 'postgres', 'psql', '-U', 'vaultgate', '-d', 'vaultgate', '-tAc',
+        "SELECT 1 FROM pg_database WHERE datname = 'vaultgate_test'")
+    if ($Engine -eq 'desktop') { $exists = (& docker @query | Out-String).Trim() }
+    else { $exists = (& wsl.exe -d $Distro -u root --cd $script:WslRepo -- docker @query | Out-String).Trim() }
     if ($exists -ne '1') {
         if (-not (Invoke-Docker @('compose', 'exec', '-T', 'postgres', 'createdb', '-U', 'vaultgate', 'vaultgate_test'))) { return $false }
     }
@@ -339,7 +385,7 @@ function Test-ApiDatabase {
 }
 
 function Test-Observability {
-    $repo = $script:WslRepo
+    $repo = Get-EngineRepoPath
     $checks = @(
         @('run', '--rm', '-v', "$repo/observability/prometheus:/etc/prometheus:ro", '--entrypoint', 'promtool',
             'prom/prometheus:v3.1.0', 'check', 'config', '/etc/prometheus/prometheus.yml'),
@@ -372,7 +418,7 @@ The stack is still running. Explore it (logins are in docs/local-testing.md):
   Keycloak        http://localhost:8080        admin / admin
   Grafana         http://localhost:3000        admin / admin  (VaultGate folder)
   Prometheus      http://localhost:9090
-Stop it with:     .\scripts\local_check.ps1 down
+Stop it with:     .\scripts\local_check.ps1 down   (add -Engine desktop if you used it)
 '@
     }
     if ($script:Failed) { exit 1 }
@@ -384,10 +430,11 @@ Stop it with:     .\scripts\local_check.ps1 down
 switch ($Mode) {
     'setup' { Invoke-Setup }
     'down' {
-        if (Test-WslDocker) { Stop-WithError (Test-WslDocker) }
-        $script:WslRepo = Get-WslRepoPath
+        $problem = Test-DockerReady
+        if ($problem) { Stop-WithError $problem }
+        if ($Engine -eq 'wsl') { $script:WslRepo = Get-WslRepoPath }
         $ok = Invoke-Docker @('compose', 'down', '-v')
-        Stop-WslKeepAlive
+        if ($Engine -eq 'wsl') { Stop-WslKeepAlive }
         if ($ok) { exit 0 } else { exit 1 }
     }
 }
@@ -402,8 +449,13 @@ Invoke-Check 'API tests without a database' { Invoke-Pytest 'api' $null } | Out-
 Invoke-Check 'Scanner: gofmt, go vet, go test' { Test-Scanner } | Out-Null
 
 if ($Mode -eq 'full') {
-    $script:WslRepo = Get-WslRepoPath
-    if (Invoke-Check "Start the stack (Docker Engine in WSL '$Distro')" { Start-Stack }) {
+    if ($Engine -eq 'wsl') {
+        $script:WslRepo = Get-WslRepoPath
+        $engineName = "Docker Engine in WSL '$Distro'"
+    } else {
+        $engineName = 'Docker Desktop'
+    }
+    if (Invoke-Check "Start the stack ($engineName)" { Start-Stack }) {
         Invoke-Check 'Terraform: bucket and KMS key in LocalStack' { Invoke-Terraform } | Out-Null
         Invoke-Check 'API tests with PostgreSQL' { Test-ApiDatabase } | Out-Null
         Invoke-Check 'Login: Keycloak PKCE, token checks, /me, admin' {
@@ -414,7 +466,7 @@ if ($Mode -eq 'full') {
         } | Out-Null
         Invoke-Check 'Observability: configs, alert rules, dashboards, targets' { Test-Observability } | Out-Null
     } else {
-        Write-Host "the stack did not start; inside WSL see: docker compose ps; docker compose logs"
+        Write-Host 'the stack did not start; see: docker compose ps; docker compose logs'
     }
 }
 

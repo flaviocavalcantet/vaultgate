@@ -8,7 +8,7 @@ scripts/local_check.sh full    # quick, then the whole stack end to end (10–15
 scripts/local_check.sh down    # stop the stack and delete its data
 ```
 
-On Windows, use the PowerShell version, which needs no Docker Desktop ([Windows](#windows-no-docker-desktop)):
+On Windows, use the PowerShell version. It needs no Docker Desktop, but can use it ([Windows](#windows-no-docker-desktop)):
 
 ```powershell
 .\scripts\local_check.ps1 setup   # once: install the tools and Docker Engine in WSL2
@@ -64,6 +64,28 @@ First time:
 
    Then open a **new** PowerShell so `PATH` picks up the new tools.
 4. Run the checks: `.\scripts\local_check.ps1 quick` or `full`.
+
+### With Docker Desktop instead
+
+If you have Docker Desktop (and a license where your company needs one), you can use it instead of Docker Engine in WSL. Skip WSL step 3 and run:
+
+```powershell
+.\scripts\local_check.ps1 setup -Engine desktop   # Windows tools, then docker_desktop_setup.ps1
+.\scripts\local_check.ps1 full -Engine desktop
+.\scripts\local_check.ps1 down -Engine desktop
+```
+
+`scripts\docker_desktop_setup.ps1` (also usable on its own) does the following:
+
+1. Starts Docker Desktop and waits for its engine.
+2. Switches to Linux containers if Docker Desktop is set to Windows containers. It uses `docker desktop engine use linux`, or `DockerCli.exe -SwitchLinuxEngine` on versions before 4.37.
+3. Reports the backend, and recommends WSL 2 over Hyper-V.
+4. Checks the engine has about 4 GB of memory. If not, on the WSL 2 backend it offers to set `memory=4GB` in `%UserProfile%\.wslconfig`. It backs that file up first, and asks before it restarts WSL and Docker Desktop. On Hyper-V it says where to change memory in Settings.
+5. Runs a small Linux container to prove it works.
+
+It never edits Docker Desktop's own settings file. `-Yes` skips its questions.
+
+Don't install Docker Engine inside the same Ubuntu that Docker Desktop's WSL integration manages; pick one engine.
 
 Notes:
 
