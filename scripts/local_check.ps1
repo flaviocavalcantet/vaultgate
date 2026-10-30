@@ -131,6 +131,20 @@ function Test-Tools([bool]$NeedDocker) {
     Write-Host "tools ok: $(@(Get-PythonCommand) -join ' '), Go $go"
 }
 
+# Files checked out with Windows line endings (CRLF) break gofmt and the scripts and
+# configs the Linux containers read. .gitattributes asks for LF, but files checked out
+# before it existed keep CRLF until they are checked out again.
+function Test-LineEndings {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return }
+    $crlf = @(& git ls-files --eol 2>$null | Where-Object { $_ -match '\bi/lf\s+w/crlf\b' })
+    if ($crlf.Count -eq 0) { return }
+    Write-Host "$($crlf.Count) files in this checkout have Windows (CRLF) line endings." -ForegroundColor Yellow
+    Write-Host 'Re-check them out with LF (this discards uncommitted changes; commit or stash first):'
+    Write-Host '  git rm -r --cached -q .'
+    Write-Host '  git reset --hard'
+    Stop-WithError 'line endings must be LF; see above'
+}
+
 # --- WSL and Docker Engine -----------------------------------------------------
 
 # wsl.exe prints its own messages in UTF-16; drop the NULs so they can be matched.
@@ -453,6 +467,7 @@ switch ($Mode) {
 
 Say 'Checking tools'
 Test-Tools ($Mode -eq 'full')
+Test-LineEndings
 
 if (-not (Invoke-Check 'Python environment (.venv)' { Initialize-Venv })) { Show-Summary }
 Invoke-Check 'Lint: ruff (api, gateway)' { Test-Lint } | Out-Null
