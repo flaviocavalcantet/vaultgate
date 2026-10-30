@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from vaultgate_gateway.crypto import KEY_SIZE
@@ -30,6 +31,16 @@ class DataKey:
 
     def __repr__(self) -> str:  # never print key material
         return f"DataKey(kms_key_id={self.kms_key_id!r}, plaintext=<redacted>, wrapped=<{len(self.wrapped)} bytes>)"
+
+
+# A transfer waits on KMS before its first byte, so a slow or unreachable KMS must fail
+# fast: worst case about 3 attempts x (2 s connect + 5 s read) instead of botocore's
+# 60 s defaults with up to 5 legacy retries.
+KMS_CLIENT_CONFIG = Config(
+    connect_timeout=2,
+    read_timeout=5,
+    retries={"total_max_attempts": 3, "mode": "standard"},
+)
 
 
 class KeyUnavailable(Exception):
@@ -55,7 +66,9 @@ class KmsKeyProvider:
     def from_settings(cls, *, kms_key_id: str, region: str, endpoint_url: str | None):
         import boto3
 
-        client = boto3.client("kms", region_name=region, endpoint_url=endpoint_url)
+        client = boto3.client(
+            "kms", region_name=region, endpoint_url=endpoint_url, config=KMS_CLIENT_CONFIG
+        )
         return cls(client, kms_key_id)
 
     async def generate(self, file_id: uuid.UUID) -> DataKey:

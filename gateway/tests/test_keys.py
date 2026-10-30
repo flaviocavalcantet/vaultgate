@@ -4,7 +4,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from vaultgate_gateway.keys import KeyUnavailable, KmsKeyProvider
+from vaultgate_gateway.keys import KMS_CLIENT_CONFIG, KeyUnavailable, KmsKeyProvider
 
 
 @pytest.fixture
@@ -46,3 +46,13 @@ async def test_key_material_is_not_in_repr(kms) -> None:
     key = await KmsKeyProvider(client, key_id).generate(uuid.uuid4())
     assert key.plaintext.hex() not in repr(key)
     assert repr(key.plaintext) not in repr(key)
+
+
+def test_client_from_settings_fails_fast() -> None:
+    provider = KmsKeyProvider.from_settings(
+        kms_key_id="alias/x", region="ap-northeast-1", endpoint_url="http://localhost:4566"
+    )
+    config = provider._client.meta.config
+    assert config.connect_timeout == KMS_CLIENT_CONFIG.connect_timeout == 2
+    assert config.read_timeout == 5
+    assert config.retries == {"total_max_attempts": 3, "mode": "standard"}
