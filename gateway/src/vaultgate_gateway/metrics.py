@@ -43,3 +43,21 @@ UPLOAD_FAILURES = Counter(
     "Uploads that did not complete, by reason",
     ["reason"],
 )
+DOWNLOADS_IN_PROGRESS = Gauge(
+    "vaultgate_gateway_downloads_in_progress",
+    "Downloads currently streaming through the gateway",
+)
+DOWNLOAD_BYTES = Counter(
+    "vaultgate_gateway_download_bytes_total",
+    "Decrypted bytes sent to download clients",
+)
+DOWNLOAD_SIZE = Histogram(
+    "vaultgate_gateway_download_size_bytes",
+    "Size of completed downloads",
+    buckets=tuple(2**n for n in range(10, 34, 2)),  # 1 KiB .. 8 GiB
+)
+DOWNLOAD_FAILURES = Counter(
+    "vaultgate_gateway_download_failures_total",
+    "Downloads that did not complete, by reason",
+    ["reason"],
+)

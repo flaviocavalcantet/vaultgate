@@ -87,6 +87,10 @@ The API and gateway serve Prometheus metrics on a separate port, `VAULTGATE_METR
 | `vaultgate_gateway_upload_bytes_total` | counter | | gateway |
 | `vaultgate_gateway_upload_size_bytes` | histogram | | gateway |
 | `vaultgate_gateway_upload_failures_total` | counter | `reason` | gateway |
+| `vaultgate_gateway_downloads_in_progress` | gauge | | gateway |
+| `vaultgate_gateway_download_bytes_total` | counter | | gateway |
+| `vaultgate_gateway_download_size_bytes` | histogram | | gateway |
+| `vaultgate_gateway_download_failures_total` | counter | `reason` | gateway |
 | `vaultgate_api_uploads_abandoned_total` | counter | | API |
 | `vaultgate_build_info` | info | `service`, `version` | both |
 
@@ -236,7 +240,19 @@ The body is the raw file, exactly the size declared in `POST /files`. The gatewa
 
 On any failure after the intent is consumed, the multipart upload is aborted and the file is marked `failed`, so a partial object never appears. Reporting the finished upload is retried (`/complete` is idempotent for the same result); if the API still cannot confirm it, the object is kept, because the API may have recorded it before its answer was lost. The token is spent either way: retrying means a new `POST /files`. If the gateway dies mid-upload, the API sweep marks the file failed and the bucket's lifecycle rule deletes the orphaned parts after a day.
 
-Gateway settings (all `VAULTGATE_`-prefixed): `API_INTERNAL_URL`, `INTERNAL_TOKEN` (required), `BUCKET`, `KMS_KEY_ID` (`alias/vaultgate-local`), `AWS_REGION`, `AWS_ENDPOINT_URL` (LocalStack), `MAX_UPLOAD_BYTES`, `PART_SIZE`. In compose, run `make tf-local` once so the bucket and key alias exist.
+### Downloading
+
+```bash
+curl -X POST -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:8000/files/$FILE_ID/download
+# 201 {"url": "http://localhost:8888/downloads/<id>", "token": "...", "expires_at": "..."}
+curl -OJ -H "Authorization: Bearer $DOWNLOAD_TOKEN" http://localhost:8888/downloads/$FILE_ID
+```
+
+Only the owner gets a download intent, and only for an `uploaded` file. It is single use and lasts 5 minutes (`VAULTGATE_DOWNLOAD_INTENT_TTL_SECONDS`). The gateway consumes it, has KMS unwrap the file's data key (bound to the file ID), and streams the object from S3, decrypting in `VAULTGATE_READ_SIZE` pieces (256 KiB). It waits for each piece to reach the client before reading the next, so a slow client never makes the gateway buffer the file. In a local run, a 100 MiB download raised the gateway's resident memory from 64 to 74 MiB, at full speed and throttled alike.
+
+The response is always an attachment (`Content-Disposition` with the original UTF-8 name, `nosniff`, a sandboxing CSP, `no-store`) with `Content-Length` and `Repr-Digest` (SHA-256 of the file, RFC 9530). If the stored object fails authentication, is truncated, or does not match the recorded size, the gateway closes the connection mid-body instead of finishing it. Because `Content-Length` is already sent, the client sees an incomplete download, never a damaged file that looks whole. Range requests are not supported yet.
+
+Gateway settings (all `VAULTGATE_`-prefixed): `API_INTERNAL_URL`, `INTERNAL_TOKEN` (required), `BUCKET`, `KMS_KEY_ID` (`alias/vaultgate-local`), `AWS_REGION`, `AWS_ENDPOINT_URL` (LocalStack), `MAX_UPLOAD_BYTES`, `PART_SIZE`, `READ_SIZE`. In compose, run `make tf-local` once so the bucket and key alias exist.
 
 `VAULTGATE_OIDC_DISCOVERY_URL` sets where the API fetches discovery and keys when that differs from the public issuer (in compose: `http://keycloak:8080/...`, because `localhost` inside the API container is the API itself).
 
@@ -264,6 +280,7 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
   - [x] Files and single-use upload intents in the API; internal API for the gateway
   - [x] Envelope encryption library: KMS data key per file, chunked AES-256-GCM ([ADR 0003](docs/adr/0003-vault-object-encryption.md))
   - [x] Gateway uploads: intent check, on-the-fly encryption, S3 multipart upload; abandoned-upload cleanup
+  - [x] Streaming downloads: single-use download intents, on-the-fly decryption with backpressure
 - [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification

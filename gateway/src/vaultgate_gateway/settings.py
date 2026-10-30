@@ -23,6 +23,8 @@ class Settings:
     aws_endpoint_url: str | None = _env("AWS_ENDPOINT_URL")
     # Encrypted bytes buffered before each S3 part upload (S3 minimum is 5 MiB).
     part_size: int = int(_env("PART_SIZE", str(8 * 1024 * 1024)))
+    # How much ciphertext a download reads from S3 at a time.
+    read_size: int = int(_env("READ_SIZE", str(256 * 1024)))
 
 
 settings = Settings()

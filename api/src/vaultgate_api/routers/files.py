@@ -1,4 +1,5 @@
-"""Files owned by the caller: create (with an upload intent), list, inspect.
+"""Files owned by the caller: create (with an upload intent), list, inspect, and get a
+download intent.
 
 Another user's file is reported as not found, never as forbidden, so file IDs cannot
 be probed for existence.
@@ -166,3 +167,25 @@ async def get_file(file_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
     if file is None or file.owner_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileOut.of(file)
+
+
+@router.post("/{file_id}/download", status_code=status.HTTP_201_CREATED)
+async def create_download(
+    file_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> TransferOut:
+    """A single-use download intent for one of the caller's uploaded files."""
+    file = await session.get(File, file_id)
+    if file is None or file.owner_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
+    if file.status != "uploaded":
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
+    token, expires_at = await intents.issue(
+        session,
+        file=file,
+        kind="download",
+        user_id=user.id,
+        ttl=timedelta(seconds=settings.download_intent_ttl_seconds),
+    )
+    await session.commit()
+    url = f"{settings.gateway_public_url.rstrip('/')}/downloads/{file.id}"
+    return TransferOut(url=url, token=token, expires_at=expires_at)

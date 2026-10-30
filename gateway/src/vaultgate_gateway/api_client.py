@@ -3,7 +3,7 @@
 import base64
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tornado.httpclient import AsyncHTTPClient, HTTPClientError, HTTPRequest
 
@@ -21,6 +21,18 @@ class UploadGrant:
     file_id: uuid.UUID
     storage_key: str
     declared_size: int
+
+
+@dataclass(frozen=True)
+class DownloadGrant:
+    file_id: uuid.UUID
+    storage_key: str
+    name: str
+    content_type: str
+    size: int
+    sha256: str
+    wrapped_key: bytes = field(repr=False)
+    kms_key_id: str
 
 
 class InternalApi:
@@ -66,6 +78,25 @@ class InternalApi:
             storage_key=data["storage_key"],
             declared_size=data["declared_size"],
         )
+
+    async def consume_download(self, token: str, file_id: uuid.UUID) -> DownloadGrant:
+        data = await self._post(
+            "/internal/intents/consume",
+            {"token": token, "kind": "download", "file_id": str(file_id)},
+        )
+        try:
+            return DownloadGrant(
+                file_id=uuid.UUID(data["file_id"]),
+                storage_key=data["storage_key"],
+                name=data["name"],
+                content_type=data["content_type"],
+                size=data["size"],
+                sha256=data["sha256"],
+                wrapped_key=base64.b64decode(data["wrapped_key"]),
+                kms_key_id=data["kms_key_id"],
+            )
+        except (KeyError, TypeError, ValueError):
+            raise ApiUnavailable("incomplete download grant") from None
 
     async def complete(
         self, file_id: uuid.UUID, *, size: int, sha256: str, wrapped_key: bytes, kms_key_id: str

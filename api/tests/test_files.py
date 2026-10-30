@@ -384,3 +384,100 @@ async def test_internal_routes_all_require_the_secret(clients) -> None:
 
 def test_internal_api_has_no_docs() -> None:
     assert internal_app.openapi_url is None and internal_app.docs_url is None
+
+
+# --- downloads ------------------------------------------------------------------
+
+
+async def uploaded(public, internal, provider, sub="alice") -> dict:
+    created = await create(public, provider, sub=sub)
+    await consume(internal, created)
+    done = await internal.post(
+        f"/internal/files/{created['file']['id']}/complete",
+        json={
+            "size": 1234,
+            "sha256": "ab" * 32,
+            "wrapped_key": base64.b64encode(b"wrapped-data-key").decode(),
+            "kms_key_id": "arn:aws:kms:local:000000000000:key/test",
+        },
+    )
+    assert done.status_code == 200
+    return created
+
+
+def consume_download(internal, file_id: str, token: str):
+    return internal.post(
+        "/internal/intents/consume",
+        json={"token": token, "kind": "download", "file_id": file_id},
+    )
+
+
+async def test_download_intent_returns_what_the_gateway_needs(clients, provider) -> None:
+    public, internal = clients
+    created = await uploaded(public, internal, provider)
+    file_id = created["file"]["id"]
+
+    response = await public.post(f"/files/{file_id}/download", headers=as_user(provider))
+    assert response.status_code == 201
+    intent = response.json()
+    assert intent["url"].endswith(f"/downloads/{file_id}")
+
+    consumed = await consume_download(internal, file_id, intent["token"])
+    assert consumed.status_code == 200
+    body = consumed.json()
+    assert body["name"] == "report.pdf"
+    assert body["content_type"] == "application/pdf"
+    assert body["size"] == 1234
+    assert body["sha256"] == "ab" * 32
+    assert base64.b64decode(body["wrapped_key"]) == b"wrapped-data-key"
+    assert body["kms_key_id"].endswith("key/test")
+
+    # Single use, and the file stays uploaded.
+    again = await consume_download(internal, file_id, intent["token"])
+    assert again.status_code == 403
+    file = (await public.get(f"/files/{file_id}", headers=as_user(provider))).json()
+    assert file["status"] == "uploaded"
+
+
+async def test_upload_consume_does_not_return_key_material(clients, provider) -> None:
+    public, internal = clients
+    created = await create(public, provider)
+    body = (await consume(internal, created)).json()
+    assert body["wrapped_key"] is None and body["name"] is None
+
+
+async def test_only_the_owner_gets_a_download_intent(clients, provider) -> None:
+    public, internal = clients
+    created = await uploaded(public, internal, provider)
+    file_id = created["file"]["id"]
+    other = await public.post(f"/files/{file_id}/download", headers=as_user(provider, "bob"))
+    missing = await public.post(f"/files/{uuid.uuid4()}/download", headers=as_user(provider))
+    assert other.status_code == missing.status_code == 404
+
+
+async def test_no_download_before_upload_completes(clients, provider) -> None:
+    public, _ = clients
+    created = await create(public, provider)
+    response = await public.post(
+        f"/files/{created['file']['id']}/download", headers=as_user(provider)
+    )
+    assert response.status_code == 409
+
+
+async def test_download_intent_is_refused_if_file_stops_being_available(
+    clients, provider, session
+) -> None:
+    public, internal = clients
+    created = await uploaded(public, internal, provider)
+    file_id = created["file"]["id"]
+    intent = (await public.post(f"/files/{file_id}/download", headers=as_user(provider))).json()
+    await session.execute(update(File).where(File.id == uuid.UUID(file_id)).values(status="failed"))
+    assert (await consume_download(internal, file_id, intent["token"])).status_code == 409
+
+
+async def test_upload_token_cannot_download(clients, provider) -> None:
+    public, internal = clients
+    created = await create(public, provider)
+    file_id = created["file"]["id"]
+    response = await consume_download(internal, file_id, created["upload"]["token"])
+    assert response.status_code == 403
