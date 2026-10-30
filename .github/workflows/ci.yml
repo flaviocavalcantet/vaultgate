@@ -84,6 +84,17 @@ jobs:
       - if: failure()
         run: docker compose logs keycloak api
 
+  vault-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - run: make vault-check
+      - if: failure()
+        run: docker compose logs api gateway localstack
+
   helm:
     runs-on: ubuntu-latest
     steps:

@@ -150,6 +150,7 @@ Requirements: Docker, Python 3.12+, Go 1.23+, Terraform 1.6+. For Kubernetes: k3
 ```bash
 make up         # start Postgres, LocalStack, Keycloak, API, gateway and the observability stack
 make tf-local   # create the S3 bucket and KMS key in LocalStack
+make vault-check  # upload and download a file through the whole stack (also runs in CI)
 make test       # run all test suites
 ```
 
@@ -276,11 +277,12 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
   - [x] Prometheus metrics endpoints on the API and gateway
   - [x] Local stack: Prometheus, Loki (via Grafana Alloy) and Grafana
   - [x] Provisioned Grafana dashboards, alert rules and Kubernetes scrape config
-- [ ] **M2 — Streaming vault:** upload intents, chunked envelope encryption, S3 multipart upload, streaming download
+- [x] **M2 — Streaming vault:** upload intents, chunked envelope encryption, S3 multipart upload, streaming download
   - [x] Files and single-use upload intents in the API; internal API for the gateway
   - [x] Envelope encryption library: KMS data key per file, chunked AES-256-GCM ([ADR 0003](docs/adr/0003-vault-object-encryption.md))
   - [x] Gateway uploads: intent check, on-the-fly encryption, S3 multipart upload; abandoned-upload cleanup
   - [x] Streaming downloads: single-use download intents, on-the-fly decryption with backpressure
+  - [x] End-to-end check in CI: Keycloak login, upload, ciphertext in S3, download, refusals ([`scripts/vault_e2e.py`](scripts/vault_e2e.py))
 - [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification

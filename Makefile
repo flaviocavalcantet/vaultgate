@@ -1,4 +1,4 @@
-.PHONY: up down test lint migrate tf-local obs-check auth-check token
+.PHONY: up down test lint migrate tf-local obs-check auth-check vault-check token
 
 up:          ## Start the local stack (services, dependencies and Prometheus/Loki/Alloy/Grafana)
 	docker compose up --build -d
@@ -32,6 +32,12 @@ token:       ## Log in through Keycloak in the browser and print an access token
 auth-check:  ## Log in as every seed user through Keycloak and call the API with the tokens (needs Docker)
 	docker compose up -d --build keycloak api
 	python3 scripts/keycloak_smoke.py http://localhost:8080 --api http://localhost:8000
+
+vault-check: ## Upload and download a file through the real stack and check it is encrypted in S3 (needs Docker and Terraform)
+	docker compose up -d --build postgres localstack keycloak api gateway
+	for i in $$(seq 60); do curl -sf http://localhost:4566/_localstack/health >/dev/null && break; sleep 2; done
+	$(MAKE) tf-local
+	python3 scripts/vault_e2e.py
 
 tf-local:    ## Apply Terraform against LocalStack (run `make up` first)
 	cd infra/terraform/envs/local && terraform init && terraform apply -auto-approve
