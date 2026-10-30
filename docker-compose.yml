@@ -16,8 +16,10 @@ services:
       retries: 10
 
   # Emulates S3 and KMS so Terraform and the services can run against "AWS" locally.
+  # Pinned: the AWS provider's S3 lifecycle resource needs a LocalStack that returns
+  # TransitionDefaultMinimumObjectSize (4.x); releases from 2026.03 on need an auth token.
   localstack:
-    image: localstack/localstack:3
+    image: localstack/localstack:4.4.0
     environment:
       SERVICES: s3,kms,sqs
     ports: ["4566:4566"]
