@@ -1,0 +1,4 @@
+# Keep LF line endings on every platform: configs and scripts are read by Linux
+# containers and shells, also when the repository is cloned on Windows.
+* text=auto eol=lf
+*.png binary
