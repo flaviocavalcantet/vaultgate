@@ -11,13 +11,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import func, select
 
 from vaultgate_api import intents
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
-from vaultgate_api.models import File, TransferIntent
+from vaultgate_api.models import File
 from vaultgate_api.provisioning import CurrentUserDep
+from vaultgate_api.uploads import live_upload
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -88,31 +89,11 @@ class FilePage(BaseModel):
 
 
 async def _live_uploads(session, owner_id: uuid.UUID) -> int:
-    """Uploads that can still finish: pending with an unused, unexpired intent, or
-    uploading and started recently. Abandoned ones must not lock the user out."""
-    now = datetime.now(UTC)
-    intent = TransferIntent
-    live_pending = and_(
-        File.status == "pending",
-        exists().where(
-            intent.file_id == File.id,
-            intent.kind == "upload",
-            intent.consumed_at.is_(None),
-            intent.expires_at > now,
-        ),
-    )
-    recent_uploading = and_(
-        File.status == "uploading",
-        exists().where(
-            intent.file_id == File.id,
-            intent.kind == "upload",
-            intent.consumed_at > now - timedelta(seconds=settings.upload_stale_after_seconds),
-        ),
-    )
+    """Uploads that can still finish; abandoned ones must not lock the user out."""
     count = await session.scalar(
         select(func.count())
         .select_from(File)
-        .where(File.owner_id == owner_id, or_(live_pending, recent_uploading))
+        .where(File.owner_id == owner_id, live_upload(datetime.now(UTC)))
     )
     return count or 0
 

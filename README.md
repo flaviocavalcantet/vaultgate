@@ -86,6 +86,8 @@ The API and gateway serve Prometheus metrics on a separate port, `VAULTGATE_METR
 | `vaultgate_gateway_uploads_in_progress` | gauge | | gateway |
 | `vaultgate_gateway_upload_bytes_total` | counter | | gateway |
 | `vaultgate_gateway_upload_size_bytes` | histogram | | gateway |
+| `vaultgate_gateway_upload_failures_total` | counter | `reason` | gateway |
+| `vaultgate_api_uploads_abandoned_total` | counter | | API |
 | `vaultgate_build_info` | info | `service`, `version` | both |
 
 `route` is the path template (`/uploads/{upload_id}`), never the raw path; anything that matches no route is counted as `<unmatched>`, so clients cannot create new time series by probing URLs. Standard `process_*` and `python_*` metrics are included, which is how gateway memory is shown to stay flat under load.
@@ -213,7 +215,27 @@ The API owns file metadata and decides who may move which bytes; the gateway onl
 - Intent tokens are 256 random bits, shown once. Only their SHA-256 is stored. Each is bound to one file and one direction, and is consumed atomically, so two concurrent uses cannot both succeed.
 - **Internal API** (port `VAULTGATE_INTERNAL_PORT`, 8001): the gateway calls `POST /internal/intents/consume` before accepting any bytes, then `POST /internal/files/{id}/complete` (size, SHA-256, KMS-wrapped data key) or `/fail`. Every call needs `Authorization: Bearer $VAULTGATE_INTERNAL_TOKEN`; with no token configured the internal API refuses everything. It has no OpenAPI docs and is never published on the host or through an ingress.
 
-File statuses: `pending` (intent issued) → `uploading` (gateway consumed the intent) → `uploaded` or `failed`.
+File statuses: `pending` (intent issued) → `uploading` (gateway consumed the intent) → `uploaded` or `failed`. Every `VAULTGATE_UPLOAD_SWEEP_INTERVAL_SECONDS` (5 min) the API marks abandoned uploads (the ones the per-user cap ignores) `failed`.
+
+### Uploading through the gateway
+
+```bash
+curl -T report.pdf -H "Authorization: Bearer $UPLOAD_TOKEN" http://localhost:8888/uploads/$FILE_ID
+# 201 {"file_id": "...", "size": 1234, "sha256": "..."}
+```
+
+The body is the raw file, exactly the size declared in `POST /files`. The gateway consumes the intent before reading a byte, gets a data key from KMS, encrypts the stream as it arrives (ADR 0003) and writes it to S3 as a multipart upload in `VAULTGATE_PART_SIZE` parts (8 MiB), so memory per upload stays at about one part. Then it reports size, SHA-256 and the wrapped key to the API.
+
+| Response | Meaning |
+|---|---|
+| `401` | no bearer token |
+| `403` | token unknown, already used, expired, or for another file |
+| `400` / `413` | fewer / more bytes than declared |
+| `503` | API, KMS or S3 unavailable |
+
+On any failure after the intent is consumed, the multipart upload is aborted and the file is marked `failed`, so a partial object never appears. The token is spent either way: retrying means a new `POST /files`. If the gateway dies mid-upload, the API sweep marks the file failed and the bucket's lifecycle rule deletes the orphaned parts after a day.
+
+Gateway settings (all `VAULTGATE_`-prefixed): `API_INTERNAL_URL`, `INTERNAL_TOKEN` (required), `BUCKET`, `KMS_KEY_ID` (`alias/vaultgate-local`), `AWS_REGION`, `AWS_ENDPOINT_URL` (LocalStack), `MAX_UPLOAD_BYTES`, `PART_SIZE`. In compose, run `make tf-local` once so the bucket and key alias exist.
 
 `VAULTGATE_OIDC_DISCOVERY_URL` sets where the API fetches discovery and keys when that differs from the public issuer (in compose: `http://keycloak:8080/...`, because `localhost` inside the API container is the API itself).
 
@@ -240,6 +262,7 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
 - [ ] **M2 — Streaming vault:** upload intents, chunked envelope encryption, S3 multipart upload, streaming download
   - [x] Files and single-use upload intents in the API; internal API for the gateway
   - [x] Envelope encryption library: KMS data key per file, chunked AES-256-GCM ([ADR 0003](docs/adr/0003-vault-object-encryption.md))
+  - [x] Gateway uploads: intent check, on-the-fly encryption, S3 multipart upload; abandoned-upload cleanup
 - [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification

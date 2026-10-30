@@ -38,3 +38,8 @@ UPLOAD_SIZE = Histogram(
     "Size of completed uploads",
     buckets=tuple(2**n for n in range(10, 34, 2)),  # 1 KiB .. 8 GiB
 )
+UPLOAD_FAILURES = Counter(
+    "vaultgate_gateway_upload_failures_total",
+    "Uploads that did not complete, by reason",
+    ["reason"],
+)

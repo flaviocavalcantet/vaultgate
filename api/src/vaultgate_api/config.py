@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     # upload_stale_after_seconds.
     max_open_uploads_per_user: int = 20
     upload_stale_after_seconds: int = 6 * 3600
+    # How often abandoned uploads are marked failed (see vaultgate_api.uploads); 0 = off.
+    upload_sweep_interval_seconds: int = 300
 
 
 settings = Settings()

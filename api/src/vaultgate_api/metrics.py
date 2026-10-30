@@ -30,6 +30,10 @@ HTTP_IN_PROGRESS = Gauge(
     "vaultgate_http_requests_in_progress",
     "HTTP requests currently being handled",
 )
+UPLOADS_ABANDONED = Counter(
+    "vaultgate_api_uploads_abandoned_total",
+    "Uploads the sweep marked failed because they could no longer finish",
+)
 
 
 def route_template(scope: Scope) -> str:

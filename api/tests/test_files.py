@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from prometheus_client import REGISTRY
 from pydantic import SecretStr
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ from vaultgate_api.db import get_session
 from vaultgate_api.internal import internal_app
 from vaultgate_api.main import app
 from vaultgate_api.models import File, TransferIntent
+from vaultgate_api.uploads import fail_abandoned_uploads
 
 pytestmark = requires_db
 
@@ -158,6 +160,67 @@ async def test_abandoned_uploads_do_not_count_towards_the_cap(
     # An expired pending upload and a long-stalled one no longer hold the user back.
     await create(public, provider, name="fresh-1.pdf")
     await create(public, provider, name="fresh-2.pdf")
+
+
+async def test_sweep_marks_only_abandoned_uploads_failed(clients, provider, session) -> None:
+    public, internal = clients
+    expired = await create(public, provider, name="expired.pdf")
+    stalled = await create(public, provider, name="stalled.pdf")
+    await consume(internal, stalled)
+    waiting = await create(public, provider, name="waiting.pdf")
+    receiving = await create(public, provider, name="receiving.pdf")
+    await consume(internal, receiving)
+
+    now = datetime.now(UTC)
+    await _set_intent(session, expired, expires_at=now - timedelta(seconds=1))
+    await _set_intent(
+        session,
+        stalled,
+        consumed_at=now - timedelta(seconds=settings.upload_stale_after_seconds + 1),
+    )
+
+    before = REGISTRY.get_sample_value("vaultgate_api_uploads_abandoned_total") or 0
+    assert await fail_abandoned_uploads(session) == 2
+    assert await fail_abandoned_uploads(session) == 0  # idempotent
+    after = REGISTRY.get_sample_value("vaultgate_api_uploads_abandoned_total")
+    assert after == before + 2
+
+    statuses = {
+        name: await session.scalar(
+            select(File.status).where(File.id == uuid.UUID(created["file"]["id"]))
+        )
+        for name, created in [
+            ("expired", expired),
+            ("stalled", stalled),
+            ("waiting", waiting),
+            ("receiving", receiving),
+        ]
+    }
+    assert statuses == {
+        "expired": "failed",
+        "stalled": "failed",
+        "waiting": "pending",
+        "receiving": "uploading",
+    }
+    # A swept upload cannot be completed afterwards.
+    response = await internal.post(
+        f"/internal/files/{stalled['file']['id']}/complete",
+        json={
+            "size": 1234,
+            "sha256": "ab" * 32,
+            "wrapped_key": base64.b64encode(b"wrapped-data-key").decode(),
+            "kms_key_id": "arn:aws:kms:local:000000000000:key/test",
+        },
+    )
+    assert response.status_code == 409
+
+
+async def _set_intent(session, created: dict, **values) -> None:
+    await session.execute(
+        update(TransferIntent)
+        .where(TransferIntent.file_id == uuid.UUID(created["file"]["id"]))
+        .values(**values)
+    )
 
 
 async def test_users_only_see_their_own_files(clients, provider) -> None:

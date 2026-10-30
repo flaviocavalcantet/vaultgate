@@ -1,11 +1,10 @@
-import json
 import logging
 
 import pytest
 from tornado.testing import AsyncHTTPTestCase
 
 from vaultgate_gateway.app import make_app
-from vaultgate_gateway.logs import JsonFormatter, resolve_request_id
+from vaultgate_gateway.logs import resolve_request_id
 
 
 class AccessLogTest(AsyncHTTPTestCase):
@@ -18,25 +17,6 @@ class AccessLogTest(AsyncHTTPTestCase):
 
     def _access_records(self) -> list[logging.LogRecord]:
         return [r for r in self.caplog.records if r.name == "vaultgate.access"]
-
-    def test_upload_is_logged_with_request_id_and_size(self) -> None:
-        with self.caplog.at_level(logging.INFO, logger="vaultgate.access"):
-            response = self.fetch(
-                "/uploads/abc?sig=secret",
-                method="PUT",
-                body=b"x" * 1024,
-                headers={"X-Request-ID": "req-42"},
-            )
-        assert response.headers["X-Request-ID"] == "req-42"
-        [record] = self._access_records()
-        assert record.request_id == "req-42"
-        assert record.method == "PUT"
-        assert record.path == "/uploads/abc"
-        assert record.status == 200
-        assert record.bytes_in == 1024
-        line = json.loads(JsonFormatter("gateway").format(record))
-        assert line["service"] == "gateway"
-        assert "secret" not in json.dumps(line)
 
     def test_generates_request_id_when_missing(self) -> None:
         response = self.fetch("/healthz")

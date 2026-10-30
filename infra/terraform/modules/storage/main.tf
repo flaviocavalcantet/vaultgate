@@ -13,6 +13,12 @@ resource "aws_kms_key" "vault" {
   enable_key_rotation     = true
 }
 
+# Stable name for the gateway's configuration (VAULTGATE_KMS_KEY_ID).
+resource "aws_kms_alias" "vault" {
+  name          = "alias/${var.name}"
+  target_key_id = aws_kms_key.vault.key_id
+}
+
 resource "aws_s3_bucket" "vault" {
   bucket        = "${var.name}-vault"
   force_destroy = true
@@ -41,5 +47,18 @@ resource "aws_s3_bucket_versioning" "vault" {
   versioning_configuration { status = "Enabled" }
 }
 
+# Parts of a multipart upload that was never completed or aborted (gateway crash,
+# lost connection to S3) are invisible but billed; S3 deletes them after a day.
+resource "aws_s3_bucket_lifecycle_configuration" "vault" {
+  bucket = aws_s3_bucket.vault.id
+  rule {
+    id     = "abort-incomplete-multipart-uploads"
+    status = "Enabled"
+    filter {}
+    abort_incomplete_multipart_upload { days_after_initiation = 1 }
+  }
+}
+
 output "bucket_name" { value = aws_s3_bucket.vault.bucket }
 output "kms_key_arn" { value = aws_kms_key.vault.arn }
+output "kms_alias" { value = aws_kms_alias.vault.name }
