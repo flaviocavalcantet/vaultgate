@@ -59,8 +59,17 @@ services:
 
   gateway:
     build: ./gateway
+    environment:
+      VAULTGATE_API_INTERNAL_URL: http://api:8001
+      VAULTGATE_INTERNAL_TOKEN: dev-internal-token-change-me
+      # Bucket and key alias are created by `make tf-local` (infra/terraform/envs/local).
+      VAULTGATE_BUCKET: vaultgate-local-vault
+      VAULTGATE_KMS_KEY_ID: alias/vaultgate-local
+      VAULTGATE_AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
     ports: ["8888:8888"]
-    depends_on: [api]
+    depends_on: [api, localstack]
 
   # --- Observability (M1.5) ---------------------------------------------------
   # Metrics: Prometheus scrapes each service's private metrics port (9100).
