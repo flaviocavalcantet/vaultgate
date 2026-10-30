@@ -205,20 +205,27 @@ function Test-WslDocker {
 
 # WSL stops an idle distribution after a while, taking dockerd with it; a hidden
 # `sleep` keeps it up until `down`.
+# The keep-alive process from the PID file, or $null. Windows reuses PIDs (after a
+# reboot, say), so the process must also be a wsl.exe; otherwise the file is stale.
+function Get-WslKeepAlive {
+    if (-not (Test-Path $KeepAlivePidFile)) { return $null }
+    $id = 0
+    if (-not [int]::TryParse((Get-Content $KeepAlivePidFile -Raw).Trim(), [ref]$id)) { return $null }
+    $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if ($process -and $process.ProcessName -eq 'wsl') { return $process }
+    return $null
+}
+
 function Start-WslKeepAlive {
-    if (Test-Path $KeepAlivePidFile) {
-        $existing = Get-Process -Id (Get-Content $KeepAlivePidFile) -ErrorAction SilentlyContinue
-        if ($existing) { return }
-    }
+    if (Get-WslKeepAlive) { return }
     $process = Start-Process wsl.exe -ArgumentList @('-d', $Distro, '-u', 'root', '--', 'sleep', 'infinity') -WindowStyle Hidden -PassThru
     Set-Content -Path $KeepAlivePidFile -Value $process.Id
 }
 
 function Stop-WslKeepAlive {
-    if (Test-Path $KeepAlivePidFile) {
-        Stop-Process -Id (Get-Content $KeepAlivePidFile) -ErrorAction SilentlyContinue
-        Remove-Item $KeepAlivePidFile -ErrorAction SilentlyContinue
-    }
+    $process = Get-WslKeepAlive
+    if ($process) { $process | Stop-Process -ErrorAction SilentlyContinue }
+    Remove-Item $KeepAlivePidFile -ErrorAction SilentlyContinue
 }
 
 function Start-DockerEngine {
