@@ -17,8 +17,8 @@
                                         end-to-end checks
       .\scripts\local_check.ps1 down    stop the stack and delete its data
 
-    With Docker Desktop (and a license where one is needed) instead, prepare it
-    once with .\scripts\docker_desktop_setup.ps1 and add -Engine desktop.
+    With Docker Desktop (and a license where one is needed) running Linux
+    containers, add -Engine desktop to use it instead of Docker Engine in WSL.
 
     Every check runs even if an earlier one fails; a summary is printed at the end
     and the exit code is 1 if anything failed. The stack is left running after
@@ -26,7 +26,8 @@
 
 .PARAMETER Engine
     wsl (default): Docker Engine inside WSL2, no Docker Desktop needed.
-    desktop: Docker Desktop's docker command, switched to Linux containers.
+    desktop: Docker Desktop's docker command; Docker Desktop must be running
+    Linux containers. The script never changes Docker Desktop's settings.
 
 .PARAMETER Distro
     The WSL distribution that runs Docker Engine with -Engine wsl (default: Ubuntu).
@@ -178,11 +179,13 @@ function Get-EngineRepoPath {
 # Returns a description of what is missing, or $null when Docker Desktop is usable.
 function Test-DesktopDocker {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        return 'Docker Desktop (with a license), prepared by: .\scripts\docker_desktop_setup.ps1'
+        return 'Docker Desktop (or use the default -Engine wsl, which needs no Docker Desktop)'
     }
     $os = (& docker info --format '{{.OSType}}' 2>$null | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0) { return 'Docker Desktop running (start it, or run .\scripts\docker_desktop_setup.ps1)' }
-    if ($os -ne 'linux') { return 'Docker Desktop in Linux containers mode (run .\scripts\docker_desktop_setup.ps1)' }
+    if ($LASTEXITCODE -ne 0) { return 'Docker Desktop running: start it and wait until it says the engine is running' }
+    if ($os -ne 'linux') {
+        return 'Docker Desktop set to Linux containers: right-click the whale icon > "Switch to Linux containers..."'
+    }
     return $null
 }
 
@@ -263,8 +266,10 @@ function Invoke-Setup {
     if (-not $tf -or $tf -lt [version]'1.6') { Install-WingetPackage 'Hashicorp.Terraform' }
 
     if ($Engine -eq 'desktop') {
-        & (Join-Path $PSScriptRoot 'docker_desktop_setup.ps1')
-        if ($LASTEXITCODE -ne 0) { exit 1 }
+        Say 'Docker Desktop'
+        $problem = Test-DesktopDocker
+        if ($problem) { Stop-WithError "needs $problem" }
+        Write-Host 'Docker Desktop is running Linux containers.'
         Write-Host "`nOpen a new PowerShell (so PATH picks up new tools) and run:"
         Write-Host '  .\scripts\local_check.ps1 full -Engine desktop'
         exit 0

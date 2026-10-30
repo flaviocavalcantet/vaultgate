@@ -67,25 +67,17 @@ First time:
 
 ### With Docker Desktop instead
 
-If you have Docker Desktop (and a license where your company needs one), you can use it instead of Docker Engine in WSL. Skip WSL step 3 and run:
+If you have Docker Desktop (and a license where your company needs one), you can run the stack on it instead of Docker Engine in WSL. Docker Desktop must be running **Linux containers**, its default. If it is set to Windows containers, right-click the whale icon and choose **Switch to Linux containers...**. Skip step 3 above and run:
 
 ```powershell
-.\scripts\local_check.ps1 setup -Engine desktop   # Windows tools, then docker_desktop_setup.ps1
+.\scripts\local_check.ps1 setup -Engine desktop   # Windows tools; checks Docker Desktop runs Linux containers
 .\scripts\local_check.ps1 full -Engine desktop
 .\scripts\local_check.ps1 down -Engine desktop
 ```
 
-`scripts\docker_desktop_setup.ps1` (also usable on its own) does the following:
+With `-Engine desktop` the script uses Docker Desktop's `docker` command directly and never changes Docker Desktop's settings. If Docker Desktop isn't running, or runs Windows containers, the script stops and says what to do. The stack needs about 4 GB of memory, which Docker Desktop's defaults give on most machines.
 
-1. Starts Docker Desktop and waits for its engine.
-2. Switches to Linux containers if Docker Desktop is set to Windows containers. It uses `docker desktop engine use linux`, or `DockerCli.exe -SwitchLinuxEngine` on versions before 4.37.
-3. Reports the backend, and recommends WSL 2 over Hyper-V.
-4. Checks the engine has about 4 GB of memory. If not, on the WSL 2 backend it offers to set `memory=4GB` in `%UserProfile%\.wslconfig`. It backs that file up first, and asks before it restarts WSL and Docker Desktop. On Hyper-V it says where to change memory in Settings.
-5. Runs a small Linux container to prove it works.
-
-It never edits Docker Desktop's own settings file. `-Yes` skips its questions.
-
-Don't install Docker Engine inside the same Ubuntu that Docker Desktop's WSL integration manages; pick one engine.
+Don't also install Docker Engine inside the same Ubuntu that Docker Desktop's WSL integration manages; pick one engine.
 
 Notes:
 
