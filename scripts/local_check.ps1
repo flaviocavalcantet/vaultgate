@@ -24,6 +24,9 @@
     and the exit code is 1 if anything failed. The stack is left running after
     `full` so you can explore it; `down` removes it.
 
+    Everything shown is also written to logs\local_check-<mode>-<time>.log; the
+    path is printed at the start and the end.
+
 .PARAMETER Engine
     wsl (default): Docker Engine inside WSL2, no Docker Desktop needed.
     desktop: Docker Desktop's docker command; Docker Desktop must be running
@@ -51,6 +54,9 @@ $Py = Join-Path $VenvBin "python$ExeSuffix"
 $Ruff = Join-Path $VenvBin "ruff$ExeSuffix"
 $TestDbUrl = 'postgresql+asyncpg://vaultgate:vaultgate@localhost:5432/vaultgate_test'
 $KeepAlivePidFile = Join-Path ([IO.Path]::GetTempPath()) 'vaultgate-wsl-keepalive.pid'
+$LogFile = Join-Path $RepoRoot ("logs\local_check-$Mode-{0:yyyyMMdd-HHmmss}.log" -f (Get-Date))
+# Processes that publish container ports on Windows: Docker Desktop and WSL.
+$DockerPortOwners = @('com.docker.backend', 'com.docker.proxy', 'vpnkit', 'wslrelay', 'wsl', 'wslhost', 'docker', 'dockerd')
 $script:Results = @()
 $script:Failed = $false
 
@@ -62,7 +68,7 @@ function Stop-WithError([string]$Text) {
 }
 
 # Run a check, record the result, keep going. Returns $true when it passed.
-# Checks return $true or $false; command output goes to the console (Out-Host), never
+# Checks return $true or $false; command output goes to the console (Write-Host), never
 # into the return value.
 function Invoke-Check([string]$Name, [scriptblock]$Check) {
     Say $Name
@@ -81,9 +87,15 @@ function Invoke-Check([string]$Name, [scriptblock]$Check) {
     return $ok
 }
 
+# Show a native command's output, stderr included, so the log file gets it too.
+# Stderr lines arrive as error records; "$_" turns them back into plain text.
+function Write-NativeOutput {
+    process { Write-Host "$_" }
+}
+
 # Run a native command, show its output, and turn its exit code into $true/$false.
 function Invoke-Native([string]$Exe, [string[]]$Arguments) {
-    & $Exe @Arguments | Out-Host
+    & $Exe @Arguments 2>&1 | Write-NativeOutput
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -137,12 +149,41 @@ function Test-Tools([bool]$NeedDocker) {
 function Test-LineEndings {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return }
     $crlf = @(& git ls-files --eol 2>$null | Where-Object { $_ -match '\bi/lf\s+w/crlf\b' })
-    if ($crlf.Count -eq 0) { return }
+    if ($crlf.Count -eq 0) { Write-Host 'line endings ok (LF)'; return }
     Write-Host "$($crlf.Count) files in this checkout have Windows (CRLF) line endings." -ForegroundColor Yellow
     Write-Host 'Re-check them out with LF (this discards uncommitted changes; commit or stash first):'
     Write-Host '  git rm -r --cached -q .'
     Write-Host '  git reset --hard'
     Stop-WithError 'line endings must be LF; see above'
+}
+
+# Ports the stack publishes, with the Windows programs that listen on them and are not
+# Docker. Both can listen at once on Windows, and localhost then reaches the other
+# program: a Windows PostgreSQL on 5432, for one, refuses the stack's password.
+function Get-PortConflicts {
+    if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) { return @() }
+    $conflicts = @()
+    foreach ($port in 5432, 4566, 8080, 8000, 8888, 3000, 9090) {
+        $owners = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+            ForEach-Object { Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue } |
+            Where-Object { $DockerPortOwners -notcontains $_.ProcessName } |
+            Sort-Object Id -Unique
+        foreach ($owner in $owners) {
+            $conflicts += [pscustomobject]@{ Port = $port; Name = $owner.ProcessName; Id = $owner.Id }
+        }
+    }
+    return $conflicts
+}
+
+function Show-PortConflicts($Conflicts) {
+    foreach ($c in $Conflicts) {
+        Write-Host "port $($c.Port) is also used by $($c.Name) (PID $($c.Id)); localhost:$($c.Port) may reach it instead of the stack" -ForegroundColor Yellow
+    }
+    if ($Conflicts | Where-Object { $_.Name -eq 'postgres' }) {
+        Write-Host 'A PostgreSQL installed on Windows is running. Stop it (admin PowerShell):' -ForegroundColor Yellow
+        Write-Host "  Get-Service postgresql* | Stop-Service"
+        Write-Host "  Get-Service postgresql* | Set-Service -StartupType Manual   # optional: don't start it at boot"
+    }
 }
 
 # --- WSL and Docker Engine -----------------------------------------------------
@@ -163,7 +204,7 @@ function Get-WslDistros {
 
 # Run a command as root inside the distribution (no sudo prompts).
 function Invoke-Wsl([string[]]$Arguments) {
-    & wsl.exe -d $Distro -u root -- @Arguments | Out-Host
+    & wsl.exe -d $Distro -u root -- @Arguments 2>&1 | Write-NativeOutput
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -177,9 +218,9 @@ function Get-WslRepoPath {
 # mounts): inside WSL, or Docker Desktop's own docker command.
 function Invoke-Docker([string[]]$Arguments) {
     if ($Engine -eq 'desktop') {
-        & docker @Arguments | Out-Host
+        & docker @Arguments 2>&1 | Write-NativeOutput
     } else {
-        & wsl.exe -d $Distro -u root --cd $script:WslRepo -- docker @Arguments | Out-Host
+        & wsl.exe -d $Distro -u root --cd $script:WslRepo -- docker @Arguments 2>&1 | Write-NativeOutput
     }
     return ($LASTEXITCODE -eq 0)
 }
@@ -346,7 +387,7 @@ function Invoke-Pytest([string]$Service, [string]$DatabaseUrl) {
     if ($DatabaseUrl) { $env:VAULTGATE_TEST_DATABASE_URL = $DatabaseUrl }
     else { Remove-Item Env:VAULTGATE_TEST_DATABASE_URL -ErrorAction SilentlyContinue }
     Push-Location $Service
-    try { return (Invoke-Native $Py @('-m', 'pytest', '-q')) }
+    try { return (Invoke-Native $Py @('-m', 'pytest', '-q', '--tb=short')) }
     finally {
         Pop-Location
         if ($previous) { $env:VAULTGATE_TEST_DATABASE_URL = $previous }
@@ -384,6 +425,7 @@ function Wait-ForUrl([string]$Url, [int]$Seconds) {
 
 function Start-Stack {
     if ($Engine -eq 'wsl' -and -not (Start-DockerEngine)) { return $false }
+    Show-PortConflicts @(Get-PortConflicts)
     if (-not (Invoke-Docker @('compose', 'up', '--build', '-d'))) { return $false }
     Write-Host 'waiting for the services (the first run builds images and takes a few minutes)...'
     return ((Wait-ForUrl 'http://localhost:4566/_localstack/health' 180) -and
@@ -400,6 +442,12 @@ function Invoke-Terraform {
 }
 
 function Test-ApiDatabase {
+    $postgres = @(Get-PortConflicts | Where-Object { $_.Port -eq 5432 -and $_.Name -eq 'postgres' })
+    if ($postgres.Count -gt 0) {
+        Show-PortConflicts $postgres
+        Write-Host 'the tests would connect to that program instead of the stack''s PostgreSQL; skipping them'
+        return $false
+    }
     $query = @('compose', 'exec', '-T', 'postgres', 'psql', '-U', 'vaultgate', '-d', 'vaultgate', '-tAc',
         "SELECT 1 FROM pg_database WHERE datname = 'vaultgate_test'")
     if ($Engine -eq 'desktop') { $exists = (& docker @query | Out-String).Trim() }
@@ -447,54 +495,66 @@ The stack is still running. Explore it (logins are in docs/local-testing.md):
 Stop it with:     .\scripts\local_check.ps1 down   (add -Engine desktop if you used it)
 '@
     }
+    Write-Host "`nFull log: $LogFile"
     if ($script:Failed) { exit 1 }
     exit 0
 }
 
 # --- main ----------------------------------------------------------------------
 
-switch ($Mode) {
-    'setup' { Invoke-Setup }
-    'down' {
-        $problem = Test-DockerReady
-        if ($problem) { Stop-WithError $problem }
-        if ($Engine -eq 'wsl') { $script:WslRepo = Get-WslRepoPath }
-        $ok = Invoke-Docker @('compose', 'down', '-v')
-        if ($Engine -eq 'wsl') { Stop-WslKeepAlive }
-        if ($ok) { exit 0 } else { exit 1 }
+New-Item -ItemType Directory -Force -Path (Split-Path $LogFile) | Out-Null
+Start-Transcript -Path $LogFile | Out-Null
+# exit runs the finally block, so the transcript is closed on every path.
+try {
+    Write-Host "log file: $LogFile"
+    $commit = (& git rev-parse --short HEAD 2>$null | Out-String).Trim()
+    Write-Host "VaultGate $commit, $Mode, engine $Engine, PowerShell $($PSVersionTable.PSVersion), $(Get-Date -Format s)"
+
+    switch ($Mode) {
+        'setup' { Invoke-Setup }
+        'down' {
+            $problem = Test-DockerReady
+            if ($problem) { Stop-WithError $problem }
+            if ($Engine -eq 'wsl') { $script:WslRepo = Get-WslRepoPath }
+            $ok = Invoke-Docker @('compose', 'down', '-v')
+            if ($Engine -eq 'wsl') { Stop-WslKeepAlive }
+            if ($ok) { exit 0 } else { exit 1 }
+        }
     }
+
+    Say 'Checking tools'
+    Test-Tools ($Mode -eq 'full')
+    Test-LineEndings
+
+    if (-not (Invoke-Check 'Python environment (.venv)' { Initialize-Venv })) { Show-Summary }
+    Invoke-Check 'Lint: ruff (api, gateway)' { Test-Lint } | Out-Null
+    Invoke-Check 'Gateway tests (moto S3/KMS, no Docker)' { Invoke-Pytest 'gateway' $null } | Out-Null
+    Invoke-Check 'API tests without a database' { Invoke-Pytest 'api' $null } | Out-Null
+    Invoke-Check 'Scanner: gofmt, go vet, go test' { Test-Scanner } | Out-Null
+
+    if ($Mode -eq 'full') {
+        if ($Engine -eq 'wsl') {
+            $script:WslRepo = Get-WslRepoPath
+            $engineName = "Docker Engine in WSL '$Distro'"
+        } else {
+            $engineName = 'Docker Desktop'
+        }
+        if (Invoke-Check "Start the stack ($engineName)" { Start-Stack }) {
+            Invoke-Check 'Terraform: bucket and KMS key in LocalStack' { Invoke-Terraform } | Out-Null
+            Invoke-Check 'API tests with PostgreSQL' { Test-ApiDatabase } | Out-Null
+            Invoke-Check 'Login: Keycloak PKCE, token checks, /me, admin' {
+                Invoke-Native $Py @('scripts/keycloak_smoke.py', 'http://localhost:8080', '--api', 'http://localhost:8000')
+            } | Out-Null
+            Invoke-Check 'Vault end to end: upload, ciphertext in S3, download' {
+                Invoke-Native $Py @('scripts/vault_e2e.py')
+            } | Out-Null
+            Invoke-Check 'Observability: configs, alert rules, dashboards, targets' { Test-Observability } | Out-Null
+        } else {
+            Write-Host 'the stack did not start; see: docker compose ps; docker compose logs'
+        }
+    }
+
+    Show-Summary
+} finally {
+    Stop-Transcript | Out-Null
 }
-
-Say 'Checking tools'
-Test-Tools ($Mode -eq 'full')
-Test-LineEndings
-
-if (-not (Invoke-Check 'Python environment (.venv)' { Initialize-Venv })) { Show-Summary }
-Invoke-Check 'Lint: ruff (api, gateway)' { Test-Lint } | Out-Null
-Invoke-Check 'Gateway tests (moto S3/KMS, no Docker)' { Invoke-Pytest 'gateway' $null } | Out-Null
-Invoke-Check 'API tests without a database' { Invoke-Pytest 'api' $null } | Out-Null
-Invoke-Check 'Scanner: gofmt, go vet, go test' { Test-Scanner } | Out-Null
-
-if ($Mode -eq 'full') {
-    if ($Engine -eq 'wsl') {
-        $script:WslRepo = Get-WslRepoPath
-        $engineName = "Docker Engine in WSL '$Distro'"
-    } else {
-        $engineName = 'Docker Desktop'
-    }
-    if (Invoke-Check "Start the stack ($engineName)" { Start-Stack }) {
-        Invoke-Check 'Terraform: bucket and KMS key in LocalStack' { Invoke-Terraform } | Out-Null
-        Invoke-Check 'API tests with PostgreSQL' { Test-ApiDatabase } | Out-Null
-        Invoke-Check 'Login: Keycloak PKCE, token checks, /me, admin' {
-            Invoke-Native $Py @('scripts/keycloak_smoke.py', 'http://localhost:8080', '--api', 'http://localhost:8000')
-        } | Out-Null
-        Invoke-Check 'Vault end to end: upload, ciphertext in S3, download' {
-            Invoke-Native $Py @('scripts/vault_e2e.py')
-        } | Out-Null
-        Invoke-Check 'Observability: configs, alert rules, dashboards, targets' { Test-Observability } | Out-Null
-    } else {
-        Write-Host 'the stack did not start; see: docker compose ps; docker compose logs'
-    }
-}
-
-Show-Summary

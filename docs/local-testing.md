@@ -17,7 +17,7 @@ On Windows, use the PowerShell version. It needs no Docker Desktop, but can use 
 .\scripts\local_check.ps1 down
 ```
 
-Every check runs even if an earlier one fails, and a summary at the end shows what passed. After `full`, the stack stays up so you can try it by hand (see [Try it yourself](#try-it-yourself)).
+Every check runs even if an earlier one fails, and a summary at the end shows what passed. Everything shown also goes to a log file, `logs/local_check-<mode>-<time>.log` (git-ignored). Its path is printed at the start and the end, so you can read or share the whole run when it scrolls past. After `full`, the stack stays up so you can try it by hand (see [Try it yourself](#try-it-yourself)).
 
 ## What to install
 
@@ -176,7 +176,8 @@ Then open the **VaultGate / Gateway uploads** dashboard in Grafana to see the tr
 
 ## Troubleshooting
 
-- **A port is already in use** (5432, 8000, 8080, 8888, 4566, 3000, 9090): stop the other program, for example a local Postgres (`brew services stop postgresql`, or the `postgresql` service on Windows), or run `down` to clear an old stack.
+- **A port is already in use** (5432, 8000, 8080, 8888, 4566, 3000, 9090): stop the other program, for example a local Postgres (`brew services stop postgresql`), or run `down` to clear an old stack.
+- **API tests with PostgreSQL fail with `password authentication failed for user "vaultgate"` (Windows):** a PostgreSQL installed on Windows also listens on 5432. Windows lets it share the port with Docker, so the tests reach it instead of the stack. The PowerShell script detects this and says so. Stop it in an admin PowerShell with `Get-Service postgresql* | Stop-Service`; `Get-Service postgresql* | Set-Service -StartupType Manual` keeps it from starting at boot.
 - **A service never becomes ready:** run `docker compose ps` and `docker compose logs <service>`. Keycloak is the slowest to start (up to a minute or two).
 - **`make tf-local` fails because a resource already exists or is missing:** LocalStack and the Terraform state file disagree (for example, the state was deleted while LocalStack kept running). Run `scripts/local_check.sh down`, delete `infra/terraform/envs/local/terraform.tfstate*`, and run `full` again.
 - **The browser login (`make token`) doesn't return:** it listens on `127.0.0.1:8765`; make sure nothing else uses that port.
