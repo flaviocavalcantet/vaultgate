@@ -57,7 +57,7 @@ Scanning is CPU-bound and runs over every byte of every upload. A small, statica
 
 - **Authentication:** OIDC authorization code flow with PKCE. The API validates tokens against the issuer's JWKS and checks signature algorithm, issuer, audience and expiry on every request (see [Calling the API](#calling-the-api)).
 - **Authorization:** deny by default. Policies are evaluated on every request, not cached in the session.
-- **Encryption:** AES-256-GCM per file, with the data key wrapped by KMS. S3 server-side encryption and a public access block on top.
+- **Encryption:** each file gets its own data key from KMS (wrapped key stored, bound to the file through the KMS encryption context) and is encrypted by the gateway as a stream of AES-256-GCM chunks that also detects reordering and truncation ([ADR 0003](docs/adr/0003-vault-object-encryption.md)). S3 server-side encryption and a public access block on top.
 - **PII handling:** the scanner reports finding types and positions only. Matched values are never logged or stored.
 - **Containers:** non-root user, read-only root filesystem, all Linux capabilities dropped.
 - **Audit:** append-only table; the application role has `INSERT` but no `UPDATE` or `DELETE`.
@@ -239,6 +239,7 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
   - [x] Provisioned Grafana dashboards, alert rules and Kubernetes scrape config
 - [ ] **M2 — Streaming vault:** upload intents, chunked envelope encryption, S3 multipart upload, streaming download
   - [x] Files and single-use upload intents in the API; internal API for the gateway
+  - [x] Envelope encryption library: KMS data key per file, chunked AES-256-GCM ([ADR 0003](docs/adr/0003-vault-object-encryption.md))
 - [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
