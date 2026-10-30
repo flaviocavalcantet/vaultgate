@@ -59,7 +59,7 @@ First time:
    .\scripts\local_check.ps1 setup
    ```
    - It installs whatever is missing among Python 3.12, Go and Terraform, using `winget`.
-   - It installs Docker Engine and the compose plugin in Ubuntu with Docker's official install script.
+   - It installs Docker Engine and the compose plugin in Ubuntu from Docker's signed apt repository (`scripts/wsl_install_docker.sh`, which checks the repository key's fingerprint first).
    - It starts the engine.
 
    Then open a **new** PowerShell so `PATH` picks up the new tools.

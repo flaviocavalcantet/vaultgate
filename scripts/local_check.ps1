@@ -288,10 +288,10 @@ function Invoke-Setup {
     Say "Docker Engine in $Distro"
     & wsl.exe -d $Distro -u root -- sh -c 'command -v docker >/dev/null && docker compose version >/dev/null' 2>$null
     if ($LASTEXITCODE -ne 0) {
-        # Docker's official install script: Docker Engine (docker-ce), CLI and compose plugin.
-        # On WSL it suggests Docker Desktop and waits 20 seconds, then installs anyway.
-        Write-Host 'Installing Docker Engine (it pauses 20 s on a Docker Desktop notice; let it continue)...'
-        $ok = Invoke-Wsl @('sh', '-c', 'curl -fsSL https://get.docker.com | sh')
+        # From Docker's signed apt repository (key checked against its fingerprint).
+        Write-Host 'Installing Docker Engine from Docker''s apt repository...'
+        $installer = "$(Get-WslRepoPath)/scripts/wsl_install_docker.sh"
+        $ok = Invoke-Wsl @('sh', $installer)
         if (-not $ok) { Stop-WithError 'Docker Engine install failed; see the output above' }
     } else {
         Write-Host 'Docker Engine is already installed.'
