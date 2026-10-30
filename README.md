@@ -231,9 +231,10 @@ The body is the raw file, exactly the size declared in `POST /files`. The gatewa
 | `401` | no bearer token |
 | `403` | token unknown, already used, expired, or for another file |
 | `400` / `413` | fewer / more bytes than declared |
+| `409` | the API refused the result (e.g. the upload was swept as abandoned) |
 | `503` | API, KMS or S3 unavailable |
 
-On any failure after the intent is consumed, the multipart upload is aborted and the file is marked `failed`, so a partial object never appears. The token is spent either way: retrying means a new `POST /files`. If the gateway dies mid-upload, the API sweep marks the file failed and the bucket's lifecycle rule deletes the orphaned parts after a day.
+On any failure after the intent is consumed, the multipart upload is aborted and the file is marked `failed`, so a partial object never appears. Reporting the finished upload is retried (`/complete` is idempotent for the same result); if the API still cannot confirm it, the object is kept, because the API may have recorded it before its answer was lost. The token is spent either way: retrying means a new `POST /files`. If the gateway dies mid-upload, the API sweep marks the file failed and the bucket's lifecycle rule deletes the orphaned parts after a day.
 
 Gateway settings (all `VAULTGATE_`-prefixed): `API_INTERNAL_URL`, `INTERNAL_TOKEN` (required), `BUCKET`, `KMS_KEY_ID` (`alias/vaultgate-local`), `AWS_REGION`, `AWS_ENDPOINT_URL` (LocalStack), `MAX_UPLOAD_BYTES`, `PART_SIZE`. In compose, run `make tf-local` once so the bucket and key alias exist.
 

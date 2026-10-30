@@ -32,6 +32,10 @@ from vaultgate_gateway.storage import MultipartWriter, StorageUnavailable, s3_cl
 access_logger = logging.getLogger("vaultgate.access")
 logger = logging.getLogger("vaultgate.gateway")
 
+# Reporting a finished upload is retried: losing that call loses the upload.
+COMPLETE_ATTEMPTS = 3
+COMPLETE_RETRY_DELAY = 0.5  # seconds, grows linearly
+
 # Cleanup started from synchronous callbacks; the event loop only keeps weak references
 # to tasks, so they are held here until done.
 _background_tasks: set[asyncio.Task] = set()
@@ -214,18 +218,23 @@ class UploadHandler(BaseHandler):
             raise tornado.web.HTTPError(503) from None
         sha256 = self._digest.hexdigest()
         try:
-            await self.services.api.complete(
-                self._grant.file_id,
-                size=self._received,
-                sha256=sha256,
-                wrapped_key=self._key.wrapped,
-                kms_key_id=self._key.kms_key_id,
-            )
-        except (ApiUnavailable, IntentRefused):
-            # The object is stored but the API never recorded it: remove it so no
-            # unreferenced ciphertext remains, and mark the file failed if possible.
+            await self._report_complete(sha256)
+        except IntentRefused:
+            # The API definitely did not record this upload (e.g. swept meanwhile):
+            # remove the object so no unreferenced ciphertext remains.
             await self._delete_object()
-            await self._fail("api_unavailable")
+            await self._fail("api_refused")
+            raise tornado.web.HTTPError(409) from None
+        except ApiUnavailable:
+            # Outcome unknown: the API may have committed before the response was lost.
+            # Keep the object (deleting it could orphan an uploaded file) and leave the
+            # row to the API sweep if it was never recorded.
+            self._cleaned_up = True
+            self._count_failure("api_unavailable")
+            logger.error(
+                "could not confirm upload; object kept",
+                extra={"file_id": str(self._grant.file_id), "key": self._writer.key},
+            )
             raise tornado.web.HTTPError(503) from None
         self._finished_ok = True
         self._key = None  # drop the plaintext data key reference as soon as possible
@@ -276,6 +285,24 @@ class UploadHandler(BaseHandler):
             await self.services.api.fail(self._grant.file_id)
         except (ApiUnavailable, IntentRefused):
             logger.error("could not report failed upload; API sweep will mark it failed")
+
+    async def _report_complete(self, sha256: str) -> None:
+        """Report the result, retrying when the API cannot be reached; /complete is
+        idempotent for the same result, so a retry after a lost response succeeds."""
+        for attempt in range(COMPLETE_ATTEMPTS):
+            try:
+                await self.services.api.complete(
+                    self._grant.file_id,
+                    size=self._received,
+                    sha256=sha256,
+                    wrapped_key=self._key.wrapped,
+                    kms_key_id=self._key.kms_key_id,
+                )
+                return
+            except ApiUnavailable:
+                if attempt == COMPLETE_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(COMPLETE_RETRY_DELAY * (attempt + 1))
 
     async def _delete_object(self) -> None:
         try:

@@ -303,6 +303,26 @@ async def test_upload_lifecycle(clients, provider) -> None:
     assert again.status_code == 409  # already finished
 
 
+async def test_complete_is_idempotent_for_the_same_result(clients, provider) -> None:
+    public, internal = clients
+    created = await create(public, provider)
+    file_id = created["file"]["id"]
+    await consume(internal, created)
+    body = {
+        "size": 1234,
+        "sha256": "ab" * 32,
+        "wrapped_key": base64.b64encode(b"wrapped-data-key").decode(),
+        "kms_key_id": "arn:aws:kms:local:000000000000:key/test",
+    }
+    url = f"/internal/files/{file_id}/complete"
+    assert (await internal.post(url, json=body)).status_code == 200
+    # A retry after a lost response succeeds...
+    assert (await internal.post(url, json=body)).status_code == 200
+    # ...but a different result for an uploaded file does not.
+    other = body | {"sha256": "cd" * 32}
+    assert (await internal.post(url, json=other)).status_code == 409
+
+
 async def test_failed_upload(clients, provider) -> None:
     public, internal = clients
     created = await create(public, provider)

@@ -116,17 +116,23 @@ async def complete_upload(file_id: uuid.UUID, body: CompleteRequest, session: Se
         wrapped = base64.b64decode(body.wrapped_key, validate=True)
     except ValueError:
         raise HTTPException(422, detail="wrapped_key is not base64") from None
+    values = {
+        "size": body.size,
+        "sha256": body.sha256,
+        "wrapped_key": wrapped,
+        "kms_key_id": body.kms_key_id,
+    }
+    # Idempotent: the gateway retries when a response is lost, so repeating the call
+    # that already completed this file succeeds; anything else is still a conflict.
+    done = await session.get(File, file_id)
+    if done is not None and done.status == "uploaded":
+        if all(getattr(done, k) == v for k, v in values.items()):
+            return {"status": done.status}
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not being uploaded")
     file = await _finish(
         session,
         file_id,
-        {
-            "status": "uploaded",
-            "size": body.size,
-            "sha256": body.sha256,
-            "wrapped_key": wrapped,
-            "kms_key_id": body.kms_key_id,
-            "uploaded_at": datetime.now(UTC),
-        },
+        {**values, "status": "uploaded", "uploaded_at": datetime.now(UTC)},
     )
     logger.info("upload completed", extra={"file_id": str(file.id), "bytes": body.size})
     return {"status": file.status}

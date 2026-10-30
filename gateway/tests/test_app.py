@@ -29,6 +29,9 @@ class FakeApi:
         self.failed: list[uuid.UUID] = []
         self.down = False
         self.complete_down = False
+        self.complete_failures = 0  # fail this many complete calls, then succeed
+        self.complete_refused = False
+        self.complete_calls = 0
 
     def grant(self, size: int) -> uuid.UUID:
         file_id = uuid.uuid4()
@@ -44,7 +47,10 @@ class FakeApi:
         return grant
 
     async def complete(self, file_id, *, size, sha256, wrapped_key, kms_key_id) -> None:
-        if self.complete_down:
+        self.complete_calls += 1
+        if self.complete_refused:
+            raise IntentRefused()
+        if self.complete_down or self.complete_calls <= self.complete_failures:
             raise ApiUnavailable()
         self.completed[file_id] = {
             "size": size,
@@ -194,20 +200,36 @@ class UploadTest(AsyncHTTPTestCase):
         assert self.put(file_id, b"abc").code == 503
         self.assert_nothing_stored(file_id)
 
-    def test_unrecorded_object_is_deleted(self) -> None:
+    def test_refused_completion_deletes_the_object(self) -> None:
         file_id = self.api.grant(3)
-        self.api.complete_down = True
-        assert self.put(file_id, b"abc").code == 503
+        self.api.complete_refused = True
+        assert self.put(file_id, b"abc").code == 409
         self.assert_nothing_stored(file_id)
 
-    def test_unrecorded_object_leaves_no_version_in_versioned_bucket(self) -> None:
+    def test_refused_completion_leaves_no_version_in_versioned_bucket(self) -> None:
         self.s3.put_bucket_versioning(Bucket=BUCKET, VersioningConfiguration={"Status": "Enabled"})
         file_id = self.api.grant(3)
-        self.api.complete_down = True
-        assert self.put(file_id, b"abc").code == 503
+        self.api.complete_refused = True
+        assert self.put(file_id, b"abc").code == 409
         versions = self.s3.list_object_versions(Bucket=BUCKET)
         assert versions.get("Versions", []) == []
         assert versions.get("DeleteMarkers", []) == []
+
+    def test_completion_is_retried(self) -> None:
+        file_id = self.api.grant(3)
+        self.api.complete_failures = 2
+        assert self.put(file_id, b"abc").code == 201
+        assert file_id in self.api.completed
+        assert self.api.complete_calls == 3
+
+    def test_unconfirmed_completion_keeps_the_object(self) -> None:
+        # The API may have recorded the upload before its answer was lost, so the
+        # object must survive; the API sweep handles the row if it was not recorded.
+        file_id = self.api.grant(3)
+        self.api.complete_down = True
+        assert self.put(file_id, b"abc").code == 503
+        assert self.stored(file_id)
+        assert self.api.failed == []
 
     @pytest.fixture(autouse=True)
     def _caplog(self, caplog: pytest.LogCaptureFixture) -> None:
