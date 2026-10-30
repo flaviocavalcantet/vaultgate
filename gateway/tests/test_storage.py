@@ -2,7 +2,12 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from vaultgate_gateway.storage import MultipartWriter, StorageUnavailable, s3_client
+from vaultgate_gateway.storage import (
+    MultipartWriter,
+    ObjectReader,
+    StorageUnavailable,
+    s3_client,
+)
 
 MiB = 1024 * 1024
 
@@ -61,3 +66,21 @@ def test_custom_endpoint_uses_path_style() -> None:
     client = s3_client(region="us-east-1", endpoint_url="http://localstack:4566")
     assert client.meta.config.s3["addressing_style"] == "path"
     assert client.meta.config.retries["total_max_attempts"] == 3
+
+
+async def test_reader_returns_object_in_pieces(s3) -> None:
+    data = bytes(range(256)) * 4096  # 1 MiB
+    s3.put_object(Bucket="vault", Key="k", Body=data)
+    reader = await ObjectReader.open(s3, "vault", "k")
+    assert reader.size == len(data)
+    pieces = []
+    while piece := await reader.read(100_000):
+        assert len(piece) <= 100_000
+        pieces.append(piece)
+    reader.close()
+    assert b"".join(pieces) == data
+
+
+async def test_reader_missing_object_is_storage_unavailable(s3) -> None:
+    with pytest.raises(StorageUnavailable):
+        await ObjectReader.open(s3, "vault", "missing")

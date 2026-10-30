@@ -7,18 +7,21 @@ full body ever being buffered.
 """
 
 import asyncio
+import base64
 import hashlib
 import logging
 import os
 import uuid
 from dataclasses import dataclass
+from urllib.parse import quote
 
+import tornado.iostream
 import tornado.web
 from prometheus_client import start_http_server
 
 from vaultgate_gateway import metrics
 from vaultgate_gateway.api_client import ApiUnavailable, IntentRefused, InternalApi, UploadGrant
-from vaultgate_gateway.crypto import Encryptor
+from vaultgate_gateway.crypto import DecryptionError, Decryptor, Encryptor
 from vaultgate_gateway.keys import KeyProvider, KeyUnavailable, KmsKeyProvider
 from vaultgate_gateway.logs import (
     REQUEST_ID_HEADER,
@@ -27,7 +30,12 @@ from vaultgate_gateway.logs import (
     resolve_request_id,
 )
 from vaultgate_gateway.settings import settings
-from vaultgate_gateway.storage import MultipartWriter, StorageUnavailable, s3_client
+from vaultgate_gateway.storage import (
+    MultipartWriter,
+    ObjectReader,
+    StorageUnavailable,
+    s3_client,
+)
 
 access_logger = logging.getLogger("vaultgate.access")
 logger = logging.getLogger("vaultgate.gateway")
@@ -59,6 +67,18 @@ class BaseHandler(tornado.web.RequestHandler):
         request_id_var.set(self.request_id)
         self.set_header(REQUEST_ID_HEADER, self.request_id)
 
+    def _bearer_token(self) -> str | None:
+        header = self.request.headers.get("Authorization", "")
+        scheme, _, value = header.partition(" ")
+        if scheme.lower() != "bearer":
+            return None
+        return value.strip() or None
+
+    def write_error(self, status_code: int, **kwargs) -> None:
+        if status_code == 401:  # send_error clears headers set before the error
+            self.set_header("WWW-Authenticate", 'Bearer realm="vaultgate"')
+        super().write_error(status_code, **kwargs)
+
     def clear(self) -> None:
         # send_error() clears headers; keep the request ID on error responses too.
         super().clear()
@@ -85,6 +105,7 @@ def on_request_finished(handler: tornado.web.RequestHandler) -> None:
             "status": handler.get_status(),
             "duration_ms": round(handler.request.request_time() * 1000, 2),
             "bytes_in": getattr(handler, "_received", None),
+            "bytes_out": getattr(handler, "_sent", None),
             "client_ip": handler.request.remote_ip,
         },
     )
@@ -106,6 +127,7 @@ class Services:
     s3: object
     bucket: str
     part_size: int = 8 * 1024 * 1024
+    read_size: int = 256 * 1024
     max_upload_bytes: int = 5 * 1024**3
 
 
@@ -242,11 +264,6 @@ class UploadHandler(BaseHandler):
         self.set_status(201)
         self.write({"file_id": str(self._grant.file_id), "size": self._received, "sha256": sha256})
 
-    def write_error(self, status_code: int, **kwargs) -> None:
-        if status_code == 401:  # send_error clears headers set before the error
-            self.set_header("WWW-Authenticate", 'Bearer realm="vaultgate-upload"')
-        super().write_error(status_code, **kwargs)
-
     def on_finish(self) -> None:
         # Covers errors not handled above (bugs included): never leave parts behind.
         if self._grant is not None and not self._finished_ok and not self._cleaned_up:
@@ -259,13 +276,6 @@ class UploadHandler(BaseHandler):
             _background(self._fail("client_disconnected"))
         self._end_upload()
         super().on_connection_close()
-
-    def _bearer_token(self) -> str | None:
-        header = self.request.headers.get("Authorization", "")
-        scheme, _, value = header.partition(" ")
-        if scheme.lower() != "bearer":
-            return None
-        return value.strip() or None
 
     async def _fail(self, reason: str) -> None:
         """Abort the S3 upload and tell the API; runs at most once per request."""
@@ -319,11 +329,150 @@ class UploadHandler(BaseHandler):
             metrics.UPLOADS_IN_PROGRESS.dec()
 
 
+class DownloadHandler(BaseHandler):
+    """Serves one file, decrypted on the fly.
+
+    GET /downloads/{file_id} with `Authorization: Bearer <download intent token>`.
+
+    The API consumes the intent and returns the wrapped data key; KMS unwraps it (bound
+    to this file ID). The object is then read from S3 in pieces, decrypted and written
+    out, waiting for each piece to reach the client before reading the next, so memory
+    per download stays at a few pieces whatever the file size or client speed.
+
+    VGE1 only returns chunks that passed authentication, but truncation is detected
+    only at the end. Headers (with Content-Length) are already sent by then, so a
+    failure mid-stream closes the connection instead of finishing the response: the
+    client sees a short body and never mistakes it for the whole file.
+    """
+
+    route = "/downloads/{download_id}"
+    _in_progress = False
+
+    async def get(self, download_id: str) -> None:
+        services: Services = self.application.settings["services"]
+        try:
+            file_id = uuid.UUID(download_id)
+        except ValueError:
+            raise tornado.web.HTTPError(404) from None
+        token = self._bearer_token()
+        if token is None:
+            raise tornado.web.HTTPError(401)
+
+        try:
+            grant = await services.api.consume_download(token, file_id)
+        except IntentRefused:
+            self._count_failure("intent_refused")
+            raise tornado.web.HTTPError(403) from None
+        except ApiUnavailable:
+            self._count_failure("api_unavailable")
+            raise tornado.web.HTTPError(503) from None
+
+        try:
+            key = await services.keys.unwrap(file_id, grant.wrapped_key)
+            reader = await ObjectReader.open(services.s3, services.bucket, grant.storage_key)
+        except (KeyUnavailable, StorageUnavailable) as exc:
+            reason = "kms_unavailable" if isinstance(exc, KeyUnavailable) else "storage_unavailable"
+            self._count_failure(reason)
+            raise tornado.web.HTTPError(503) from None
+
+        metrics.DOWNLOADS_IN_PROGRESS.inc()
+        self._in_progress = True
+        try:
+            await self._stream(grant, Decryptor(key, file_id), reader, services.read_size)
+        finally:
+            reader.close()
+
+    async def _stream(self, grant, decryptor: Decryptor, reader, read_size: int) -> None:
+        self.set_header("Content-Type", grant.content_type)
+        self.set_header("Content-Length", str(grant.size))
+        self.set_header("Content-Disposition", content_disposition(grant.name))
+        self.set_header("X-Content-Type-Options", "nosniff")
+        # Even if a browser rendered it, user content gets no script or same-origin power.
+        self.set_header("Content-Security-Policy", "sandbox; default-src 'none'")
+        self.set_header("Cache-Control", "no-store")
+        # RFC 9530: lets the client verify the whole file once it has it.
+        self.set_header("Repr-Digest", f"sha-256=:{_b64_hex(grant.sha256)}:")
+        self._sent = 0
+        try:
+            while chunk := await reader.read(read_size):
+                await self._send(decryptor.update(chunk), grant.size)
+            await self._send(decryptor.finalize(), grant.size)
+        except DecryptionError:
+            logger.error(
+                "stored object failed authentication", extra={"file_id": str(grant.file_id)}
+            )
+            return self._abort("integrity")
+        except StorageUnavailable:
+            return self._abort("storage_unavailable")
+        except _ClientGone:
+            return self._abort("client_disconnected")
+        if self._sent != grant.size:
+            logger.error(
+                "stored object size differs from the recorded size",
+                extra={"file_id": str(grant.file_id), "sent": self._sent, "expected": grant.size},
+            )
+            return self._abort("integrity")
+        metrics.DOWNLOAD_SIZE.observe(self._sent)
+
+    async def _send(self, data: bytes, expected: int) -> None:
+        if not data:
+            return
+        if self._sent + len(data) > expected:
+            raise DecryptionError("object longer than the recorded size")
+        self._sent += len(data)
+        metrics.DOWNLOAD_BYTES.inc(len(data))
+        self.write(data)
+        try:
+            await self.flush()  # backpressure: wait until the client has taken it
+        except tornado.iostream.StreamClosedError:
+            raise _ClientGone() from None
+
+    def _abort(self, reason: str) -> None:
+        """Fail a response whose headers may already be out: close the connection so
+        the body is visibly short, never finish it as if it were complete."""
+        self._count_failure(reason)
+        logger.warning("download aborted", extra={"reason": reason, "bytes_out": self._sent})
+        self.request.connection.close()
+        raise tornado.web.Finish()
+
+    def _count_failure(self, reason: str) -> None:
+        metrics.DOWNLOAD_FAILURES.labels(reason).inc()
+
+    def on_finish(self) -> None:
+        self._end_download()
+
+    def on_connection_close(self) -> None:
+        self._end_download()
+        super().on_connection_close()
+
+    def _end_download(self) -> None:
+        if self._in_progress:
+            self._in_progress = False
+            metrics.DOWNLOADS_IN_PROGRESS.dec()
+
+
+class _ClientGone(Exception):
+    pass
+
+
+def content_disposition(name: str) -> str:
+    """attachment, with an ASCII fallback name and the exact UTF-8 name (RFC 6266)."""
+    fallback = "".join(
+        c if c.isascii() and c.isprintable() and c not in '"\\' else "_" for c in name
+    )
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
+def _b64_hex(hex_digest: str) -> str:
+    return base64.b64encode(bytes.fromhex(hex_digest)).decode()
+
+
 def make_app(services: Services | None = None) -> tornado.web.Application:
     return tornado.web.Application(
         [
             (r"/healthz", HealthHandler),
             (r"/uploads/([A-Za-z0-9_-]+)", UploadHandler),
+            (r"/downloads/([A-Za-z0-9_-]+)", DownloadHandler),
         ],
         log_function=on_request_finished,
         services=services,
@@ -341,6 +490,7 @@ def services_from_settings() -> Services:
         s3=s3_client(region=settings.aws_region, endpoint_url=settings.aws_endpoint_url),
         bucket=settings.bucket,
         part_size=settings.part_size,
+        read_size=settings.read_size,
         max_upload_bytes=settings.max_upload_bytes,
     )
 

@@ -1,16 +1,24 @@
+import base64
 import hashlib
 import json
 import logging
+import os
 import uuid
 
 import boto3
 import pytest
 from moto import mock_aws
 from prometheus_client import REGISTRY
+from tornado.simple_httpclient import HTTPStreamClosedError
 from tornado.testing import AsyncHTTPTestCase
 
-from vaultgate_gateway.api_client import ApiUnavailable, IntentRefused, UploadGrant
-from vaultgate_gateway.app import Services, make_app
+from vaultgate_gateway.api_client import (
+    ApiUnavailable,
+    DownloadGrant,
+    IntentRefused,
+    UploadGrant,
+)
+from vaultgate_gateway.app import Services, content_disposition, make_app
 from vaultgate_gateway.crypto import Decryptor, ciphertext_size
 from vaultgate_gateway.keys import KmsKeyProvider
 from vaultgate_gateway.logs import JsonFormatter
@@ -27,6 +35,7 @@ class FakeApi:
         self.grants: dict[str, UploadGrant] = {}
         self.completed: dict[uuid.UUID, dict] = {}
         self.failed: list[uuid.UUID] = []
+        self.download_grants: dict[str, DownloadGrant] = {}
         self.down = False
         self.complete_down = False
         self.complete_failures = 0  # fail this many complete calls, then succeed
@@ -62,8 +71,36 @@ class FakeApi:
     async def fail(self, file_id: uuid.UUID) -> None:
         self.failed.append(file_id)
 
+    def grant_download(self, file_id: uuid.UUID, name: str = "report.pdf", **overrides) -> str:
+        done = self.completed[file_id]
+        token = f"download-{uuid.uuid4()}"
+        self.download_grants[token] = DownloadGrant(
+            file_id=file_id,
+            storage_key=f"files/{file_id}",
+            name=name,
+            content_type="application/pdf",
+            size=done["size"],
+            sha256=done["sha256"],
+            wrapped_key=done["wrapped_key"],
+            kms_key_id=done["kms_key_id"],
+        )
+        if overrides:
+            grant = self.download_grants[token]
+            self.download_grants[token] = DownloadGrant(**{**grant.__dict__, **overrides})
+        return token
 
-class UploadTest(AsyncHTTPTestCase):
+    async def consume_download(self, token: str, file_id: uuid.UUID) -> DownloadGrant:
+        if self.down:
+            raise ApiUnavailable()
+        grant = self.download_grants.pop(token, None)
+        if grant is None or grant.file_id != file_id:
+            raise IntentRefused()
+        return grant
+
+
+class GatewayCase(AsyncHTTPTestCase):
+    """moto-backed S3 and KMS plus a fake internal API; no tests of its own."""
+
     def setUp(self) -> None:
         self.aws = mock_aws()
         self.aws.start()
@@ -104,6 +141,8 @@ class UploadTest(AsyncHTTPTestCase):
         assert self.open_uploads() == []
         assert self.api.failed == [file_id]
 
+
+class UploadTest(GatewayCase):
     def test_health(self) -> None:
         response = self.fetch("/healthz")
         assert response.code == 200
@@ -288,3 +327,111 @@ def _sample(name: str, labels: dict[str, str] | None = None) -> float:
 
 def _failures(reason: str) -> float:
     return _sample("vaultgate_gateway_upload_failures_total", {"reason": reason})
+
+
+class DownloadTest(GatewayCase):
+    """Downloads of files stored through the upload handler."""
+
+    def upload(self, payload: bytes) -> uuid.UUID:
+        file_id = self.api.grant(len(payload))
+        assert self.put(file_id, payload).code == 201
+        return file_id
+
+    def get(self, file_id, token: str | None, **kwargs):
+        headers = kwargs.pop("headers", {})
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return self.fetch(f"/downloads/{file_id}", headers=headers, **kwargs)
+
+    def assert_cut_short(self, file_id, token: str) -> None:
+        """The client must never receive what looks like a complete file."""
+        with pytest.raises(HTTPStreamClosedError):
+            self.get(file_id, token)
+
+    def test_download_returns_the_original_bytes(self) -> None:
+        payload = os.urandom(3 * MiB + 12345)  # several S3 reads and VGE1 chunks
+        file_id = self.upload(payload)
+        response = self.get(file_id, self.api.grant_download(file_id))
+        assert response.code == 200
+        assert response.body == payload
+        assert response.headers["Content-Length"] == str(len(payload))
+        assert response.headers["Content-Type"] == "application/pdf"
+        assert response.headers["Content-Disposition"].startswith("attachment;")
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        assert response.headers["Cache-Control"] == "no-store"
+        digest = base64.b64encode(hashlib.sha256(payload).digest()).decode()
+        assert response.headers["Repr-Digest"] == f"sha-256=:{digest}:"
+
+    def test_empty_file(self) -> None:
+        file_id = self.upload(b"")
+        response = self.get(file_id, self.api.grant_download(file_id))
+        assert response.code == 200
+        assert response.body == b""
+
+    def test_token_is_single_use(self) -> None:
+        file_id = self.upload(b"abc")
+        token = self.api.grant_download(file_id)
+        assert self.get(file_id, token).code == 200
+        assert self.get(file_id, token).code == 403
+
+    def test_missing_or_wrong_token(self) -> None:
+        file_id = self.upload(b"abc")
+        assert self.get(file_id, None).code == 401
+        assert self.get(file_id, "nope").code == 403
+        other = self.upload(b"def")
+        assert self.get(other, self.api.grant_download(file_id)).code == 403
+
+    def test_api_down_is_503(self) -> None:
+        file_id = self.upload(b"abc")
+        token = self.api.grant_download(file_id)
+        self.api.down = True
+        assert self.get(file_id, token).code == 503
+
+    def test_missing_object_is_503(self) -> None:
+        file_id = self.upload(b"abc")
+        self.s3.delete_object(Bucket=BUCKET, Key=f"files/{file_id}")
+        assert self.get(file_id, self.api.grant_download(file_id)).code == 503
+
+    def test_key_bound_to_another_file_is_refused(self) -> None:
+        a, b = self.upload(b"abc"), self.upload(b"def")
+        token = self.api.grant_download(a, wrapped_key=self.api.completed[b]["wrapped_key"])
+        assert self.get(a, token).code == 503  # KMS refuses: encryption context mismatch
+
+    def test_tampered_object_is_cut_short(self) -> None:
+        payload = os.urandom(MiB)
+        file_id = self.upload(payload)
+        stored = bytearray(self.stored(file_id))
+        stored[len(stored) // 2] ^= 1
+        self.s3.put_object(Bucket=BUCKET, Key=f"files/{file_id}", Body=bytes(stored))
+        before = _sample("vaultgate_gateway_download_failures_total", {"reason": "integrity"})
+        self.assert_cut_short(file_id, self.api.grant_download(file_id))
+        after = _sample("vaultgate_gateway_download_failures_total", {"reason": "integrity"})
+        assert after == before + 1
+
+    def test_truncated_object_is_cut_short(self) -> None:
+        payload = os.urandom(MiB)
+        file_id = self.upload(payload)
+        stored = self.stored(file_id)
+        cut = stored[: len(stored) - 100]
+        self.s3.put_object(Bucket=BUCKET, Key=f"files/{file_id}", Body=cut)
+        self.assert_cut_short(file_id, self.api.grant_download(file_id))
+
+    def test_object_with_wrong_recorded_size_is_cut_short(self) -> None:
+        file_id = self.upload(b"abcdef")
+        token = self.api.grant_download(file_id, size=10)
+        self.assert_cut_short(file_id, token)
+
+    def test_download_metrics(self) -> None:
+        file_id = self.upload(b"x" * 4096)
+        before = _sample("vaultgate_gateway_download_bytes_total")
+        assert self.get(file_id, self.api.grant_download(file_id)).code == 200
+        assert _sample("vaultgate_gateway_download_bytes_total") == before + 4096
+        assert _sample("vaultgate_gateway_downloads_in_progress") == 0
+
+
+def test_content_disposition_keeps_unicode_and_neutralises_quotes() -> None:
+    header = content_disposition('relatório "final".pdf')
+    assert header == (
+        'attachment; filename="relat_rio _final_.pdf"; '
+        "filename*=UTF-8''relat%C3%B3rio%20%22final%22.pdf"
+    )

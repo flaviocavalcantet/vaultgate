@@ -2,7 +2,8 @@
 
 The gateway never decides who may do what (ADR 0001). Before accepting an upload it
 calls `consume` with the client's intent token; when the bytes are stored it reports
-the result with `complete` or `fail`.
+the result with `complete` or `fail`. Before serving a download it calls `consume` with
+a download intent, which returns the wrapped data key needed to decrypt the object.
 
 Every request must carry `Authorization: Bearer <VAULTGATE_INTERNAL_TOKEN>`. If no
 token is configured, every request is refused: the internal API fails closed. The port
@@ -56,14 +57,18 @@ class ConsumeResponse(BaseModel):
     storage_key: str
     declared_size: int
     content_type: str
-    # Set for downloads (M2 streaming_download); null for uploads.
-    wrapped_key: str | None = None
+    # Set for downloads only.
+    name: str | None = None
+    size: int | None = None
+    sha256: str | None = None
+    wrapped_key: str | None = Field(default=None, description="base64")
     kms_key_id: str | None = None
 
 
 @router.post("/intents/consume")
 async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeResponse:
-    """Validate and spend a client's intent token; for uploads, mark the file uploading."""
+    """Validate and spend a client's intent token. For uploads, mark the file uploading;
+    for downloads, return what the gateway needs to decrypt and serve it."""
     try:
         intent = await intents.consume(
             session, token=body.token, kind=body.kind, file_id=body.file_id
@@ -78,15 +83,25 @@ async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeRe
             await session.rollback()
             raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not awaiting upload")
         file.status = "uploading"
+    elif file.status != "uploaded":
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
     await session.commit()
     logger.info("intent consumed", extra={"file_id": str(file.id), "kind": body.kind})
-    return ConsumeResponse(
+    response = ConsumeResponse(
         file_id=file.id,
         owner_id=file.owner_id,
         storage_key=file.storage_key,
         declared_size=file.declared_size,
         content_type=file.content_type,
     )
+    if body.kind == "download":
+        response.name = file.name
+        response.size = file.size
+        response.sha256 = file.sha256
+        response.wrapped_key = base64.b64encode(file.wrapped_key).decode()
+        response.kms_key_id = file.kms_key_id
+    return response
 
 
 class CompleteRequest(BaseModel):

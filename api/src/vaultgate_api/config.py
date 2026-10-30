@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     gateway_public_url: str = "http://localhost:8888"
     max_upload_bytes: int = 5 * 1024**3
     upload_intent_ttl_seconds: int = 900
+    # A download intent is used right away by the client that asked for it.
+    download_intent_ttl_seconds: int = 300
     # Live uploads a user may have at once; more get 429. Abandoned ones do not count:
     # a pending file whose intent expired, or an upload started longer ago than
     # upload_stale_after_seconds.

@@ -1,4 +1,4 @@
-"""Streaming writes to S3 through a multipart upload, with bounded memory.
+"""Streaming reads and writes of vault objects in S3, with bounded memory.
 
 Ciphertext is collected into parts of `part_size` bytes (S3 requires at least 5 MiB for
 every part but the last); each full part is uploaded before more is accepted, so the
@@ -119,3 +119,26 @@ class MultipartWriter:
     @property
     def buffered(self) -> int:
         return len(self._buffer)
+
+
+class ObjectReader:
+    """Reads one object in pieces. boto3's body is a blocking stream, so each read runs
+    in a thread; the caller decides the piece size and so the memory used."""
+
+    def __init__(self, body, size: int) -> None:
+        self._body = body
+        self.size = size
+
+    @classmethod
+    async def open(cls, client, bucket: str, key: str) -> "ObjectReader":
+        response = await _call(client.get_object, Bucket=bucket, Key=key)
+        return cls(response["Body"], response["ContentLength"])
+
+    async def read(self, size: int) -> bytes:
+        try:
+            return await asyncio.to_thread(self._body.read, size)
+        except (BotoCoreError, ClientError, OSError) as exc:
+            raise StorageUnavailable(type(exc).__name__) from None
+
+    def close(self) -> None:
+        self._body.close()

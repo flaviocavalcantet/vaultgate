@@ -19,13 +19,23 @@ class FakeInternal(tornado.web.RequestHandler):
         self.set_status(status)
         if status == 200 and path == "intents/consume":
             body = json.loads(self.request.body)
-            self.write(
-                {
-                    "file_id": body["file_id"],
-                    "storage_key": f"files/{body['file_id']}",
-                    "declared_size": 42,
+            grant = {
+                "file_id": body["file_id"],
+                "storage_key": f"files/{body['file_id']}",
+                "declared_size": 42,
+            }
+            if body["kind"] == "download":
+                grant |= {
+                    "name": "a.pdf",
+                    "content_type": "application/pdf",
+                    "size": 42,
+                    "sha256": "ab" * 32,
+                    "wrapped_key": base64.b64encode(b"wrapped").decode(),
+                    "kms_key_id": "k",
                 }
-            )
+                if self.application.settings.get("incomplete"):
+                    grant["wrapped_key"] = None
+            self.write(grant)
         else:
             self.write({})
 
@@ -56,6 +66,26 @@ class InternalApiTest(AsyncHTTPTestCase):
         assert path == "intents/consume"
         assert auth == f"Bearer {SECRET}"
         assert body == {"token": "tok", "kind": "upload", "file_id": str(file_id)}
+
+    @gen_test
+    async def test_consume_download_returns_key_material(self) -> None:
+        file_id = uuid.uuid4()
+        grant = await self.client().consume_download("tok", file_id)
+        assert grant.file_id == file_id
+        assert grant.wrapped_key == b"wrapped"
+        assert (grant.name, grant.size, grant.kms_key_id) == ("a.pdf", 42, "k")
+        assert b"wrapped" not in repr(grant).encode()
+        [(_, _, body)] = self.calls
+        assert body["kind"] == "download"
+
+    @gen_test
+    async def test_incomplete_download_grant_is_unavailable(self) -> None:
+        self._app.settings["incomplete"] = True
+        try:
+            await self.client().consume_download("tok", uuid.uuid4())
+        except ApiUnavailable:
+            return
+        raise AssertionError("a grant without a key must not be used")
 
     @gen_test
     async def test_complete_sends_base64_wrapped_key(self) -> None:
