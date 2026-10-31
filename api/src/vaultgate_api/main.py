@@ -58,7 +58,7 @@ app.include_router(protected)
 #            /files (the caller's files; POST returns a single-use upload intent).
 # Internal (separate app and port, gateway only): see vaultgate_api.internal.
 # Planned routers (see README roadmap):
-#   policies - CRUD for access rules (IP range, time window, group, device posture)
+#   policies - CRUD for access rules (groups, networks, time windows; ADR 0004)
 #   files    - file metadata, upload intents, scan status
 #   shares   - signed, expiring share links with download limits
 #   audit    - read-only, append-only audit trail
