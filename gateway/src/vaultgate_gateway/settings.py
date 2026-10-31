@@ -3,6 +3,8 @@
 import os
 from dataclasses import dataclass, field
 
+from vaultgate_gateway.clientip import IPNetwork, parse_networks
+
 
 def _env(name: str, default: str | None = None) -> str | None:
     return os.getenv(f"VAULTGATE_{name}", default)
@@ -13,6 +15,9 @@ class Settings:
     port: int = int(_env("GATEWAY_PORT", "8888"))
     metrics_port: int = int(_env("METRICS_PORT", "9100"))
     max_upload_bytes: int = int(_env("MAX_UPLOAD_BYTES", str(5 * 1024**3)))
+    # Reverse proxies whose X-Forwarded-For is believed, comma-separated networks.
+    # Proxy addresses only, never client networks (see vaultgate_gateway.clientip).
+    trusted_proxies: tuple[IPNetwork, ...] = tuple(parse_networks(_env("TRUSTED_PROXIES", "")))
     # The API's internal endpoint (never the public one) and the shared secret for it.
     api_internal_url: str = _env("API_INTERNAL_URL", "http://localhost:8001")
     internal_token: str | None = field(default=_env("INTERNAL_TOKEN"), repr=False)
