@@ -299,6 +299,8 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
+- [ ] **M9 — PKI and key management:** establish a certificate authority, store private keys securely, and distribute keys and certificates securely (scope to be defined)
+- [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined)
 
 ## License
 
