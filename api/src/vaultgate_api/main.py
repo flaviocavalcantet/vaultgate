@@ -16,7 +16,7 @@ from vaultgate_api.clientip import ClientAddressMiddleware
 from vaultgate_api.config import settings
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
-from vaultgate_api.routers import admin, files, health, me
+from vaultgate_api.routers import admin, files, health, me, policies
 
 # Routes that answer without a token. Everything else is mounted on `protected`,
 # so a new router is authenticated unless it is deliberately added here.
@@ -52,16 +52,17 @@ app.include_router(health.router)
 protected = APIRouter(dependencies=[Depends(get_principal)])
 protected.include_router(me.router)
 protected.include_router(admin.router)
+protected.include_router(policies.router)
 protected.include_router(files.router)
 app.include_router(protected)
 
 # Public: /healthz (liveness), /readyz (database reachable).
 # Protected: /me (caller's user record, provisioned from the access token),
-#            /admin/users, /admin/groups (members of VAULTGATE_ADMIN_GROUPS only),
+#            /admin/users, /admin/groups, /admin/policies (members of
+#            VAULTGATE_ADMIN_GROUPS only; never subject to access policies),
 #            /files (the caller's files; POST returns a single-use upload intent).
 # Internal (separate app and port, gateway only): see vaultgate_api.internal.
 # Planned routers (see README roadmap):
-#   policies - CRUD for access rules (groups, networks, time windows; ADR 0004)
 #   files    - file metadata, upload intents, scan status
 #   shares   - signed, expiring share links with download limits
 #   audit    - read-only, append-only audit trail
