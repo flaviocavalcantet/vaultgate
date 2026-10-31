@@ -265,6 +265,31 @@ Try the scanner on its own:
 echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd/scanner)
 ```
 
+### Access policies
+
+Deny by default: a user may `read` (list and view their files), `upload` or `download` only when an enabled **allow** policy matches and no **deny** policy does ([ADR 0004](docs/adr/0004-access-policies.md)). A policy names its actions and any of these conditions, all of which must hold:
+
+- `groups`: the user is in one of them or a subgroup (`/finance` covers `/finance/payroll`);
+- `networks` / `excluded_networks`: the client address is in one of `networks` and in none of `excluded_networks`;
+- `days` (1 = Monday ... 7 = Sunday) and `start_time` / `end_time` in `timezone` (IANA name). A window that ends before it starts runs overnight and belongs to the day it starts.
+
+Admins (`VAULTGATE_ADMIN_GROUPS`) manage them at `/admin/policies`: list, `POST`, `GET`, `PUT` (replaces the whole policy) and `DELETE`. `/admin` and `/me` are never subject to policies, so admins can't lock themselves out. Changes apply on the next request. `POST /admin/policies/evaluate` is a dry run: it shows how a request would be decided and which policies matched.
+
+```bash
+ADMIN=$(make -s token)   # log in as carol
+curl -X POST http://localhost:8000/admin/policies -H "Authorization: Bearer $ADMIN" \
+  -H "Content-Type: application/json" -d '{
+    "name": "finance office hours", "effect": "allow", "actions": ["read", "upload", "download"],
+    "groups": ["/finance"], "networks": ["10.0.0.0/8"], "days": [1, 2, 3, 4, 5],
+    "start_time": "08:00", "end_time": "18:00", "timezone": "America/Sao_Paulo"}'
+curl -X POST http://localhost:8000/admin/policies/evaluate -H "Authorization: Bearer $ADMIN" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "download", "groups": ["/finance"], "client_ip": "10.1.2.3"}'
+# {"allowed": true, "reason": "allowed", "deny": [], "allow": ["finance office hours"], ...}
+```
+
+Not enforced yet: checks on the file routes and in the gateway come with the next M3 step.
+
 ### Client addresses behind a proxy
 
 Access policies can restrict by network (M3), so the API and the gateway must know the real client address. They take it from `X-Forwarded-For` only when the request comes from a proxy listed in `VAULTGATE_TRUSTED_PROXIES`, a comma-separated list of networks (for example the ingress controller's pod range). The header is read from the right, skipping trusted hops; the first other address is the client. With the list empty (the default, and what compose uses), the header is ignored and the TCP peer is the client. List proxy addresses only: a client inside a trusted range can claim any address. If a trusted proxy passes on something that isn't an address, the client counts as unknown rather than as the proxy. Logs record the resolved address as `client_ip`.
@@ -292,7 +317,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
 - [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
   - [x] Policy model and evaluator: deny by default, deny wins, groups, networks and time windows ([ADR 0004](docs/adr/0004-access-policies.md))
   - [x] Trusted client addresses: `X-Forwarded-For` only from configured proxies, in the API and the gateway
-  - [ ] Admin API for policies, with a dry run that explains a decision
+  - [x] Admin API for policies, with a dry run that explains a decision
   - [ ] Enforcement on file reads and transfer intents, re-checked by the gateway; seed policy for local use and CI
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
