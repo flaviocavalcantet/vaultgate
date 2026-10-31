@@ -1,5 +1,9 @@
-from pydantic import SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+
+from pydantic import IPvAnyNetwork, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from vaultgate_api.clientip import parse_networks
 
 
 class Settings(BaseSettings):
@@ -12,6 +16,10 @@ class Settings(BaseSettings):
     database_echo: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
+    # Reverse proxies whose X-Forwarded-For is believed, as a comma-separated list of
+    # networks ("10.0.0.0/8, 192.0.2.10/32"). Proxy addresses only, never client
+    # networks; empty means the TCP peer is the client (see vaultgate_api.clientip).
+    trusted_proxies: Annotated[list[IPvAnyNetwork], NoDecode] = []
     # Prometheus scrape endpoint; kept off the public port on purpose.
     metrics_port: int = 9100
     log_level: str = "INFO"
@@ -49,6 +57,11 @@ class Settings(BaseSettings):
     upload_stale_after_seconds: int = 6 * 3600
     # How often abandoned uploads are marked failed (see vaultgate_api.uploads); 0 = off.
     upload_sweep_interval_seconds: int = 300
+
+    @field_validator("trusted_proxies", mode="before")
+    @classmethod
+    def split_networks(cls, value):
+        return parse_networks(value) if isinstance(value, str) else value
 
 
 settings = Settings()

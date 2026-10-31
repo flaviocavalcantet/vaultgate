@@ -17,7 +17,7 @@ from vaultgate_api.logs import configure_logging
 from vaultgate_api.uploads import run_sweeper
 
 
-def _server(app: str, port: int, *, proxy_headers: bool) -> uvicorn.Server:
+def _server(app: str, port: int) -> uvicorn.Server:
     return uvicorn.Server(
         uvicorn.Config(
             app,
@@ -25,16 +25,16 @@ def _server(app: str, port: int, *, proxy_headers: bool) -> uvicorn.Server:
             port=port,
             log_config=None,
             access_log=False,
-            proxy_headers=proxy_headers,
+            # Off: ClientAddressMiddleware resolves the client against trusted_proxies
+            # (uvicorn's own handling would trust 127.0.0.1 implicitly).
+            proxy_headers=False,
         )
     )
 
 
 async def serve() -> None:
-    public = _server("vaultgate_api.main:app", settings.port, proxy_headers=True)
-    internal = _server(
-        "vaultgate_api.internal:internal_app", settings.internal_port, proxy_headers=False
-    )
+    public = _server("vaultgate_api.main:app", settings.port)
+    internal = _server("vaultgate_api.internal:internal_app", settings.internal_port)
     tasks = [public.serve(), internal.serve()]
     if settings.upload_sweep_interval_seconds > 0:
         tasks.append(run_sweeper(get_sessionmaker(), settings.upload_sweep_interval_seconds))

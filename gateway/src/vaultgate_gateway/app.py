@@ -21,6 +21,7 @@ from prometheus_client import start_http_server
 
 from vaultgate_gateway import metrics
 from vaultgate_gateway.api_client import ApiUnavailable, IntentRefused, InternalApi, UploadGrant
+from vaultgate_gateway.clientip import IPNetwork, client_ip
 from vaultgate_gateway.crypto import DecryptionError, Decryptor, Encryptor
 from vaultgate_gateway.keys import KeyProvider, KeyUnavailable, KmsKeyProvider
 from vaultgate_gateway.logs import (
@@ -86,6 +87,10 @@ class BaseHandler(tornado.web.RequestHandler):
             self.set_header(REQUEST_ID_HEADER, request_id)
 
 
+def request_client_ip(handler: tornado.web.RequestHandler) -> str | None:
+    return client_ip(handler.request, handler.application.settings.get("trusted_proxies", ()))
+
+
 def on_request_finished(handler: tornado.web.RequestHandler) -> None:
     """Tornado's log_function hook: one JSON access line and metrics per request."""
     route = getattr(handler, "route", metrics.UNMATCHED_ROUTE)
@@ -106,7 +111,7 @@ def on_request_finished(handler: tornado.web.RequestHandler) -> None:
             "duration_ms": round(handler.request.request_time() * 1000, 2),
             "bytes_in": getattr(handler, "_received", None),
             "bytes_out": getattr(handler, "_sent", None),
-            "client_ip": handler.request.remote_ip,
+            "client_ip": request_client_ip(handler),
         },
     )
 
@@ -467,7 +472,9 @@ def _b64_hex(hex_digest: str) -> str:
     return base64.b64encode(bytes.fromhex(hex_digest)).decode()
 
 
-def make_app(services: Services | None = None) -> tornado.web.Application:
+def make_app(
+    services: Services | None = None, trusted_proxies: tuple[IPNetwork, ...] = ()
+) -> tornado.web.Application:
     return tornado.web.Application(
         [
             (r"/healthz", HealthHandler),
@@ -476,6 +483,7 @@ def make_app(services: Services | None = None) -> tornado.web.Application:
         ],
         log_function=on_request_finished,
         services=services,
+        trusted_proxies=trusted_proxies,
     )
 
 
@@ -503,7 +511,8 @@ async def main() -> None:
         raise SystemExit("VAULTGATE_INTERNAL_TOKEN is required")
     metrics.BUILD_INFO.info({"service": "gateway", "version": "0.1.0"})
     start_http_server(settings.metrics_port)
-    make_app(services_from_settings()).listen(
+    # xheaders stays off: client addresses come from clientip, against trusted_proxies.
+    make_app(services_from_settings(), settings.trusted_proxies).listen(
         settings.port, max_body_size=settings.max_upload_bytes
     )
     logger.info(

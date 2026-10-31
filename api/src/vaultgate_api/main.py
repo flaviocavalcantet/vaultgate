@@ -12,6 +12,8 @@ import httpx
 from fastapi import APIRouter, Depends, FastAPI
 
 from vaultgate_api.auth import build_validator, get_principal
+from vaultgate_api.clientip import ClientAddressMiddleware
+from vaultgate_api.config import settings
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
 from vaultgate_api.routers import admin, files, health, me
@@ -39,10 +41,11 @@ app = FastAPI(
 
 BUILD_INFO.info({"service": "api", "version": app.version})
 
-# Starlette runs the last-added middleware first, so the request ID is assigned
-# before metrics and handlers run.
+# Starlette runs the last-added middleware first: the client address is resolved
+# before anything reads it, and the request ID is assigned before metrics and handlers.
 app.add_middleware(MetricsMiddleware)
 app.add_middleware(RequestContextMiddleware)
+app.add_middleware(ClientAddressMiddleware, trusted=settings.trusted_proxies)
 app.include_router(health.router)
 
 # Deny by default: every router below requires a valid bearer token.

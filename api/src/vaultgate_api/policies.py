@@ -30,12 +30,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vaultgate_api.clientip import IPAddress, parse_ip
 from vaultgate_api.models import Policy
 
 logger = logging.getLogger(__name__)
 
 Action = Literal["read", "upload", "download"]
-IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
 @dataclass(frozen=True)
@@ -60,15 +60,6 @@ class Decision:
     # admin dry run (never to the caller).
     deny: tuple[str, ...] = ()
     allow: tuple[str, ...] = ()
-
-
-def parse_ip(value: str) -> IPAddress:
-    """An address, with IPv4-mapped IPv6 (::ffff:10.0.0.1) turned into plain IPv4, as
-    dual-stack servers report IPv4 clients that way."""
-    ip = ipaddress.ip_address(value.strip())
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        return ip.ipv4_mapped
-    return ip
 
 
 def evaluate(policies: Iterable[Policy], request: AccessRequest) -> Decision:
