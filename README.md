@@ -286,6 +286,10 @@ echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd
   - [x] Streaming downloads: single-use download intents, on-the-fly decryption with backpressure
   - [x] End-to-end check in CI: Keycloak login, upload, ciphertext in S3, download, refusals ([`scripts/vault_e2e.py`](scripts/vault_e2e.py))
 - [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
+  - [x] Policy model and evaluator: deny by default, deny wins, groups, networks and time windows ([ADR 0004](docs/adr/0004-access-policies.md))
+  - [ ] Trusted client addresses: `X-Forwarded-For` only from configured proxies, in the API and the gateway
+  - [ ] Admin API for policies, with a dry run that explains a decision
+  - [ ] Enforcement on file reads and transfer intents, re-checked by the gateway; seed policy for local use and CI
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services

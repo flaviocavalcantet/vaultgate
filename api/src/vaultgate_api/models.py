@@ -3,11 +3,11 @@
 Identity comes from the organization's OIDC provider. A user row is a local record of
 a person the provider has vouched for, keyed by (issuer, subject) because `sub` is
 only unique within one issuer. Groups mirror the provider's group paths and drive
-access policies from M3 onwards.
+access policies (see vaultgate_api.policies and ADR 0004).
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 
 from sqlalchemy import (
     BigInteger,
@@ -17,11 +17,15 @@ from sqlalchemy import (
     ForeignKey,
     LargeBinary,
     MetaData,
+    SmallInteger,
     String,
     Table,
+    Text,
+    Time,
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import ARRAY, CIDR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Deterministic constraint names keep Alembic migrations stable across databases.
@@ -140,3 +144,49 @@ class TransferIntent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+POLICY_EFFECTS = ("allow", "deny")
+POLICY_ACTIONS = ("read", "upload", "download")
+
+
+class Policy(Base):
+    """An access rule. Nothing is allowed unless an enabled allow policy matches, and a
+    matching deny policy always wins (ADR 0004).
+
+    A policy matches a request when the action is one of `actions` and every condition
+    that is set holds; an empty list or a missing time window means "any".
+    """
+
+    __tablename__ = "policies"
+    __table_args__ = (
+        CheckConstraint(f"effect IN {POLICY_EFFECTS}", name="effect"),
+        CheckConstraint("cardinality(actions) > 0", name="actions"),
+        CheckConstraint(f"actions <@ ARRAY{list(POLICY_ACTIONS)}::varchar[]", name="known_actions"),
+        CheckConstraint("days <@ ARRAY[1, 2, 3, 4, 5, 6, 7]::smallint[]", name="days"),
+        CheckConstraint("(start_time IS NULL) = (end_time IS NULL)", name="time_window"),
+        CheckConstraint("start_time <> end_time", name="time_window_length"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    effect: Mapped[str] = mapped_column(String(8))
+    actions: Mapped[list[str]] = mapped_column(ARRAY(String(16)))
+    # Group paths; a policy for "/finance" also covers members of "/finance/payroll".
+    groups: Mapped[list[str]] = mapped_column(ARRAY(String(255)), default=list, server_default="{}")
+    # The client must be in one of `networks` (if any) and in none of `excluded_networks`.
+    networks: Mapped[list] = mapped_column(ARRAY(CIDR), default=list, server_default="{}")
+    excluded_networks: Mapped[list] = mapped_column(ARRAY(CIDR), default=list, server_default="{}")
+    # ISO weekdays, 1 = Monday ... 7 = Sunday.
+    days: Mapped[list[int]] = mapped_column(ARRAY(SmallInteger), default=list, server_default="{}")
+    # Local wall-clock times in `timezone`, start inclusive, end exclusive. A window
+    # that ends before it starts runs overnight and belongs to the day it starts.
+    start_time: Mapped[time | None] = mapped_column(Time)
+    end_time: Mapped[time | None] = mapped_column(Time)
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC", server_default="UTC")
+    enabled: Mapped[bool] = mapped_column(default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
