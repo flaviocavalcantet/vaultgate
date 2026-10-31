@@ -11,7 +11,8 @@
 #
 # Every check runs even if an earlier one fails; a summary is printed at the end and
 # the exit status is non-zero if anything failed. The stack is left running after
-# `full` so you can explore it; `down` removes it.
+# `full` so you can explore it; `down` removes it. Everything shown also goes to
+# logs/local_check-<mode>-<time>.log.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -22,6 +23,12 @@ PY="$VENV/bin/python"
 TEST_DB_URL=postgresql+asyncpg://vaultgate:vaultgate@localhost:5432/vaultgate_test
 RESULTS=()
 FAILED=0
+LOG="logs/local_check-$MODE-$(date +%Y%m%d-%H%M%S).log"
+
+mkdir -p logs
+exec > >(tee -a "$LOG") 2>&1
+echo "log file: $LOG"
+echo "VaultGate $(git rev-parse --short HEAD 2>/dev/null), $MODE, $(date '+%Y-%m-%dT%H:%M:%S')"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -103,10 +110,10 @@ lint_python() {
   return "$ok"
 }
 
-test_gateway() { (cd gateway && "../$PY" -m pytest -q); }
+test_gateway() { (cd gateway && "../$PY" -m pytest -q --tb=short); }
 
 # Without VAULTGATE_TEST_DATABASE_URL the database tests are skipped; `full` runs them.
-test_api_unit() { (cd api && env -u VAULTGATE_TEST_DATABASE_URL "../$PY" -m pytest -q); }
+test_api_unit() { (cd api && env -u VAULTGATE_TEST_DATABASE_URL "../$PY" -m pytest -q --tb=short); }
 
 test_scanner() {
   (cd scanner && test -z "$(gofmt -l .)" && go vet ./... && go test -race ./...)
@@ -139,7 +146,7 @@ test_api_database() {
   docker compose exec -T postgres psql -U vaultgate -d vaultgate -tAc \
     "SELECT 1 FROM pg_database WHERE datname = 'vaultgate_test'" | grep -q 1 ||
     docker compose exec -T postgres createdb -U vaultgate vaultgate_test || return 1
-  (cd api && VAULTGATE_TEST_DATABASE_URL="$TEST_DB_URL" "../$PY" -m pytest -q)
+  (cd api && VAULTGATE_TEST_DATABASE_URL="$TEST_DB_URL" "../$PY" -m pytest -q --tb=short)
 }
 
 check_login() { python3 scripts/keycloak_smoke.py http://localhost:8080 --api http://localhost:8000; }
@@ -170,6 +177,7 @@ The stack is still running. Explore it (logins are in docs/local-testing.md):
 Stop it with:     scripts/local_check.sh down
 EOF
   fi
+  printf '\nFull log: %s\n' "$LOG"
   exit "$FAILED"
 }
 

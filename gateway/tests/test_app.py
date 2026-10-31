@@ -228,9 +228,12 @@ class UploadTest(GatewayCase):
         self.assert_nothing_stored(file_id)
 
     def test_storage_failure_aborts_and_reports(self) -> None:
-        file_id = self.api.grant(6 * MiB)
+        # The upload fails before the body is read, so keep the body small: a client
+        # still sending a large body when the server answers and closes gets a
+        # connection reset instead of the response on Windows.
+        file_id = self.api.grant(3)
         self.s3.delete_bucket(Bucket=BUCKET)
-        assert self.put(file_id, b"x" * (6 * MiB)).code == 503
+        assert self.put(file_id, b"abc").code == 503
         assert self.api.failed == [file_id]
 
     def test_kms_failure_reports(self) -> None:

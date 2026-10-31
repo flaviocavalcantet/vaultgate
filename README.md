@@ -147,7 +147,7 @@ Everything runs on your machine at no cost: PostgreSQL, LocalStack (S3, KMS, SQS
 
 Requirements: Docker, Python 3.12+, Go 1.23+, Terraform 1.6+. For Kubernetes: k3d or kind, Helm.
 
-**New here?** [docs/local-testing.md](docs/local-testing.md) lists what to install and what each check proves. `scripts/local_check.sh quick` runs lint and unit tests without Docker, and `scripts/local_check.sh full` checks the whole stack end to end.
+**New here?** [docs/local-testing.md](docs/local-testing.md) lists what to install and what each check proves. `scripts/local_check.sh quick` runs lint and unit tests without Docker, and `scripts/local_check.sh full` checks the whole stack end to end. On Windows, `scripts\local_check.ps1` does the same without Docker Desktop, using Docker Engine in WSL2.
 
 ```bash
 make up         # start Postgres, LocalStack, Keycloak, API, gateway and the observability stack
