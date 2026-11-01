@@ -180,7 +180,9 @@ class UploadHandler(BaseHandler):
             raise tornado.web.HTTPError(401)
 
         try:
-            self._grant = await self.services.api.consume_upload(token, file_id)
+            self._grant = await self.services.api.consume_upload(
+                token, file_id, request_client_ip(self)
+            )
         except IntentRefused:
             self._count_failure("intent_refused")
             raise tornado.web.HTTPError(403) from None
@@ -364,7 +366,7 @@ class DownloadHandler(BaseHandler):
             raise tornado.web.HTTPError(401)
 
         try:
-            grant = await services.api.consume_download(token, file_id)
+            grant = await services.api.consume_download(token, file_id, request_client_ip(self))
         except IntentRefused:
             self._count_failure("intent_refused")
             raise tornado.web.HTTPError(403) from None

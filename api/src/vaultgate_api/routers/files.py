@@ -2,7 +2,8 @@
 download intent.
 
 Another user's file is reported as not found, never as forbidden, so file IDs cannot
-be probed for existence.
+be probed for existence. Every route first needs its action allowed by the access
+policies (vaultgate_api.access): read, upload or download.
 """
 
 import re
@@ -15,10 +16,10 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 
 from vaultgate_api import intents
+from vaultgate_api.access import DownloaderDep, ReaderDep, UploaderDep
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
 from vaultgate_api.models import File
-from vaultgate_api.provisioning import CurrentUserDep
 from vaultgate_api.uploads import live_upload
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -100,7 +101,7 @@ async def _live_uploads(session, owner_id: uuid.UUID) -> int:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_file(body: FileCreate, user: CurrentUserDep, session: SessionDep) -> FileCreated:
+async def create_file(body: FileCreate, user: UploaderDep, session: SessionDep) -> FileCreated:
     """Register a file and get a single-use upload intent for the gateway."""
     open_uploads = await _live_uploads(session, user.id)
     if open_uploads >= settings.max_open_uploads_per_user:
@@ -141,7 +142,7 @@ async def create_file(body: FileCreate, user: CurrentUserDep, session: SessionDe
 
 @router.get("")
 async def list_files(
-    user: CurrentUserDep,
+    user: ReaderDep,
     session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -162,7 +163,7 @@ async def list_files(
 
 
 @router.get("/{file_id}")
-async def get_file(file_id: uuid.UUID, user: CurrentUserDep, session: SessionDep) -> FileOut:
+async def get_file(file_id: uuid.UUID, user: ReaderDep, session: SessionDep) -> FileOut:
     file = await session.get(File, file_id)
     if file is None or file.owner_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -171,7 +172,7 @@ async def get_file(file_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
 
 @router.post("/{file_id}/download", status_code=status.HTTP_201_CREATED)
 async def create_download(
-    file_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+    file_id: uuid.UUID, user: DownloaderDep, session: SessionDep
 ) -> TransferOut:
     """A single-use download intent for one of the caller's uploaded files."""
     file = await session.get(File, file_id)

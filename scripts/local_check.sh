@@ -149,6 +149,8 @@ test_api_database() {
   (cd api && VAULTGATE_TEST_DATABASE_URL="$TEST_DB_URL" "../$PY" -m pytest -q --tb=short)
 }
 
+seed_policies() { python3 scripts/seed_policies.py; }
+
 check_login() { python3 scripts/keycloak_smoke.py http://localhost:8080 --api http://localhost:8000; }
 
 check_vault() { python3 scripts/vault_e2e.py; }
@@ -203,6 +205,7 @@ if [ "$MODE" = full ]; then
   if run "Start the stack (docker compose)" start_stack; then
     run "Terraform: bucket and KMS key in LocalStack" apply_terraform
     run "API tests with PostgreSQL" test_api_database
+    run "Access policy for local use (everyone may read, upload, download)" seed_policies
     run "Login: Keycloak PKCE, token checks, /me, admin" check_login
     run "Vault end to end: upload, ciphertext in S3, download" check_vault
     run "Observability: configs, alert rules, dashboards, targets" check_observability

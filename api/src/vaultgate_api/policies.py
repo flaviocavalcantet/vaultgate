@@ -15,8 +15,9 @@ holds (an empty list or no time window means "any"):
   day it starts: Friday 22:00-06:00 covers Saturday 03:00.
 
 `evaluate` is pure (no I/O, no clock): callers pass the time and the client address.
-A policy that cannot be evaluated (an unknown timezone, say) fails closed: a deny
-policy then counts as matching and an allow policy as not matching.
+A policy that cannot be evaluated fails closed: a deny policy then counts as matching
+and an allow policy as not matching. That covers an unknown timezone, and an unknown
+client address (see vaultgate_api.clientip) for a policy with network conditions.
 """
 
 import ipaddress
@@ -42,14 +43,15 @@ Action = Literal["read", "upload", "download"]
 class AccessRequest:
     action: Action
     groups: tuple[str, ...]
-    client_ip: IPAddress
+    client_ip: IPAddress | None  # None: unknown
     at: datetime  # timezone-aware
 
     @classmethod
-    def of(cls, action: Action, groups: Iterable[str], client_ip: str, at: datetime):
+    def of(cls, action: Action, groups: Iterable[str], client_ip: str | None, at: datetime):
         if at.tzinfo is None:
             raise ValueError("the request time must be timezone-aware")
-        return cls(action, tuple(groups), parse_ip(client_ip), at)
+        ip = parse_ip(client_ip) if client_ip is not None else None
+        return cls(action, tuple(groups), ip, at)
 
 
 @dataclass(frozen=True)
@@ -92,11 +94,14 @@ async def check(session: AsyncSession, request: AccessRequest) -> Decision:
 
 
 def _matches(policy: Policy, request: AccessRequest) -> bool:
-    return (
-        _in_groups(policy.groups or (), request.groups)
-        and _in_networks(policy.networks or (), policy.excluded_networks or (), request.client_ip)
-        and _in_window(policy, request.at)
-    )
+    if not (_in_groups(policy.groups or (), request.groups) and _in_window(policy, request.at)):
+        return False
+    networks, excluded = policy.networks or (), policy.excluded_networks or ()
+    if not networks and not excluded:
+        return True
+    if request.client_ip is None:
+        return policy.effect == "deny"  # an unknown address fails closed
+    return _in_networks(networks, excluded, request.client_ip)
 
 
 def _in_groups(policy_groups: Iterable[str], user_groups: tuple[str, ...]) -> bool:

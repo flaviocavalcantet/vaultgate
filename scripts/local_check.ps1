@@ -542,6 +542,9 @@ try {
         if (Invoke-Check "Start the stack ($engineName)" { Start-Stack }) {
             Invoke-Check 'Terraform: bucket and KMS key in LocalStack' { Invoke-Terraform } | Out-Null
             Invoke-Check 'API tests with PostgreSQL' { Test-ApiDatabase } | Out-Null
+            Invoke-Check 'Access policy for local use (everyone may read, upload, download)' {
+                Invoke-Native $Py @('scripts/seed_policies.py')
+            } | Out-Null
             Invoke-Check 'Login: Keycloak PKCE, token checks, /me, admin' {
                 Invoke-Native $Py @('scripts/keycloak_smoke.py', 'http://localhost:8080', '--api', 'http://localhost:8000')
             } | Out-Null

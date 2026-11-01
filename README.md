@@ -92,6 +92,7 @@ The API and gateway serve Prometheus metrics on a separate port, `VAULTGATE_METR
 | `vaultgate_gateway_download_size_bytes` | histogram | | gateway |
 | `vaultgate_gateway_download_failures_total` | counter | `reason` | gateway |
 | `vaultgate_api_uploads_abandoned_total` | counter | | API |
+| `vaultgate_policy_decisions_total` | counter | `action`, `result`, `checked_by` | API |
 | `vaultgate_build_info` | info | `service`, `version` | both |
 
 `route` is the path template (`/uploads/{upload_id}`), never the raw path; anything that matches no route is counted as `<unmatched>`, so clients cannot create new time series by probing URLs. Standard `process_*` and `python_*` metrics are included, which is how gateway memory is shown to stay flat under load.
@@ -152,6 +153,7 @@ Requirements: Docker, Python 3.12+, Go 1.23+, Terraform 1.6+. For Kubernetes: k3
 ```bash
 make up         # start Postgres, LocalStack, Keycloak, API, gateway and the observability stack
 make tf-local   # create the S3 bucket and KMS key in LocalStack
+make seed-policies  # allow every signed-in user everything (access is denied by default)
 make vault-check  # upload and download a file through the whole stack (also runs in CI)
 make test       # run all test suites
 ```
@@ -288,7 +290,11 @@ curl -X POST http://localhost:8000/admin/policies/evaluate -H "Authorization: Be
 # {"allowed": true, "reason": "allowed", "deny": [], "allow": ["finance office hours"], ...}
 ```
 
-Not enforced yet: checks on the file routes and in the gateway come with the next M3 step.
+**Enforcement.** Listing and viewing files (`GET /files`, `GET /files/{id}`) needs `read`, `POST /files` needs `upload` and `POST /files/{id}/download` needs `download`, checked before anything else, so a refused caller can't probe file IDs either. The gateway's intent consume checks `upload` or `download` again, for the intent's user, with the client address the gateway saw ([Client addresses](#client-addresses-behind-a-proxy)). A token obtained from an allowed network, or inside a time window, is refused from elsewhere or later; the refusal does not spend it. Intents of a deactivated user are refused too. A client address that can't be determined satisfies no network condition: an allow policy with networks doesn't match it, and a deny policy with networks or exclusions does.
+
+Refusals are a plain `403 Access denied by policy`. The log line `access denied by policy` names the matching deny policies (or none, when nothing allowed the request), and `vaultgate_policy_decisions_total{action, result, checked_by}` counts every decision, by the API (`api`) and at the gateway's consume (`gateway`).
+
+**Upgrading:** an installation without policies refuses every file request until an admin adds an allow policy. Locally, `make seed-policies` (and `make vault-check`, and `local_check full`) adds one that allows every signed-in user everything; never use it elsewhere.
 
 ### Client addresses behind a proxy
 
@@ -314,11 +320,11 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Gateway uploads: intent check, on-the-fly encryption, S3 multipart upload; abandoned-upload cleanup
   - [x] Streaming downloads: single-use download intents, on-the-fly decryption with backpressure
   - [x] End-to-end check in CI: Keycloak login, upload, ciphertext in S3, download, refusals ([`scripts/vault_e2e.py`](scripts/vault_e2e.py))
-- [ ] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
+- [x] **M3 — Access policies:** IP range, time window and group rules; deny-by-default evaluation
   - [x] Policy model and evaluator: deny by default, deny wins, groups, networks and time windows ([ADR 0004](docs/adr/0004-access-policies.md))
   - [x] Trusted client addresses: `X-Forwarded-For` only from configured proxies, in the API and the gateway
   - [x] Admin API for policies, with a dry run that explains a decision
-  - [ ] Enforcement on file reads and transfer intents, re-checked by the gateway; seed policy for local use and CI
+  - [x] Enforcement on file reads and transfer intents, re-checked by the gateway; seed policy for local use and CI
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services

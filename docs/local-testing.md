@@ -105,13 +105,14 @@ Notes:
 | Start the stack | `docker compose up --build`, then waits until LocalStack, Keycloak, the API (`/readyz`), the gateway and Grafana answer |
 | Terraform | the storage module creates the encrypted, versioned bucket, the KMS key and alias, and the multipart-cleanup rule in LocalStack |
 | API tests with PostgreSQL | users, groups, files, intents, the upload sweep and the internal API, against a real database (`vaultgate_test`, created automatically) |
+| Access policy for local use | adds a policy that lets every signed-in user read, upload and download (`scripts/seed_policies.py`); access is denied by default |
 | Login | real Keycloak PKCE login for alice, bob and carol. Checks issuer, audience, lifetime and groups. The API accepts access tokens and refuses ID tokens, only carol sees `/admin/users`, and insecure flows are refused |
-| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused |
+| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable |
 | Observability | Prometheus config and alert rule tests, Loki and Alloy configs, Grafana dashboards, and every Prometheus scrape target up |
 
 ## Try it yourself
 
-With the stack up (after `full`, or `make up && make tf-local`):
+With the stack up (after `full`, or `make up && make tf-local && make seed-policies`):
 
 | What | Where | Login |
 |---|---|---|
@@ -182,4 +183,5 @@ Then open the **VaultGate / Gateway uploads** dashboard in Grafana to see the tr
 - **`make tf-local` fails because a resource already exists or is missing:** LocalStack and the Terraform state file disagree (for example, the state was deleted while LocalStack kept running). Run `scripts/local_check.sh down`, delete `infra/terraform/envs/local/terraform.tfstate*`, and run `full` again.
 - **The browser login (`make token`) doesn't return:** it listens on `127.0.0.1:8765`; make sure nothing else uses that port.
 - **"files in this checkout have Windows (CRLF) line endings" (Windows):** Git for Windows converted the files when you cloned before `.gitattributes` existed. gofmt reports every Go file as unformatted, and scripts in the containers fail. Commit or stash your changes, then run `git rm -r --cached -q .` and `git reset --hard` to check everything out again with LF.
+- **`403 Access denied by policy` on `/files`:** access is denied until a policy allows it. Run `make seed-policies` (or `python3 scripts/seed_policies.py`), or create a policy as carol (see [Access policies](../README.md#access-policies)).
 - **Something odd after pulling new code:** `scripts/local_check.sh down`, then `full` again. This rebuilds the images and starts from an empty database.

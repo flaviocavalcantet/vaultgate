@@ -5,6 +5,10 @@ calls `consume` with the client's intent token; when the bytes are stored it rep
 the result with `complete` or `fail`. Before serving a download it calls `consume` with
 a download intent, which returns the wrapped data key needed to decrypt the object.
 
+`consume` also re-checks the access policies for the intent's user, with the client
+address the gateway saw (ADR 0004), and refuses intents of deactivated users. A refusal
+leaves the intent unspent.
+
 Every request must carry `Authorization: Bearer <VAULTGATE_INTERNAL_TOKEN>`. If no
 token is configured, every request is refused: the internal API fails closed. The port
 is never exposed through an ingress or published on the host.
@@ -19,14 +23,15 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, IPvAnyAddress
 from sqlalchemy import update
 
 from vaultgate_api import intents
+from vaultgate_api.access import DENIED, authorize
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
 from vaultgate_api.logs import RequestContextMiddleware
-from vaultgate_api.models import File
+from vaultgate_api.models import File, User
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +54,8 @@ class ConsumeRequest(BaseModel):
     token: str = Field(min_length=1, max_length=256)
     kind: Literal["upload", "download"]
     file_id: uuid.UUID
+    # The client address as the gateway resolved it; None if it could not tell.
+    client_ip: IPvAnyAddress | None = None
 
 
 class ConsumeResponse(BaseModel):
@@ -77,6 +84,21 @@ async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeRe
         await session.rollback()
         logger.info("intent rejected", extra={"file_id": str(body.file_id), "kind": body.kind})
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Intent not valid") from None
+    user = await session.get(User, intent.created_by)
+    if user is None or not user.is_active:
+        await session.rollback()
+        logger.info("intent of an inactive user refused", extra={"file_id": str(body.file_id)})
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="User is deactivated")
+    decision = await authorize(
+        session,
+        action=body.kind,
+        user=user,
+        client_ip=str(body.client_ip) if body.client_ip else None,
+        checked_by="gateway",
+    )
+    if not decision.allowed:
+        await session.rollback()  # the intent stays unspent
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=DENIED)
     file = await intents.file_for(session, intent)
     if body.kind == "upload":
         if file.status != "pending":

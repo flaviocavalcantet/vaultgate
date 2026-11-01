@@ -303,3 +303,33 @@ async def test_policy_names_are_unique(session: AsyncSession) -> None:
     session.add(Policy(name="same", effect="deny", actions=["read"]))
     with pytest.raises(IntegrityError):
         await session.flush()
+
+
+# --- unknown client address (unresolvable X-Forwarded-For) -------------------------
+
+
+def unknown_address() -> AccessRequest:
+    return AccessRequest.of("download", ("/finance",), None, WEDNESDAY_3PM)
+
+
+def test_unknown_address_satisfies_no_network_condition() -> None:
+    assert not evaluate([policy(networks=["0.0.0.0/0", "::/0"])], unknown_address()).allowed
+    assert not evaluate([policy(excluded_networks=["10.66.0.0/16"])], unknown_address()).allowed
+
+
+def test_unknown_address_triggers_network_denies() -> None:
+    rules = [policy("all"), policy("office-only", effect="deny", excluded_networks=["10.0.0.0/8"])]
+    decision = evaluate(rules, unknown_address())
+    assert (decision.allowed, decision.deny) == (False, ("office-only",))
+    rules = [policy("all"), policy("lab", effect="deny", networks=["10.66.0.0/16"])]
+    assert not evaluate(rules, unknown_address()).allowed
+
+
+def test_unknown_address_does_not_matter_without_network_conditions() -> None:
+    assert evaluate([policy(groups=["/finance"])], unknown_address()).allowed
+    # A deny for another group does not apply, address or not.
+    rules = [
+        policy("all"),
+        policy("legal-lab", effect="deny", groups=["/legal"], networks=["10.0.0.0/8"]),
+    ]
+    assert evaluate(rules, unknown_address()).allowed

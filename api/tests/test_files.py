@@ -16,7 +16,7 @@ from vaultgate_api.config import settings
 from vaultgate_api.db import get_session
 from vaultgate_api.internal import internal_app
 from vaultgate_api.main import app
-from vaultgate_api.models import File, TransferIntent
+from vaultgate_api.models import File, Policy, TransferIntent
 from vaultgate_api.uploads import fail_abandoned_uploads
 
 pytestmark = requires_db
@@ -31,7 +31,11 @@ def provider() -> FakeProvider:
 
 @pytest.fixture
 async def clients(provider: FakeProvider, session: AsyncSession, monkeypatch):
-    """Public API and internal API clients sharing the test's database session."""
+    """Public API and internal API clients sharing the test's database session, with a
+    policy that allows every action to everyone (access policies have their own tests in
+    test_access.py)."""
+    session.add(Policy(name="everyone", effect="allow", actions=["read", "upload", "download"]))
+    await session.flush()
 
     async def test_session():
         yield session
