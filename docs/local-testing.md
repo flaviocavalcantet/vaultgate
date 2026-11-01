@@ -87,6 +87,36 @@ Notes:
 - If WSL shows Docker networking errors (`iptables` failures) on an old WSL version, run `wsl --update` and then `wsl --shutdown`.
 - Clone the repository with Git for Windows as usual. `.gitattributes` keeps LF line endings, which the Linux containers need.
 
+### Running the Bash script in WSL, with Docker Desktop
+
+`local_check.ps1` covers Windows, and every manual walkthrough below has a PowerShell version, so this is optional. It runs `scripts/local_check.sh`, the script Linux and macOS use, inside an Ubuntu distribution in WSL, with Docker Desktop as the engine.
+
+1. In Docker Desktop, open **Settings → Resources → WSL integration** and turn it on for your Ubuntu distribution. `docker` inside Ubuntu then talks to Docker Desktop. Don't also install Docker Engine in that distribution (`local_check.ps1 setup` without `-Engine desktop` would): pick one engine.
+2. Open Ubuntu from PowerShell (`wsl -d Ubuntu`) and install the tools once. Ubuntu 24.04 or newer ships Python 3.12+; Go comes from go.dev because apt's is too old:
+   ```bash
+   sudo apt update && sudo apt install -y git make curl gcc python3 python3-venv
+   curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
+   echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc && source ~/.bashrc
+   curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg
+   echo "deb [signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+     | sudo tee /etc/apt/sources.list.d/hashicorp.list
+   sudo apt update && sudo apt install -y terraform
+   ```
+3. Clone the repository inside Ubuntu, not under `/mnt/c`: the Windows drive is much slower from WSL, and a Windows checkout can bring CRLF line endings with it.
+   ```bash
+   git clone https://github.com/flaviocavalcantet/vaultgate.git ~/vaultgate
+   ```
+4. Run the script inside Ubuntu, or straight from PowerShell:
+   ```powershell
+   wsl -d Ubuntu -- bash -lc "cd ~/vaultgate && scripts/local_check.sh full"
+   ```
+
+Notes:
+
+- Both checkouts start the same Docker Compose project (`vaultgate`) on the same Docker Desktop. Run `down` from the one that started the stack before using the other.
+- The stack's ports reach Ubuntu and Windows alike, so `http://localhost:8000` and the other addresses work from both.
+- The automated checks log in without a browser. For the manual walkthroughs, Ubuntu may not be able to open your Windows browser: add `--no-browser` to `vaultgate_login.py` and open the URL it prints in Windows. WSL forwards the redirect back to the script on `127.0.0.1:8765`, as long as WSL's localhost forwarding is on (the default).
+
 ## What each step verifies
 
 ### `quick` (no Docker)
