@@ -278,7 +278,7 @@ Deny by default: a user may `read` (list and view their files), `upload` or `dow
 Admins (`VAULTGATE_ADMIN_GROUPS`) manage them at `/admin/policies`: list, `POST`, `GET`, `PUT` (replaces the whole policy) and `DELETE`. `/admin` and `/me` are never subject to policies, so admins can't lock themselves out. Changes apply on the next request. `POST /admin/policies/evaluate` is a dry run: it shows how a request would be decided and which policies matched.
 
 ```bash
-ADMIN=$(make -s token)   # log in as carol
+ADMIN=$(python3 scripts/vaultgate_login.py --switch-user)   # log in as carol
 curl -X POST http://localhost:8000/admin/policies -H "Authorization: Bearer $ADMIN" \
   -H "Content-Type: application/json" -d '{
     "name": "finance office hours", "effect": "allow", "actions": ["read", "upload", "download"],

@@ -175,6 +175,86 @@ Get-Content hello-downloaded.txt
 
 Then open the **VaultGate / Gateway uploads** dashboard in Grafana to see the transfer. In **Explore → Loki**, `{service=~"api|gateway"}` shows the requests.
 
+### Try the access policies
+
+Access is denied unless a policy allows it ([ADR 0004](adr/0004-access-policies.md)). `full` and `make seed-policies` add one that lets every signed-in user do everything, so the walkthrough above works. This continues from it (it needs `$FILE_ID`) and shows a deny policy taking effect at once, in the API and at the gateway, and the admin dry run explaining it.
+
+You need two logins: alice, whose files these are, and carol, the admin. The browser stays logged in to Keycloak, so `--switch-user` asks it to show the login form anyway:
+
+```bash
+TOKEN=$(python3 scripts/vaultgate_login.py --switch-user)   # log in as alice
+ADMIN=$(python3 scripts/vaultgate_login.py --switch-user)   # log in as carol
+AS_CAROL="Authorization: Bearer $ADMIN"
+
+# 1. The policies in place: the seeded one allows everything to everyone
+curl -s http://localhost:8000/admin/policies -H "$AS_CAROL" | python3 -m json.tool
+
+# 2. As alice, get a download token while downloads are allowed
+DOWNLOAD_TOKEN=$(curl -s -X POST http://localhost:8000/files/$FILE_ID/download \
+  -H "Authorization: Bearer $TOKEN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+
+# 3. As carol, deny downloads to /finance (alice's group). Deny wins over the seeded allow.
+POLICY_ID=$(curl -s -X POST http://localhost:8000/admin/policies -H "$AS_CAROL" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "no finance downloads", "effect": "deny", "actions": ["download"], "groups": ["/finance"]}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+
+# 4. Both checks refuse alice now: the API (a new download) and the gateway (the token from step 2)
+curl -s -X POST http://localhost:8000/files/$FILE_ID/download -H "Authorization: Bearer $TOKEN"; echo
+# {"detail":"Access denied by policy"}
+curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $DOWNLOAD_TOKEN" \
+  http://localhost:8888/downloads/$FILE_ID
+# 403
+
+# 5. Ask the dry run why: it names the policies, which the 403 never does
+curl -s -X POST http://localhost:8000/admin/policies/evaluate -H "$AS_CAROL" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "download", "groups": ["/finance"], "client_ip": "127.0.0.1"}'; echo
+# {"allowed":false,"reason":"denied","deny":["no finance downloads"],"allow":["local development: signed-in users"],...}
+
+# 6. Remove the policy. The token from step 2 still works: a refusal does not spend it.
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE http://localhost:8000/admin/policies/$POLICY_ID -H "$AS_CAROL"
+# 204
+curl -s -o hello-again.txt -H "Authorization: Bearer $DOWNLOAD_TOKEN" http://localhost:8888/downloads/$FILE_ID
+cat hello-again.txt
+```
+
+Tokens last 5 minutes; if a step answers `401`, log in again with the same command. Try other conditions the same way, for example `"networks": ["192.0.2.0/24"]` (no local client is in it) or a time window that has already ended today; the dry run accepts `"at"` to ask about another time.
+
+The same in PowerShell, continuing from `$Id` above:
+
+```powershell
+$Token = .\.venv\Scripts\python scripts\vaultgate_login.py --switch-user   # log in as alice
+$Admin = .\.venv\Scripts\python scripts\vaultgate_login.py --switch-user   # log in as carol
+$Auth = @{ Authorization = "Bearer $Token" }
+$AsCarol = @{ Authorization = "Bearer $Admin" }
+
+# 1. The policies in place
+(Invoke-RestMethod http://localhost:8000/admin/policies -Headers $AsCarol).items | Format-Table name, effect, actions, groups
+
+# 2. As alice, get a download token while downloads are allowed
+$Download = Invoke-RestMethod -Method Post "http://localhost:8000/files/$Id/download" -Headers $Auth
+
+# 3. As carol, deny downloads to /finance
+$Body = @{ name = 'no finance downloads'; effect = 'deny'; actions = @('download'); groups = @('/finance') } | ConvertTo-Json
+$Policy = Invoke-RestMethod -Method Post http://localhost:8000/admin/policies -Headers $AsCarol -ContentType 'application/json' -Body $Body
+
+# 4. Both checks refuse alice now (both print Forbidden)
+try { Invoke-RestMethod -Method Post "http://localhost:8000/files/$Id/download" -Headers $Auth } catch { $_.Exception.Response.StatusCode }
+try { Invoke-WebRequest "http://localhost:8888/downloads/$Id" -Headers @{ Authorization = "Bearer $($Download.token)" } -UseBasicParsing } catch { $_.Exception.Response.StatusCode }
+
+# 5. Ask the dry run why
+$Ask = @{ action = 'download'; groups = @('/finance'); client_ip = '127.0.0.1' } | ConvertTo-Json
+Invoke-RestMethod -Method Post http://localhost:8000/admin/policies/evaluate -Headers $AsCarol -ContentType 'application/json' -Body $Ask
+
+# 6. Remove the policy; the token from step 2 still works
+Invoke-RestMethod -Method Delete "http://localhost:8000/admin/policies/$($Policy.id)" -Headers $AsCarol
+Invoke-WebRequest "http://localhost:8888/downloads/$Id" -Headers @{ Authorization = "Bearer $($Download.token)" } -OutFile hello-again.txt -UseBasicParsing
+Get-Content hello-again.txt
+```
+
+To see the decisions: the **VaultGate / Service overview** dashboard in Grafana has an **Access policies** row (decisions per second, by action, result and where they were checked), and in **Explore → Loki**, `{service="api"} |= "access denied by policy"` shows each refusal with the deny policies that matched.
+
 ## Troubleshooting
 
 - **A port is already in use** (5432, 8000, 8080, 8888, 4566, 3000, 9090): stop the other program, for example a local Postgres (`brew services stop postgresql`), or run `down` to clear an old stack.
