@@ -19,6 +19,7 @@ from vaultgate_gateway.api_client import (
     UploadGrant,
 )
 from vaultgate_gateway.app import Services, content_disposition, make_app
+from vaultgate_gateway.clientip import parse_networks
 from vaultgate_gateway.crypto import Decryptor, ciphertext_size
 from vaultgate_gateway.keys import KmsKeyProvider
 from vaultgate_gateway.logs import JsonFormatter
@@ -41,13 +42,15 @@ class FakeApi:
         self.complete_failures = 0  # fail this many complete calls, then succeed
         self.complete_refused = False
         self.complete_calls = 0
+        self.client_ips: list[str | None] = []  # as passed to consume
 
     def grant(self, size: int) -> uuid.UUID:
         file_id = uuid.uuid4()
         self.grants[TOKEN] = UploadGrant(file_id, f"files/{file_id}", size)
         return file_id
 
-    async def consume_upload(self, token: str, file_id: uuid.UUID) -> UploadGrant:
+    async def consume_upload(self, token: str, file_id: uuid.UUID, client_ip) -> UploadGrant:
+        self.client_ips.append(client_ip)
         if self.down:
             raise ApiUnavailable()
         grant = self.grants.pop(token, None)
@@ -89,7 +92,8 @@ class FakeApi:
             self.download_grants[token] = DownloadGrant(**{**grant.__dict__, **overrides})
         return token
 
-    async def consume_download(self, token: str, file_id: uuid.UUID) -> DownloadGrant:
+    async def consume_download(self, token: str, file_id: uuid.UUID, client_ip) -> DownloadGrant:
+        self.client_ips.append(client_ip)
         if self.down:
             raise ApiUnavailable()
         grant = self.download_grants.pop(token, None)
@@ -330,6 +334,38 @@ def _sample(name: str, labels: dict[str, str] | None = None) -> float:
 
 def _failures(reason: str) -> float:
     return _sample("vaultgate_gateway_upload_failures_total", {"reason": reason})
+
+
+class ClientAddressCase(GatewayCase):
+    """The API re-checks access policies at consume time with the client address the
+    gateway resolved; the test client connects from 127.0.0.1. No tests of its own."""
+
+    trusted = ""
+
+    def get_app(self):
+        services = Services(api=self.api, keys=self.keys, s3=self.s3, bucket=BUCKET)
+        return make_app(services, tuple(parse_networks(self.trusted)))
+
+
+class DirectClientAddressTest(ClientAddressCase):
+    def test_both_directions_send_the_peer_address(self) -> None:
+        file_id = self.api.grant(3)
+        forged = {"X-Forwarded-For": "10.0.0.5"}  # untrusted peer: ignored
+        assert self.put(file_id, b"abc", headers=forged).code == 201
+        token = self.api.grant_download(file_id)
+        response = self.fetch(f"/downloads/{file_id}", headers={"Authorization": f"Bearer {token}"})
+        assert response.code == 200
+        assert self.api.client_ips == ["127.0.0.1", "127.0.0.1"]
+
+
+class TrustedProxyClientAddressTest(ClientAddressCase):
+    trusted = "127.0.0.0/8"
+
+    def test_forwarded_address_or_unknown_is_sent(self) -> None:
+        file_id = self.api.grant(3)
+        assert self.put(file_id, b"abc", headers={"X-Forwarded-For": "198.51.100.1"}).code == 201
+        assert self.put(self.api.grant(3), b"abc", headers={"X-Forwarded-For": "junk"}).code == 201
+        assert self.api.client_ips == ["198.51.100.1", None]
 
 
 class DownloadTest(GatewayCase):

@@ -10,12 +10,17 @@ then, as alice:
 4. asks for a download intent, streams the file back and compares bytes and digest;
 5. checks that upload and download tokens are single use, that bob cannot get a
    download intent for alice's file, and that an upload with the wrong size is
-   refused and marks the file failed.
+   refused and marks the file failed;
+6. as carol (admin), adds temporary deny policies and checks that the API refuses,
+   that the gateway refuses an intent issued before the policy (and that the refused
+   intent stays usable), that the gateway reports a known client address, and that
+   deny wins over the seeded allow policy. The `e2e:` policies are always removed.
 
     python3 scripts/vault_e2e.py [--keycloak URL] [--api URL] [--s3 URL] [--bucket NAME]
 
-Needs the bucket and KMS key from `make tf-local`. Standard library only, so it runs
-in CI without installing anything. The S3 read is unsigned, which LocalStack accepts;
+Needs the bucket and KMS key from `make tf-local` and the seeded allow policy from
+scripts/seed_policies.py (`make vault-check` does both). Standard library only, so it
+runs in CI without installing anything. The S3 read is unsigned, which LocalStack accepts;
 it is a test of the local stack, not something that works against AWS.
 """
 
@@ -34,6 +39,7 @@ import urllib.request
 from keycloak_smoke import login, wait_for, wait_for_api
 
 MiB = 1024 * 1024
+E2E_POLICY = "e2e: "  # prefix of the temporary policies this check creates
 # VGE1 framing (ADR 0003): 16-byte header, 64 KiB chunks, 16-byte tag per chunk.
 VGE1_HEADER, VGE1_CHUNK, VGE1_TAG = 16, 64 * 1024, 16
 
@@ -52,9 +58,30 @@ def api_call(api: str, method: str, path: str, token: str, body: dict | None = N
     )
     try:
         with urllib.request.urlopen(request) as response:
-            return response.status, json.load(response)
+            raw = response.read()
+            return response.status, json.loads(raw) if raw else None
     except urllib.error.HTTPError as error:
         return error.code, None
+
+
+def add_policy(api: str, admin: str, name: str, **fields) -> str:
+    body = {"name": E2E_POLICY + name, "effect": "deny", "actions": ["download"]} | fields
+    status, created = api_call(api, "POST", "/admin/policies", admin, body)
+    assert status == 201, f"creating policy {name!r}: {status}"
+    return created["id"]
+
+
+def remove_policy(api: str, admin: str, policy_id: str) -> None:
+    status, _ = api_call(api, "DELETE", f"/admin/policies/{policy_id}", admin)
+    assert status in (204, 404), f"deleting policy: {status}"
+
+
+def remove_e2e_policies(api: str, admin: str) -> None:
+    status, page = api_call(api, "GET", "/admin/policies?limit=100", admin)
+    assert status == 200, f"listing policies: {status}"
+    for policy in page["items"]:
+        if policy["name"].startswith(E2E_POLICY):
+            remove_policy(api, admin, policy["id"])
 
 
 def _connection(url: str) -> tuple[http.client.HTTPConnection, str]:
@@ -107,13 +134,15 @@ def run(args) -> None:
     wait_for_api(args.api)
     alice = login(discovery, "alice", "alice-dev-password")["access_token"]
     bob = login(discovery, "bob", "bob-dev-password")["access_token"]
+    carol = login(discovery, "carol", "carol-dev-password")["access_token"]
     size = args.size_mib * MiB
+    remove_e2e_policies(args.api, carol)  # left over from an interrupted run
 
     # 1. Register and upload.
     status, created = api_call(
         args.api, "POST", "/files", alice, {"name": "e2e-relatório.bin", "size": size}
     )
-    assert status == 201, f"POST /files: {status}"
+    assert status == 201, f"POST /files: {status} (403: run scripts/seed_policies.py first)"
     file_id, upload_intent = created["file"]["id"], created["upload"]
     digest, first = hashlib.sha256(), []
     started = time.monotonic()
@@ -181,6 +210,49 @@ def run(args) -> None:
     status, file = api_call(args.api, "GET", f"/files/{short['file']['id']}", alice)
     assert file["status"] == "failed", file
     print("ok  an upload with the wrong size is refused and the file marked failed")
+
+    # 6. Access policies, on top of the seeded allow-everyone policy.
+    try:
+        check_policies(args, file_id, sha256, alice, bob, carol)
+    finally:
+        remove_e2e_policies(args.api, carol)
+
+
+def check_policies(args, file_id: str, sha256: str, alice: str, bob: str, carol: str) -> None:
+    api, path = args.api, f"/files/{file_id}/download"
+
+    deny = add_policy(api, carol, "no finance downloads", groups=["/finance"])
+    status, _ = api_call(api, "POST", path, alice)
+    assert status == 403, f"download intent despite a deny policy: {status}"
+    remove_policy(api, carol, deny)
+    print("ok  policies: the API refuses a download a deny policy covers")
+
+    # An intent issued while allowed is refused by the gateway once a deny applies,
+    # and stays usable: the refusal does not spend it.
+    status, intent = api_call(api, "POST", path, alice)
+    assert status == 201, status
+    deny = add_policy(api, carol, "no finance downloads", groups=["/finance"])
+    status, *_ = download(intent["url"], intent["token"])
+    assert status == 403, f"gateway served a download a deny policy covers: {status}"
+    remove_policy(api, carol, deny)
+    status, _, got_sha256, _ = download(intent["url"], intent["token"])
+    assert (status, got_sha256) == (200, sha256), status
+    print("ok  policies: the gateway re-checks, and a refused intent stays usable")
+
+    # Excluding every network denies only an unknown client address, so this passes
+    # only if the gateway reports the address it saw.
+    deny = add_policy(api, carol, "unknown address", excluded_networks=["0.0.0.0/0", "::/0"])
+    status, intent = api_call(api, "POST", path, alice)
+    assert status == 201, status
+    status, *_ = download(intent["url"], intent["token"])
+    assert status == 200, f"gateway did not report a client address: {status}"
+    remove_policy(api, carol, deny)
+    print("ok  policies: the gateway reports the client address it saw")
+
+    add_policy(api, carol, "finance may not list", actions=["read"], groups=["/finance"])
+    assert api_call(api, "GET", "/files", alice)[0] == 403, "deny did not win over allow"
+    assert api_call(api, "GET", "/files", bob)[0] == 200, "a deny for /finance hit /legal"
+    print("ok  policies: deny wins over allow, for the groups it names only")
 
 
 def main(argv: list[str]) -> int:

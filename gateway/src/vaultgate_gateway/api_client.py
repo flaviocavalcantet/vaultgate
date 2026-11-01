@@ -68,22 +68,30 @@ class InternalApi:
             raise ApiUnavailable(type(exc).__name__) from None
         return json.loads(response.body)
 
-    async def consume_upload(self, token: str, file_id: uuid.UUID) -> UploadGrant:
-        data = await self._post(
+    async def _consume(
+        self, token: str, kind: str, file_id: uuid.UUID, client_ip: str | None
+    ) -> dict:
+        # The API re-checks the access policies with the client address seen here
+        # (None when it could not be told), and refuses with 403 like a bad token.
+        return await self._post(
             "/internal/intents/consume",
-            {"token": token, "kind": "upload", "file_id": str(file_id)},
+            {"token": token, "kind": kind, "file_id": str(file_id), "client_ip": client_ip},
         )
+
+    async def consume_upload(
+        self, token: str, file_id: uuid.UUID, client_ip: str | None
+    ) -> UploadGrant:
+        data = await self._consume(token, "upload", file_id, client_ip)
         return UploadGrant(
             file_id=uuid.UUID(data["file_id"]),
             storage_key=data["storage_key"],
             declared_size=data["declared_size"],
         )
 
-    async def consume_download(self, token: str, file_id: uuid.UUID) -> DownloadGrant:
-        data = await self._post(
-            "/internal/intents/consume",
-            {"token": token, "kind": "download", "file_id": str(file_id)},
-        )
+    async def consume_download(
+        self, token: str, file_id: uuid.UUID, client_ip: str | None
+    ) -> DownloadGrant:
+        data = await self._consume(token, "download", file_id, client_ip)
         try:
             return DownloadGrant(
                 file_id=uuid.UUID(data["file_id"]),

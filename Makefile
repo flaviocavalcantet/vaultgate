@@ -1,4 +1,4 @@
-.PHONY: up down test lint migrate tf-local obs-check auth-check vault-check token
+.PHONY: up down test lint migrate tf-local obs-check auth-check vault-check token seed-policies
 
 up:          ## Start the local stack (services, dependencies and Prometheus/Loki/Alloy/Grafana)
 	docker compose up --build -d
@@ -37,7 +37,11 @@ vault-check: ## Upload and download a file through the real stack and check it i
 	docker compose up -d --build postgres localstack keycloak api gateway
 	for i in $$(seq 60); do curl -sf http://localhost:4566/_localstack/health >/dev/null && break; sleep 2; done
 	$(MAKE) tf-local
+	python3 scripts/seed_policies.py
 	python3 scripts/vault_e2e.py
+
+seed-policies: ## Allow every signed-in user everything (local development only; access is denied by default)
+	python3 scripts/seed_policies.py
 
 tf-local:    ## Apply Terraform against LocalStack (run `make up` first)
 	cd infra/terraform/envs/local && terraform init && terraform apply -auto-approve

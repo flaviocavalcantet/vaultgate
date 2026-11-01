@@ -58,31 +58,36 @@ class InternalApiTest(AsyncHTTPTestCase):
     @gen_test
     async def test_consume_sends_secret_and_returns_grant(self) -> None:
         file_id = uuid.uuid4()
-        grant = await self.client().consume_upload("tok", file_id)
+        grant = await self.client().consume_upload("tok", file_id, "198.51.100.1")
         assert grant.file_id == file_id
         assert grant.storage_key == f"files/{file_id}"
         assert grant.declared_size == 42
         [(path, auth, body)] = self.calls
         assert path == "intents/consume"
         assert auth == f"Bearer {SECRET}"
-        assert body == {"token": "tok", "kind": "upload", "file_id": str(file_id)}
+        assert body == {
+            "token": "tok",
+            "kind": "upload",
+            "file_id": str(file_id),
+            "client_ip": "198.51.100.1",
+        }
 
     @gen_test
     async def test_consume_download_returns_key_material(self) -> None:
         file_id = uuid.uuid4()
-        grant = await self.client().consume_download("tok", file_id)
+        grant = await self.client().consume_download("tok", file_id, None)
         assert grant.file_id == file_id
         assert grant.wrapped_key == b"wrapped"
         assert (grant.name, grant.size, grant.kms_key_id) == ("a.pdf", 42, "k")
         assert b"wrapped" not in repr(grant).encode()
         [(_, _, body)] = self.calls
-        assert body["kind"] == "download"
+        assert (body["kind"], body["client_ip"]) == ("download", None)
 
     @gen_test
     async def test_incomplete_download_grant_is_unavailable(self) -> None:
         self._app.settings["incomplete"] = True
         try:
-            await self.client().consume_download("tok", uuid.uuid4())
+            await self.client().consume_download("tok", uuid.uuid4(), None)
         except ApiUnavailable:
             return
         raise AssertionError("a grant without a key must not be used")
@@ -102,7 +107,7 @@ class InternalApiTest(AsyncHTTPTestCase):
         for status in (403, 409):
             self.answer(status)
             try:
-                await self.client().consume_upload("tok", uuid.uuid4())
+                await self.client().consume_upload("tok", uuid.uuid4(), None)
             except IntentRefused:
                 continue
             raise AssertionError(f"{status} should refuse the intent")

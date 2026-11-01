@@ -673,13 +673,75 @@
       }
     },
     {
+      "id": 15,
+      "type": "row",
+      "title": "Access policies",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Policy decisions / s",
+      "description": "Access policy decisions on real requests, by action and result (allowed, denied, no_matching_policy), checked by the API or at the gateway's intent consume. A rise in denials after a policy change shows who it hit.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (action, result, checked_by) (rate(vaultgate_policy_decisions_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{action}} {{result}} ({{checked_by}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "id": 13,
       "type": "row",
       "title": "Logs",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 37,
         "w": 24,
         "h": 1
       },
@@ -696,7 +758,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 29,
+        "y": 38,
         "w": 24,
         "h": 10
       },
