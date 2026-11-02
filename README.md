@@ -264,7 +264,7 @@ Gateway settings (all `VAULTGATE_`-prefixed): `API_INTERNAL_URL`, `INTERNAL_TOKE
 Try the scanner on its own:
 
 ```bash
-echo "Contact ana@example.com, CPF 529.982.247-25" | (cd scanner && go run ./cmd/scanner)
+echo "Contact ana@example.com, CPF 529.982.247-25, card 4111 1111 1111 1111" | (cd scanner && go run ./cmd/scanner)
 ```
 
 ### Access policies
@@ -326,6 +326,12 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Admin API for policies, with a dry run that explains a decision
   - [x] Enforcement on file reads and transfer intents, re-checked by the gateway; seed policy for local use and CI
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
+  - [x] Payment card detector (Luhn and card network ranges) and a streaming scan that holds one window in memory
+  - [ ] Decrypting stored objects (VGE1) in Go, checked against vectors from the Python implementation
+  - [ ] Text extraction from Office documents and PDFs, with size and expansion limits
+  - [ ] Scan state in the API: status and findings per file, results endpoint, SQS events, re-sending stuck scans
+  - [ ] Scanner worker: SQS consumer, queue and dead-letter queue in Terraform, compose service, metrics
+  - [ ] Quarantine: downloads need a clean scan; admin release and rescan; end-to-end check
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway

@@ -9,7 +9,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -34,21 +33,26 @@ func main() {
 }
 
 func run(in io.Reader, out io.Writer, logger *slog.Logger) error {
-	data, err := io.ReadAll(bufio.NewReader(in))
+	enc := json.NewEncoder(out)
+	counts := map[detect.Kind]int{}
+	findings := 0
+	var writeErr error
+	// Streamed: memory stays at one window whatever the input size.
+	n, err := detect.ScanReader(in, func(f detect.Finding) {
+		counts[f.Kind]++
+		findings++
+		if writeErr == nil {
+			// Positions only: matched values never leave the scanner.
+			writeErr = enc.Encode(result{f.Kind, f.Start, f.End})
+		}
+	})
 	if err != nil {
 		return err
 	}
-	findings := detect.Scan(string(data))
-	enc := json.NewEncoder(out)
-	counts := map[detect.Kind]int{}
-	for _, f := range findings {
-		counts[f.Kind]++
-		// Positions only: matched values never leave the scanner.
-		if err := enc.Encode(result{f.Kind, f.Start, f.End}); err != nil {
-			return err
-		}
+	if writeErr != nil {
+		return writeErr
 	}
-	logger.Info("scan complete", "bytes", len(data), "findings", len(findings), "by_kind", counts)
+	logger.Info("scan complete", "bytes", n, "findings", findings, "by_kind", counts)
 	return nil
 }
 
