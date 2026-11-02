@@ -92,10 +92,12 @@ Notes:
 `local_check.ps1` covers Windows, and every manual walkthrough below has a PowerShell version, so this is optional. It runs `scripts/local_check.sh`, the script Linux and macOS use, inside an Ubuntu distribution in WSL, with Docker Desktop as the engine.
 
 1. In Docker Desktop, open **Settings → Resources → WSL integration** and turn it on for your Ubuntu distribution. `docker` inside Ubuntu then talks to Docker Desktop. Don't also install Docker Engine in that distribution (`local_check.ps1 setup` without `-Engine desktop` would): pick one engine.
-2. Open Ubuntu from PowerShell (`wsl -d Ubuntu`) and install the tools once. Ubuntu 24.04 or newer ships Python 3.12+; Go comes from go.dev because apt's is too old:
+2. Open Ubuntu from PowerShell (`wsl -d Ubuntu`) and install the tools once. Ubuntu 24.04 or newer ships Python 3.12+. Go comes from go.dev because apt's is too old: copy the SHA-256 of the file from [go.dev/dl](https://go.dev/dl/) so the download is checked before it is installed, and on an ARM Windows machine use the `linux-arm64` file instead of `linux-amd64`:
    ```bash
    sudo apt update && sudo apt install -y git make curl gcc python3 python3-venv
-   curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
+   GO=go1.23.4.linux-amd64.tar.gz
+   curl -fsSLO "https://go.dev/dl/$GO"
+   echo "<SHA-256 from go.dev/dl>  $GO" | sha256sum -c - && sudo tar -C /usr/local -xzf "$GO"
    echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc && source ~/.bashrc
    curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg
    echo "deb [signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
@@ -207,7 +209,7 @@ Then open the **VaultGate / Gateway uploads** dashboard in Grafana to see the tr
 
 ### Try the access policies
 
-Access is denied unless a policy allows it ([ADR 0004](adr/0004-access-policies.md)). `full` and `make seed-policies` add one that lets every signed-in user do everything, so the walkthrough above works. This continues from it (it needs `$FILE_ID`) and shows a deny policy taking effect at once, in the API and at the gateway, and the admin dry run explaining it.
+Access is denied unless a policy allows it ([ADR 0004](adr/0004-access-policies.md)). `full` and `make seed-policies` add one that lets every signed-in user do everything, so the walkthrough above works. This continues in the same terminal as the Bash walkthrough above, after its step 2 (Upload through the gateway): it uses that file's `$FILE_ID`, which must be uploaded. It shows a deny policy taking effect at once, in the API and at the gateway, and the admin dry run explaining it.
 
 You need two logins: alice, whose files these are, and carol, the admin. The browser stays logged in to Keycloak, so `--switch-user` asks it to show the login form anyway:
 
@@ -251,7 +253,7 @@ cat hello-again.txt
 
 Tokens last 5 minutes; if a step answers `401`, log in again with the same command. Try other conditions the same way, for example `"networks": ["192.0.2.0/24"]` (no local client is in it) or a time window that has already ended today; the dry run accepts `"at"` to ask about another time.
 
-The same in PowerShell, continuing from `$Id` above:
+The same in PowerShell. Run it in the same window as the PowerShell walkthrough above, after its step 2 (Upload through the gateway): it uses that file's `$Id`, which must be uploaded.
 
 ```powershell
 $Token = .\.venv\Scripts\python scripts\vaultgate_login.py --switch-user   # log in as alice
