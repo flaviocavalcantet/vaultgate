@@ -344,10 +344,12 @@ var breakElements = map[string]bool{
 // set apart, since a crafted part can put anything there.
 //
 // Entities declared in the part's DOCTYPE are expanded, as office suites do, so a
-// number split across entities ("529.982.&a;-25") comes out whole. External entities
-// are never loaded. Go substitutes entity values without parsing them again, so
-// nesting cannot multiply them, and the text written is charged to the expansion
-// budget, so repetition ("&big;" thousands of times) cannot either.
+// number split across entities ("529.982.&a;-25") comes out whole. External and
+// parameter entities are never loaded. The decoder itself expands nothing (it would
+// build a whole token, "&big;" a hundred thousand times, in memory first): it leaves
+// references as written, and they are expanded while writing, each value charged
+// to the expansion budget before it is written. Values are not expanded again, so
+// nesting cannot multiply them either.
 func (x *run) xmlText(f *zip.File) error {
 	rc, err := x.open(f)
 	if err != nil {
@@ -355,8 +357,8 @@ func (x *run) xmlText(f *zip.File) error {
 	}
 	defer rc.Close()
 	dec := xml.NewDecoder(rc)
-	dec.Strict = false
-	dec.Entity = map[string]string{}
+	dec.Strict = false // unknown entities stay as written, for expand
+	entities := map[string][]byte{}
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -370,10 +372,7 @@ func (x *run) xmlText(f *zip.File) error {
 		}
 		switch t := tok.(type) {
 		case xml.CharData:
-			if err := x.charge(len(t), f.Name); err != nil {
-				return err
-			}
-			if _, err := x.w.Write(t); err != nil {
+			if err := x.expand(t, entities, f.Name); err != nil {
 				return err
 			}
 		case xml.Directive:
@@ -382,23 +381,23 @@ func (x *run) xmlText(f *zip.File) error {
 				if value == nil {
 					value = m[3]
 				}
-				dec.Entity[string(m[1])] = string(charRefs(value))
+				entities[string(m[1])] = charRefs(value)
 			}
-			if err := x.apart(charRefs(t)); err != nil {
+			if err := x.apart(charRefs(t), nil, f.Name); err != nil {
 				return err
 			}
 		case xml.StartElement:
 			for _, attr := range t.Attr {
-				if err := x.apart([]byte(attr.Value)); err != nil {
+				if err := x.apart([]byte(attr.Value), entities, f.Name); err != nil {
 					return err
 				}
 			}
 		case xml.Comment:
-			if err := x.apart(t); err != nil {
+			if err := x.apart(t, nil, f.Name); err != nil {
 				return err
 			}
 		case xml.ProcInst:
-			if err := x.apart(t.Inst); err != nil {
+			if err := x.apart(t.Inst, nil, f.Name); err != nil {
 				return err
 			}
 		case xml.EndElement:
@@ -443,14 +442,44 @@ func (x *run) charge(n int, name string) error {
 }
 
 // apart writes text set off from what surrounds it.
-func (x *run) apart(text []byte) error {
+func (x *run) apart(text []byte, entities map[string][]byte, name string) error {
 	if err := x.separate(); err != nil {
 		return err
 	}
-	if _, err := x.w.Write(text); err != nil {
+	if err := x.expand(text, entities, name); err != nil {
 		return err
 	}
 	return x.separate()
+}
+
+var entityRef = regexp.MustCompile(`&([A-Za-z_:][-A-Za-z0-9._:]*);`)
+
+// expand writes text with references to declared entities replaced by their values.
+// Everything written is charged to the budget first, so memory never holds more
+// than the text itself and one entity value.
+func (x *run) expand(text []byte, entities map[string][]byte, name string) error {
+	write := func(b []byte) error {
+		if err := x.charge(len(b), name); err != nil {
+			return err
+		}
+		_, err := x.w.Write(b)
+		return err
+	}
+	last := 0
+	for _, m := range entityRef.FindAllSubmatchIndex(text, -1) {
+		value, ok := entities[string(text[m[2]:m[3]])]
+		if !ok {
+			continue // not declared here: left as written
+		}
+		if err := write(text[last:m[0]]); err != nil {
+			return err
+		}
+		if err := write(value); err != nil {
+			return err
+		}
+		last = m[1]
+	}
+	return write(text[last:])
 }
 
 type budgetReader struct {

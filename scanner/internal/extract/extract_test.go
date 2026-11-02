@@ -442,6 +442,24 @@ func TestXMLEntitiesAreExpanded(t *testing.T) {
 	bomb := `<!DOCTYPE doc [<!ENTITY big "` + strings.Repeat("x", 100_000) + `">]><doc><p>` +
 		strings.Repeat("&big;", 2000) + `</p></doc>` // 200 MB of text from a 110 KB part
 	small := extractor()
-	small.Limits.MaxExtractedBytes = 50 << 20
+	small.Limits.MaxExtractedBytes = 4 << 20 // small, so little text is scanned before refusal
 	assertUnscannable(t, "entity expansion bomb", small, odt(bomb))
+}
+
+// Expansion is bounded before memory is used, not after: a 1 MiB entity referenced
+// 100,000 times (100 GB) in an attribute or in text is refused without building it.
+func TestEntityBombsAreRefusedBeforeTheyExpand(t *testing.T) {
+	entity := `<!DOCTYPE doc [<!ENTITY big "` + strings.Repeat("x", 1<<20) + `">]>`
+	refs := strings.Repeat("&big;", 100_000)
+	small := extractor()
+	small.Limits.MaxExtractedBytes = 4 << 20 // small, so little text is scanned before refusal
+	for name, body := range map[string]string{
+		"in text":         `<doc><p>` + refs + `</p></doc>`,
+		"in an attribute": `<doc><p v="` + refs + `"/></doc>`,
+	} {
+		odt := zipOf(t,
+			entry{name: "mimetype", data: []byte("application/vnd.oasis.opendocument.text")},
+			entry{name: "content.xml", data: []byte(entity + body)})
+		assertUnscannable(t, "entity bomb "+name, small, odt)
+	}
 }
