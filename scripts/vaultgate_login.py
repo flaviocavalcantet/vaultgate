@@ -13,6 +13,9 @@ with this script acting as the public client `vaultgate-web`:
     curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/me
 
 Nothing is written to disk. Access tokens live 5 minutes; run it again for a new one.
+The browser keeps its identity provider session, so running it again logs in as the
+same user without asking. To log in as someone else, add --switch-user: it asks the
+provider to show its login form anyway (OIDC prompt=login).
 Standard library only.
 """
 
@@ -60,19 +63,21 @@ def discover(issuer: str) -> dict:
         return json.load(response)
 
 
-def authorization_url(discovery: dict, challenge: str, state: str) -> str:
-    query = urllib.parse.urlencode(
-        {
-            "client_id": CLIENT_ID,
-            "response_type": "code",
-            "scope": "openid",
-            "redirect_uri": REDIRECT_URI,
-            "state": state,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-        }
-    )
-    return f"{discovery['authorization_endpoint']}?{query}"
+def authorization_url(
+    discovery: dict, challenge: str, state: str, switch_user: bool = False
+) -> str:
+    params = {
+        "client_id": CLIENT_ID,
+        "response_type": "code",
+        "scope": "openid",
+        "redirect_uri": REDIRECT_URI,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    if switch_user:
+        params["prompt"] = "login"
+    return f"{discovery['authorization_endpoint']}?{urllib.parse.urlencode(params)}"
 
 
 class CallbackServer:
@@ -186,6 +191,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--json", action="store_true", help="print the whole token response as JSON"
     )
+    parser.add_argument(
+        "--switch-user",
+        action="store_true",
+        help="show the login form even if the browser is still logged in (log in as someone else)",
+    )
     parser.add_argument("--timeout", type=float, default=180, help="seconds to wait for login")
     args = parser.parse_args(argv)
 
@@ -194,7 +204,7 @@ def main(argv: list[str]) -> int:
         verifier, challenge = pkce_pair()
         state = secrets.token_urlsafe(16)
         callback = CallbackServer(state)  # listen before sending the browser anywhere
-        url = authorization_url(discovery, challenge, state)
+        url = authorization_url(discovery, challenge, state, args.switch_user)
         print(f"Log in at: {url}", file=sys.stderr, flush=True)
         if not args.no_browser:
             webbrowser.open(url)

@@ -87,6 +87,38 @@ Notes:
 - If WSL shows Docker networking errors (`iptables` failures) on an old WSL version, run `wsl --update` and then `wsl --shutdown`.
 - Clone the repository with Git for Windows as usual. `.gitattributes` keeps LF line endings, which the Linux containers need.
 
+### Running the Bash script in WSL, with Docker Desktop
+
+`local_check.ps1` covers Windows, and every manual walkthrough below has a PowerShell version, so this is optional. It runs `scripts/local_check.sh`, the script Linux and macOS use, inside an Ubuntu distribution in WSL, with Docker Desktop as the engine.
+
+1. In Docker Desktop, open **Settings → Resources → WSL integration** and turn it on for your Ubuntu distribution. `docker` inside Ubuntu then talks to Docker Desktop. Don't also install Docker Engine in that distribution (`local_check.ps1 setup` without `-Engine desktop` would): pick one engine.
+2. Open Ubuntu from PowerShell (`wsl -d Ubuntu`) and install the tools once. Ubuntu 24.04 or newer ships Python 3.12+. Go comes from go.dev because apt's is too old: copy the SHA-256 of the file from [go.dev/dl](https://go.dev/dl/) so the download is checked before it is installed, and on an ARM Windows machine use the `linux-arm64` file instead of `linux-amd64`:
+   ```bash
+   sudo apt update && sudo apt install -y git make curl gcc python3 python3-venv
+   GO=go1.23.4.linux-amd64.tar.gz
+   curl -fsSLO "https://go.dev/dl/$GO"
+   echo "<SHA-256 from go.dev/dl>  $GO" | sha256sum -c - && sudo tar -C /usr/local -xzf "$GO"
+   echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc && source ~/.bashrc
+   curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg
+   echo "deb [signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+     | sudo tee /etc/apt/sources.list.d/hashicorp.list
+   sudo apt update && sudo apt install -y terraform
+   ```
+3. Clone the repository inside Ubuntu, not under `/mnt/c`: the Windows drive is much slower from WSL, and a Windows checkout can bring CRLF line endings with it.
+   ```bash
+   git clone https://github.com/flaviocavalcantet/vaultgate.git ~/vaultgate
+   ```
+4. Run the script inside Ubuntu, or straight from PowerShell:
+   ```powershell
+   wsl -d Ubuntu -- bash -lc "cd ~/vaultgate && scripts/local_check.sh full"
+   ```
+
+Notes:
+
+- Both checkouts start the same Docker Compose project (`vaultgate`) on the same Docker Desktop. Run `down` from the one that started the stack before using the other.
+- The stack's ports reach Ubuntu and Windows alike, so `http://localhost:8000` and the other addresses work from both.
+- The automated checks log in without a browser. For the manual walkthroughs, Ubuntu may not be able to open your Windows browser: add `--no-browser` to `vaultgate_login.py` and open the URL it prints in Windows. WSL forwards the redirect back to the script on `127.0.0.1:8765`, as long as WSL's localhost forwarding is on (the default).
+
 ## What each step verifies
 
 ### `quick` (no Docker)
@@ -174,6 +206,86 @@ Get-Content hello-downloaded.txt
 ```
 
 Then open the **VaultGate / Gateway uploads** dashboard in Grafana to see the transfer. In **Explore → Loki**, `{service=~"api|gateway"}` shows the requests.
+
+### Try the access policies
+
+Access is denied unless a policy allows it ([ADR 0004](adr/0004-access-policies.md)). `full` and `make seed-policies` add one that lets every signed-in user do everything, so the walkthrough above works. This continues in the same terminal as the Bash walkthrough above, after its step 2 (Upload through the gateway): it uses that file's `$FILE_ID`, which must be uploaded. It shows a deny policy taking effect at once, in the API and at the gateway, and the admin dry run explaining it.
+
+You need two logins: alice, whose files these are, and carol, the admin. The browser stays logged in to Keycloak, so `--switch-user` asks it to show the login form anyway:
+
+```bash
+TOKEN=$(python3 scripts/vaultgate_login.py --switch-user)   # log in as alice
+ADMIN=$(python3 scripts/vaultgate_login.py --switch-user)   # log in as carol
+AS_CAROL="Authorization: Bearer $ADMIN"
+
+# 1. The policies in place: the seeded one allows everything to everyone
+curl -s http://localhost:8000/admin/policies -H "$AS_CAROL" | python3 -m json.tool
+
+# 2. As alice, get a download token while downloads are allowed
+DOWNLOAD_TOKEN=$(curl -s -X POST http://localhost:8000/files/$FILE_ID/download \
+  -H "Authorization: Bearer $TOKEN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+
+# 3. As carol, deny downloads to /finance (alice's group). Deny wins over the seeded allow.
+POLICY_ID=$(curl -s -X POST http://localhost:8000/admin/policies -H "$AS_CAROL" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "no finance downloads", "effect": "deny", "actions": ["download"], "groups": ["/finance"]}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+
+# 4. Both checks refuse alice now: the API (a new download) and the gateway (the token from step 2)
+curl -s -X POST http://localhost:8000/files/$FILE_ID/download -H "Authorization: Bearer $TOKEN"; echo
+# {"detail":"Access denied by policy"}
+curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $DOWNLOAD_TOKEN" \
+  http://localhost:8888/downloads/$FILE_ID
+# 403
+
+# 5. Ask the dry run why: it names the policies, which the 403 never does
+curl -s -X POST http://localhost:8000/admin/policies/evaluate -H "$AS_CAROL" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "download", "groups": ["/finance"], "client_ip": "127.0.0.1"}'; echo
+# {"allowed":false,"reason":"denied","deny":["no finance downloads"],"allow":["local development: signed-in users"],...}
+
+# 6. Remove the policy. The token from step 2 still works: a refusal does not spend it.
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE http://localhost:8000/admin/policies/$POLICY_ID -H "$AS_CAROL"
+# 204
+curl -s -o hello-again.txt -H "Authorization: Bearer $DOWNLOAD_TOKEN" http://localhost:8888/downloads/$FILE_ID
+cat hello-again.txt
+```
+
+Tokens last 5 minutes; if a step answers `401`, log in again with the same command. Try other conditions the same way, for example `"networks": ["192.0.2.0/24"]` (no local client is in it) or a time window that has already ended today; the dry run accepts `"at"` to ask about another time.
+
+The same in PowerShell. Run it in the same window as the PowerShell walkthrough above, after its step 2 (Upload through the gateway): it uses that file's `$Id`, which must be uploaded.
+
+```powershell
+$Token = .\.venv\Scripts\python scripts\vaultgate_login.py --switch-user   # log in as alice
+$Admin = .\.venv\Scripts\python scripts\vaultgate_login.py --switch-user   # log in as carol
+$Auth = @{ Authorization = "Bearer $Token" }
+$AsCarol = @{ Authorization = "Bearer $Admin" }
+
+# 1. The policies in place
+(Invoke-RestMethod http://localhost:8000/admin/policies -Headers $AsCarol).items | Format-Table name, effect, actions, groups
+
+# 2. As alice, get a download token while downloads are allowed
+$Download = Invoke-RestMethod -Method Post "http://localhost:8000/files/$Id/download" -Headers $Auth
+
+# 3. As carol, deny downloads to /finance
+$Body = @{ name = 'no finance downloads'; effect = 'deny'; actions = @('download'); groups = @('/finance') } | ConvertTo-Json
+$Policy = Invoke-RestMethod -Method Post http://localhost:8000/admin/policies -Headers $AsCarol -ContentType 'application/json' -Body $Body
+
+# 4. Both checks refuse alice now (both print Forbidden)
+try { Invoke-RestMethod -Method Post "http://localhost:8000/files/$Id/download" -Headers $Auth } catch { $_.Exception.Response.StatusCode }
+try { Invoke-WebRequest "http://localhost:8888/downloads/$Id" -Headers @{ Authorization = "Bearer $($Download.token)" } -UseBasicParsing } catch { $_.Exception.Response.StatusCode }
+
+# 5. Ask the dry run why
+$Ask = @{ action = 'download'; groups = @('/finance'); client_ip = '127.0.0.1' } | ConvertTo-Json
+Invoke-RestMethod -Method Post http://localhost:8000/admin/policies/evaluate -Headers $AsCarol -ContentType 'application/json' -Body $Ask
+
+# 6. Remove the policy; the token from step 2 still works
+Invoke-RestMethod -Method Delete "http://localhost:8000/admin/policies/$($Policy.id)" -Headers $AsCarol
+Invoke-WebRequest "http://localhost:8888/downloads/$Id" -Headers @{ Authorization = "Bearer $($Download.token)" } -OutFile hello-again.txt -UseBasicParsing
+Get-Content hello-again.txt
+```
+
+To see the decisions: the **VaultGate / Service overview** dashboard in Grafana has an **Access policies** row (decisions per second, by action, result and where they were checked), and in **Explore → Loki**, `{service="api"} |= "access denied by policy"` shows each refusal with the deny policies that matched.
 
 ## Troubleshooting
 

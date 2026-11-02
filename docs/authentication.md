@@ -57,6 +57,9 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/me
 - The token goes to stdout and nothing is written to disk; progress goes to stderr.
 - `--no-browser` prints the login URL instead of opening it (remote shells);
   `--json` prints the whole token response; `--issuer` points at another realm.
+- The browser stays logged in to Keycloak, so running it again returns a token for the
+  same user without asking. `--switch-user` shows the login form anyway (OIDC
+  `prompt=login`), to log in as someone else.
 - Access tokens live 5 minutes. Run it again for a new one.
 
 The seed users and their passwords are in the README (local development only).
