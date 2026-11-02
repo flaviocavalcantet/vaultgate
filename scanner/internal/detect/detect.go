@@ -35,9 +35,9 @@ type Finding struct {
 var (
 	emailRe = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
 	cpfRe   = regexp.MustCompile(`\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b`)
-	// 13 to 19 digits, optionally grouped by single spaces or hyphens, and not part
-	// of a longer number.
-	cardRe = regexp.MustCompile(`\b\d(?:[ -]?\d){12,18}\b`)
+	// A run of digit groups joined by single spaces or hyphens: candidates for card
+	// numbers are looked for inside it (see cardSpans).
+	digitRunRe = regexp.MustCompile(`\b\d+(?:[ -]\d+)*\b`)
 )
 
 // Scan returns every PII finding in text, ordered by position.
@@ -51,9 +51,10 @@ func Scan(text string) []Finding {
 			out = append(out, Finding{KindCPF, loc[0], loc[1], v})
 		}
 	}
-	for _, loc := range cardRe.FindAllStringIndex(text, -1) {
-		if v := text[loc[0]:loc[1]]; ValidPaymentCard(v) {
-			out = append(out, Finding{KindPaymentCard, loc[0], loc[1], v})
+	for _, loc := range digitRunRe.FindAllStringIndex(text, -1) {
+		for _, span := range cardSpans(text[loc[0]:loc[1]]) {
+			start, end := loc[0]+span[0], loc[0]+span[1]
+			out = append(out, Finding{KindPaymentCard, start, end, text[start:end]})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Start < out[j].Start })
@@ -171,6 +172,52 @@ var cardRanges = []cardRange{
 	{"509", "509", []int{16}},                     // Elo
 	{"606282", "606282", []int{16, 19}},           // Hipercard
 	{"6362", "6363", []int{16}},                   // Elo
+}
+
+// cardSpans finds card numbers in a run of digit groups, such as the "12 4111 1111
+// 1111 1111" in "Qty 12 4111 1111 1111 1111". A card starts and ends at group
+// boundaries, never inside a group, so a card's digits inside a longer unseparated
+// number are not a card. Every group of a card has at least 3 digits, as card
+// formats do (4-4-4-4, 4-6-5, ...): single digits in a table ("4 5 6 7 ...") would
+// otherwise combine into a valid-looking number one time in ten. From each group,
+// left to right, the longest valid card is taken, and cards do not overlap.
+// Returns [start, end) offsets in run.
+func cardSpans(run string) [][2]int {
+	var groups [][2]int // [start, end) of each digit group
+	for i := 0; i < len(run); {
+		j := i
+		for j < len(run) && run[j] >= '0' && run[j] <= '9' {
+			j++
+		}
+		groups = append(groups, [2]int{i, j})
+		i = j + 1 // skip the separator
+	}
+	var spans [][2]int
+	end := 0 // spans may not start before the previous one ended
+	for i := range groups {
+		if groups[i][0] < end {
+			continue
+		}
+		best, digits := -1, 0
+		for j := i; j < len(groups); j++ {
+			size := groups[j][1] - groups[j][0]
+			if size < 3 {
+				break
+			}
+			digits += size
+			if digits > 19 {
+				break
+			}
+			if digits >= 13 && ValidPaymentCard(run[groups[i][0]:groups[j][1]]) {
+				best = j
+			}
+		}
+		if best >= 0 {
+			spans = append(spans, [2]int{groups[i][0], groups[best][1]})
+			end = groups[best][1]
+		}
+	}
+	return spans
 }
 
 // ValidPaymentCard checks a payment card number, with or without spaces or

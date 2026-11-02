@@ -79,6 +79,51 @@ func TestScanFindsCards(t *testing.T) {
 	}
 }
 
+// A card next to another number, separated by a space or hyphen, is still found:
+// cards are looked for at every group boundary of a run of digits, not only from
+// its start.
+func TestScanFindsCardsNextToOtherNumbers(t *testing.T) {
+	cases := map[string]string{
+		"Qty 12 4111111111111111":            "4111111111111111",
+		"2024-05 4111 1111 1111 1111":        "4111 1111 1111 1111",
+		"3 4111-1111-1111-1111":              "4111-1111-1111-1111",
+		"4111111111111111 12":                "4111111111111111",
+		"4111 1111 1111 1111 2024-05-01":     "4111 1111 1111 1111",
+		"100 378282246310005 200":            "378282246310005",
+		"ref 9 8 7 4111 1111 1111 1111 x":    "4111 1111 1111 1111",
+		"total 1.234 4111111111111111 BRL 5": "4111111111111111",
+	}
+	for text, want := range cases {
+		got := Scan(text)
+		if len(got) != 1 || got[0].Kind != KindPaymentCard || got[0].Value != want {
+			t.Errorf("Scan(%q) = %+v, want one card %q", text, got, want)
+		}
+	}
+}
+
+func TestScanFindsAdjacentCardsSeparately(t *testing.T) {
+	got := Scan("4111 1111 1111 1111 5555 5555 5555 4444")
+	if len(got) != 2 || got[0].Value != "4111 1111 1111 1111" || got[1].Value != "5555 5555 5555 4444" {
+		t.Fatalf("want two cards, got %+v", got)
+	}
+}
+
+// Single digits and short numbers in a table must not combine into a card, and a
+// card never starts or ends inside a group of digits.
+func TestScanIgnoresCardsMadeOfShortGroupsOrInsideNumbers(t *testing.T) {
+	for _, text := range []string{
+		"4 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1",      // a Visa number, one digit per column
+		"41 11 11 11 11 11 11 11",              // two digits per group
+		"0000004111111111111111",               // inside a longer number
+		"4111111111111111111111111",            // 25 digits
+		"12345 4111111111111111111111111 6789", // inside a longer number, among others
+	} {
+		if got := Scan(text); len(got) != 0 {
+			t.Errorf("Scan(%q) = %+v, want nothing", text, got)
+		}
+	}
+}
+
 func TestScanOrdersFindingsByPosition(t *testing.T) {
 	got := Scan("4111111111111111 then ana@example.com then 529.982.247-25")
 	kinds := []Kind{}
@@ -108,9 +153,11 @@ func checkBoundaries(t *testing.T, quick bool) {
 		"4111 1111 1111 1111",
 		"529.982.247-25",
 		"ana.maria@example.com",
-		"4111111111111111111111111", // 25 digits: not a card, whole or cut
-		"0000004111111111111111",    // a card's digits inside a longer number
-		"406 4111111111111111",      // a 19-digit card whose last 16 digits are a card too
+		"4111111111111111111111111",               // 25 digits: not a card, whole or cut
+		"0000004111111111111111",                  // a card's digits inside a longer number
+		"406 4111111111111111",                    // a 19-digit card whose last 16 digits are a card too
+		"Qty 12 4111111111111111",                 // a card after another number
+		"7 88 999 4111 1111 1111 1111 10 2024-05", // a card inside a run of numbers
 	}
 	var boundaries []int
 	for k := 1; k <= 3; k++ {
