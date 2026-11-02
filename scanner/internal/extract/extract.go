@@ -155,6 +155,11 @@ func (x *run) document(r io.ReaderAt, size int64, depth int) (Format, error) {
 	if format == FormatPDF {
 		return format, nil
 	}
+	// Starts like a zip but would not open: a damaged archive that recovery tools may
+	// still extract. Its compressed bytes say nothing about what it holds.
+	if bytes.HasPrefix(head[:n], []byte("PK\x03\x04")) || bytes.HasPrefix(head[:n], []byte("PK\x05\x06")) {
+		return FormatZip, unscannable("damaged zip archive")
+	}
 	if _, err := io.Copy(x.w, io.NewSectionReader(r, 0, size)); err != nil {
 		return FormatText, err
 	}

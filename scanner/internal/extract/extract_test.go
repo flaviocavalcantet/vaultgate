@@ -266,13 +266,12 @@ func TestLimits(t *testing.T) {
 	expect(t, "large text", found, "br_cpf=529.982.247-25")
 }
 
-func TestUnreadableZipIsText(t *testing.T) {
-	// Starts like a zip but has no archive index: scanned as bytes, not refused.
-	found, report, err := scan(t, extractor(), []byte("PK\x03\x04 broken, CPF 529.982.247-25"))
-	if err != nil || report.Format != FormatText {
-		t.Fatalf("format %s, err %v", report.Format, err)
-	}
-	expect(t, "broken zip", found, "br_cpf=529.982.247-25")
+// A file that starts like a zip but cannot be opened is a damaged archive: recovery
+// tools may still extract it, so scanning its compressed bytes is not a verdict.
+func TestDamagedZipIsUnscannable(t *testing.T) {
+	assertUnscannable(t, "zip header without an index", extractor(), []byte("PK\x03\x04 broken, CPF 529.982.247-25"))
+	whole := zipOf(t, entry{name: "export.csv", data: []byte("CPF 529.982.247-25")})
+	assertUnscannable(t, "zip with its end cut off", extractor(), whole[:len(whole)-10])
 }
 
 // blockingReader stalls inside PDFium's file reads until released, like a PDF that
