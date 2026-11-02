@@ -34,6 +34,8 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -332,10 +334,15 @@ var breakElements = map[string]bool{
 	"table-cell": true, "table-row": true, "line-break": true, "list-item": true, // OpenDocument
 }
 
-// xmlText writes the text of an XML part: character data, and also attribute values,
-// comments and processing instructions, each followed by a break, since a crafted
-// part can put anything there. Go's XML decoder does not load external entities or
-// expand custom ones, so no entity tricks apply.
+// xmlText writes the text of an XML part as a reader sees it: character data, and
+// also attribute values, comments, processing instructions and declarations, each
+// set apart, since a crafted part can put anything there.
+//
+// Entities declared in the part's DOCTYPE are expanded, as office suites do, so a
+// number split across entities ("529.982.&a;-25") comes out whole. External entities
+// are never loaded. Go substitutes entity values without parsing them again, so
+// nesting cannot multiply them, and the text written is charged to the expansion
+// budget, so repetition ("&big;" thousands of times) cannot either.
 func (x *run) xmlText(f *zip.File) error {
 	rc, err := x.open(f)
 	if err != nil {
@@ -344,6 +351,7 @@ func (x *run) xmlText(f *zip.File) error {
 	defer rc.Close()
 	dec := xml.NewDecoder(rc)
 	dec.Strict = false
+	dec.Entity = map[string]string{}
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -357,7 +365,21 @@ func (x *run) xmlText(f *zip.File) error {
 		}
 		switch t := tok.(type) {
 		case xml.CharData:
+			if err := x.charge(len(t), f.Name); err != nil {
+				return err
+			}
 			if _, err := x.w.Write(t); err != nil {
+				return err
+			}
+		case xml.Directive:
+			for _, m := range entityDecl.FindAllSubmatch(t, -1) {
+				value := m[2]
+				if value == nil {
+					value = m[3]
+				}
+				dec.Entity[string(m[1])] = string(charRefs(value))
+			}
+			if err := x.apart(charRefs(t)); err != nil {
 				return err
 			}
 		case xml.StartElement:
@@ -382,6 +404,37 @@ func (x *run) xmlText(f *zip.File) error {
 			}
 		}
 	}
+}
+
+// An internal general entity: <!ENTITY name "value"> or 'value'. Parameter entities
+// (%) and external ones (SYSTEM, PUBLIC) do not match and are never expanded.
+var entityDecl = regexp.MustCompile(`<!ENTITY\s+([^\s%"'>]+)\s+(?:"([^"]*)"|'([^']*)')\s*>`)
+
+var charRef = regexp.MustCompile(`&#(x[0-9A-Fa-f]{1,6}|[0-9]{1,7});`)
+
+// charRefs decodes numeric character references (&#53; &#x35;), which are allowed in
+// entity values and would otherwise hide what they spell.
+func charRefs(b []byte) []byte {
+	return charRef.ReplaceAllFunc(b, func(ref []byte) []byte {
+		digits, base := string(ref[2:len(ref)-1]), 10
+		if digits[0] == 'x' {
+			digits, base = digits[1:], 16
+		}
+		n, err := strconv.ParseUint(digits, base, 32)
+		if err != nil || n > 0x10FFFF {
+			return ref
+		}
+		return []byte(string(rune(n)))
+	})
+}
+
+// charge counts text produced from a part against the expansion budget.
+func (x *run) charge(n int, name string) error {
+	x.budget += int64(n)
+	if x.budget > x.e.Limits.MaxExtractedBytes {
+		return unscannable("%q expands beyond %d bytes", name, x.e.Limits.MaxExtractedBytes)
+	}
+	return nil
 }
 
 // apart writes text set off from what surrounds it.

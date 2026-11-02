@@ -410,3 +410,39 @@ func TestPDFAttachmentLimits(t *testing.T) {
 	budget.Limits.MaxExtractedBytes = 512 << 10
 	assertUnscannable(t, "attachment over the expansion budget", budget, data)
 }
+
+// XML can declare its own entities; office suites expand them, so the scan must see
+// the text as a reader does, including a number split across entities.
+func TestXMLEntitiesAreExpanded(t *testing.T) {
+	odt := func(content string) []byte {
+		return zipOf(t,
+			entry{name: "mimetype", data: []byte("application/vnd.oasis.opendocument.text")},
+			entry{name: "content.xml", data: []byte(content)})
+	}
+	cases := map[string]string{
+		"entity holding a CPF": `<!DOCTYPE doc [<!ENTITY cpf "529.982.247-25">]><doc><p>&cpf;</p></doc>`,
+		"CPF split across entities": `<!DOCTYPE doc [<!ENTITY a "247"><!ENTITY b '&#53;&#50;&#57;'>]>` +
+			`<doc><p>&b;.982.&a;-25</p></doc>`,
+	}
+	for name, content := range cases {
+		found, _, err := scan(t, extractor(), odt(content))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		// Each place the whole number appears counts: the declaration and the body,
+		// or only the body when it is split across entities.
+		want := []string{"br_cpf=529.982.247-25"}
+		if name == "entity holding a CPF" {
+			want = append(want, "br_cpf=529.982.247-25")
+		}
+		expect(t, name, found, want...)
+	}
+
+	// Expansion is charged to the budget: repeating a large entity is a bomb.
+	bomb := `<!DOCTYPE doc [<!ENTITY big "` + strings.Repeat("x", 100_000) + `">]><doc><p>` +
+		strings.Repeat("&big;", 2000) + `</p></doc>` // 200 MB of text from a 110 KB part
+	small := extractor()
+	small.Limits.MaxExtractedBytes = 50 << 20
+	assertUnscannable(t, "entity expansion bomb", small, odt(bomb))
+}
