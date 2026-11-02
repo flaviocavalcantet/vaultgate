@@ -327,7 +327,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Enforcement on file reads and transfer intents, re-checked by the gateway; seed policy for local use and CI
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
   - [x] Payment card detector (Luhn and card network ranges) and a streaming scan that holds one window in memory
-  - [ ] Decrypting stored objects (VGE1) in Go, checked against vectors from the Python implementation
+  - [x] Decrypting stored objects (VGE1) in Go, checked against vectors from the Python implementation
   - [ ] Text extraction from Office documents and PDFs, with size and expansion limits
   - [ ] Scan state in the API: status and findings per file, results endpoint, SQS events, re-sending stuck scans
   - [ ] Scanner worker: SQS consumer, queue and dead-letter queue in Terraform, compose service, metrics
