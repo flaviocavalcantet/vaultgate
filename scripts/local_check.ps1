@@ -128,7 +128,7 @@ function Test-Tools([bool]$NeedDocker) {
     $missing = @()
     if (-not @(Get-PythonCommand)) { $missing += 'Python 3.12+   (winget install Python.Python.3.12)' }
     $go = Get-ToolVersion 'go' @('version') 'go(\d+\.\d+(\.\d+)?)'
-    if (-not $go -or $go -lt [version]'1.23') { $missing += 'Go 1.23+       (winget install GoLang.Go)' }
+    if (-not $go -or $go -lt [version]'1.26') { $missing += 'Go 1.26+       (winget install GoLang.Go)' }
     if ($NeedDocker) {
         $tf = Get-ToolVersion 'terraform' @('version') 'Terraform v(\d+\.\d+\.\d+)'
         if (-not $tf -or $tf -lt [version]'1.6') { $missing += 'Terraform 1.6+ (winget install Hashicorp.Terraform)' }
@@ -316,7 +316,7 @@ function Invoke-Setup {
     Say 'Windows tools'
     if (-not @(Get-PythonCommand)) { Install-WingetPackage 'Python.Python.3.12' }
     $go = Get-ToolVersion 'go' @('version') 'go(\d+\.\d+(\.\d+)?)'
-    if (-not $go -or $go -lt [version]'1.23') { Install-WingetPackage 'GoLang.Go' }
+    if (-not $go -or $go -lt [version]'1.26') { Install-WingetPackage 'GoLang.Go' }
     $tf = Get-ToolVersion 'terraform' @('version') 'Terraform v(\d+\.\d+\.\d+)'
     if (-not $tf -or $tf -lt [version]'1.6') { Install-WingetPackage 'Hashicorp.Terraform' }
 
