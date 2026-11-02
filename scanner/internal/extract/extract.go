@@ -63,7 +63,8 @@ type Limits struct {
 	MaxExtractedBytes int64
 	// Total archive entries visited, across all nesting.
 	MaxEntries int
-	// Documents inside documents: a zip in a zip is depth 2.
+	// Containers (PDFs, archives) inside each other: a zip in a zip is depth 2. The
+	// text inside the deepest one does not count.
 	MaxDepth int
 }
 
@@ -116,22 +117,19 @@ func unscannable(format string, args ...any) error {
 }
 
 func (x *run) document(r io.ReaderAt, size int64, depth int) (Format, error) {
-	if depth > x.e.Limits.MaxDepth {
-		return "", unscannable("documents nested deeper than %d", x.e.Limits.MaxDepth)
-	}
 	x.parts++
 	head := make([]byte, min(size, 1024))
 	n, _ := r.ReadAt(head, 0)
 	if at := bytes.Index(head[:n], []byte("%PDF-")); at >= 0 {
-		err := x.pdf(r, size)
+		err := x.pdf(r, size, depth)
 		if !(at > 0 && errors.Is(err, ErrNotPDF)) {
 			return FormatPDF, err
 		}
 	}
 	// Reading the archive index costs only the end of the file, whatever its size.
 	if zr, err := zip.NewReader(r, size); err == nil && len(zr.File) > 0 {
-		if size > x.e.Limits.MaxDocumentBytes {
-			return FormatZip, x.tooLarge(FormatZip, size)
+		if err := x.container(FormatZip, size, depth); err != nil {
+			return FormatZip, err
 		}
 		return x.archive(zr, depth)
 	}
@@ -141,9 +139,9 @@ func (x *run) document(r io.ReaderAt, size int64, depth int) (Format, error) {
 	return FormatText, x.separate()
 }
 
-func (x *run) pdf(r io.ReaderAt, size int64) error {
-	if size > x.e.Limits.MaxDocumentBytes {
-		return x.tooLarge(FormatPDF, size)
+func (x *run) pdf(r io.ReaderAt, size int64, depth int) error {
+	if err := x.container(FormatPDF, size, depth); err != nil {
+		return err
 	}
 	if x.e.PDF == nil {
 		return unscannable("no PDF support configured")
@@ -154,8 +152,15 @@ func (x *run) pdf(r io.ReaderAt, size int64) error {
 	return x.separate()
 }
 
-func (x *run) tooLarge(format Format, size int64) error {
-	return unscannable("%s of %d bytes is over the %d-byte limit", format, size, x.e.Limits.MaxDocumentBytes)
+// container checks the limits on opening a PDF or an archive.
+func (x *run) container(format Format, size int64, depth int) error {
+	if depth > x.e.Limits.MaxDepth {
+		return unscannable("%s nested deeper than %d containers", format, x.e.Limits.MaxDepth)
+	}
+	if size > x.e.Limits.MaxDocumentBytes {
+		return unscannable("%s of %d bytes is over the %d-byte limit", format, size, x.e.Limits.MaxDocumentBytes)
+	}
+	return nil
 }
 
 // separate ends one part's text, so the last word of one part and the first of the
@@ -197,17 +202,23 @@ func (x *run) archive(zr *zip.Reader, depth int) (Format, error) {
 }
 
 // entry reads one archive entry. In Office and OpenDocument files the XML parts hold
-// the text; other entries are either media (skipped) or embedded documents (opened).
-// In a plain zip archive every entry is a document.
+// the text; other entries are media or embedded documents. In a plain zip archive
+// every entry is a document. Names do not decide what is skipped: the uploader
+// chooses them. An entry is skipped only when its first bytes are an image, audio,
+// video or font; anything else, whatever it is called, is opened as a document.
 func (x *run) entry(f *zip.File, container Format, depth int) error {
-	name := strings.ToLower(f.Name)
 	if container != FormatZip {
-		switch ext := path.Ext(name); {
-		case ext == ".xml":
+		switch ext := path.Ext(strings.ToLower(f.Name)); {
+		case ext == ".xml" || ext == ".rels": // parts and their relationships
 			return x.xmlText(f)
-		case ext == ".rels" || name == "mimetype" || isMedia(ext):
-			return nil
 		}
+	}
+	head, err := x.head(f, 64)
+	if err != nil {
+		return err
+	}
+	if isMedia(head) {
+		return nil
 	}
 	data, err := x.small(f, x.e.Limits.MaxDocumentBytes)
 	if err != nil {
@@ -217,10 +228,41 @@ func (x *run) entry(f *zip.File, container Format, depth int) error {
 	return err
 }
 
-func isMedia(ext string) bool {
-	switch ext {
-	case ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".emf", ".wmf", ".svg",
-		".mp3", ".mp4", ".wav", ".m4a", ".mov", ".avi", ".ttf", ".otf", ".odttf", ".fntdata":
+// head reads the first n bytes of an entry, charged to the budget like the rest.
+func (x *run) head(f *zip.File, n int) ([]byte, error) {
+	rc, err := x.open(f)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	buf := make([]byte, n)
+	got, err := io.ReadFull(rc, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, err
+	}
+	return buf[:got], nil
+}
+
+// isMedia recognizes the binary media Office files embed, by their magic numbers.
+// Text hidden after a media file's own data is not looked for.
+func isMedia(head []byte) bool {
+	for _, magic := range [][]byte{
+		[]byte("\x89PNG\r\n\x1a\n"), []byte("\xff\xd8\xff"), []byte("GIF87a"), []byte("GIF89a"),
+		[]byte("II*\x00"), []byte("MM\x00*"), []byte("\xd7\xcd\xc6\x9a"), // TIFF, WMF
+		[]byte("\x00\x01\x00\x00"), []byte("OTTO"), []byte("wOFF"), []byte("wOF2"), // fonts
+		[]byte("ID3"), []byte("OggS"), []byte("fLaC"), []byte("\x1aE\xdf\xa3"), // audio, Matroska
+	} {
+		if bytes.HasPrefix(head, magic) {
+			return true
+		}
+	}
+	switch {
+	case len(head) >= 12 && string(head[4:8]) == "ftyp": // MP4, MOV, M4A, HEIC
+		return true
+	case len(head) >= 12 && string(head[:4]) == "RIFF" &&
+		(string(head[8:12]) == "WAVE" || string(head[8:12]) == "AVI " || string(head[8:12]) == "WEBP"):
+		return true
+	case len(head) >= 44 && head[0] == 1 && string(head[40:44]) == " EMF":
 		return true
 	}
 	return false
@@ -262,8 +304,10 @@ var breakElements = map[string]bool{
 	"table-cell": true, "table-row": true, "line-break": true, "list-item": true, // OpenDocument
 }
 
-// xmlText writes the character data of an XML part. Go's XML decoder does not load
-// external entities or expand custom ones, so no entity tricks apply.
+// xmlText writes the text of an XML part: character data, and also attribute values,
+// comments and processing instructions, each followed by a break, since a crafted
+// part can put anything there. Go's XML decoder does not load external entities or
+// expand custom ones, so no entity tricks apply.
 func (x *run) xmlText(f *zip.File) error {
 	rc, err := x.open(f)
 	if err != nil {
@@ -288,6 +332,20 @@ func (x *run) xmlText(f *zip.File) error {
 			if _, err := x.w.Write(t); err != nil {
 				return err
 			}
+		case xml.StartElement:
+			for _, attr := range t.Attr {
+				if err := x.apart([]byte(attr.Value)); err != nil {
+					return err
+				}
+			}
+		case xml.Comment:
+			if err := x.apart(t); err != nil {
+				return err
+			}
+		case xml.ProcInst:
+			if err := x.apart(t.Inst); err != nil {
+				return err
+			}
 		case xml.EndElement:
 			if breakElements[t.Name.Local] {
 				if err := x.separate(); err != nil {
@@ -296,6 +354,17 @@ func (x *run) xmlText(f *zip.File) error {
 			}
 		}
 	}
+}
+
+// apart writes text set off from what surrounds it.
+func (x *run) apart(text []byte) error {
+	if err := x.separate(); err != nil {
+		return err
+	}
+	if _, err := x.w.Write(text); err != nil {
+		return err
+	}
+	return x.separate()
 }
 
 type budgetReader struct {

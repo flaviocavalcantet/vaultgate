@@ -203,11 +203,11 @@ func TestLimits(t *testing.T) {
 		}
 		return data
 	}
-	// The CSV counts as a level: zip > zip > CSV is depth 3, the default limit.
-	if _, _, err := scan(t, extractor(), nest(2)); err != nil {
-		t.Errorf("zip > zip > CSV: %v", err)
+	// Containers count, the text inside them does not: three zips is the default limit.
+	if _, _, err := scan(t, extractor(), nest(3)); err != nil {
+		t.Errorf("zip > zip > zip > CSV: %v", err)
 	}
-	assertUnscannable(t, "zip > zip > zip > CSV", extractor(), nest(3))
+	assertUnscannable(t, "four zips deep", extractor(), nest(4))
 
 	small := extractor()
 	small.Limits.MaxExtractedBytes = 10 << 20
@@ -281,5 +281,40 @@ func TestPDFTimeoutIsUnscannableAndBounded(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("Text took %v; the timeout and kill grace should bound it", elapsed)
+	}
+}
+
+// The uploader chooses entry names and content alike: an entry is skipped as media
+// only when its bytes are media, and XML is read in full, attributes included.
+func TestCraftedOfficeFilesCannotHidePII(t *testing.T) {
+	office := func(extra ...entry) []byte {
+		return zipOf(t, append([]entry{{name: "[Content_Types].xml", data: []byte("<Types/>")}}, extra...)...)
+	}
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 64)...)
+	cases := []struct {
+		name string
+		data []byte
+		want []string
+	}{
+		{"CSV named as an image", office(entry{name: "word/media/customers.png",
+			data: []byte("cpf\n529.982.247-25\n")}), []string{"br_cpf=529.982.247-25"}},
+		{"CSV named as relationships", office(entry{name: "_rels/x.rels",
+			data: []byte("529.982.247-25")}), []string{"br_cpf=529.982.247-25"}},
+		{"PDF named as a font", office(entry{name: "word/fonts/font1.odttf",
+			data: testdata(t, "report.pdf")}), []string{
+			"payment_card=4111 1111 1111 1111", "br_cpf=529.982.247-25", "email=ana@example.com"}},
+		{"PII in an XML attribute", office(entry{name: "word/document.xml",
+			data: []byte(`<doc><x v="529.982.247-25"/></doc>`)}), []string{"br_cpf=529.982.247-25"}},
+		{"PII in an XML comment", office(entry{name: "word/document.xml",
+			data: []byte(`<doc><!-- 4111 1111 1111 1111 --></doc>`)}), []string{"payment_card=4111 1111 1111 1111"}},
+		{"a real image is skipped", office(entry{name: "word/media/image1.png", data: png}), nil},
+	}
+	for _, c := range cases {
+		found, _, err := scan(t, extractor(), c.data)
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		expect(t, c.name, found, c.want...)
 	}
 }
