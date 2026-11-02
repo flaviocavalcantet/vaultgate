@@ -24,7 +24,7 @@ Every check runs even if an earlier one fails, and a summary at the end shows wh
 | Tool | Version | Needed for | macOS (Homebrew) | Ubuntu / Debian |
 |---|---|---|---|---|
 | Python | 3.12+ | everything | `brew install python@3.12` | `sudo apt install python3.12 python3.12-venv` |
-| Go | 1.23+ | scanner tests | `brew install go` | [go.dev/doc/install](https://go.dev/doc/install) (apt's is often too old) |
+| Go | 1.26+ | scanner tests | `brew install go` | [go.dev/doc/install](https://go.dev/doc/install) (apt's is often too old) |
 | Docker with Compose | recent | `full` | [Colima](https://github.com/abiosoft/colima) (free) or [Docker Desktop](https://www.docker.com/products/docker-desktop/) | [Docker Engine](https://docs.docker.com/engine/install/ubuntu/) + `docker-compose-plugin` |
 | Terraform | 1.6+ | `full` | `brew tap hashicorp/tap && brew install hashicorp/tap/terraform` | [HashiCorp apt repo](https://developer.hashicorp.com/terraform/install) |
 | make, curl, git | any | `full` | included with Xcode CLT (`xcode-select --install`) | `sudo apt install make curl git` |
@@ -95,7 +95,7 @@ Notes:
 2. Open Ubuntu from PowerShell (`wsl -d Ubuntu`) and install the tools once. Ubuntu 24.04 or newer ships Python 3.12+. Go comes from go.dev because apt's is too old: copy the SHA-256 of the file from [go.dev/dl](https://go.dev/dl/) so the download is checked before it is installed, and on an ARM Windows machine use the `linux-arm64` file instead of `linux-amd64`:
    ```bash
    sudo apt update && sudo apt install -y git make curl gcc python3 python3-venv
-   GO=go1.23.4.linux-amd64.tar.gz
+   GO=go1.26.10.linux-amd64.tar.gz
    curl -fsSLO "https://go.dev/dl/$GO"
    echo "<SHA-256 from go.dev/dl>  $GO" | sha256sum -c - && sudo tar -C /usr/local -xzf "$GO"
    echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc && source ~/.bashrc

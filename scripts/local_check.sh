@@ -4,7 +4,7 @@
 # Check VaultGate on your machine, from lint and unit tests up to the whole stack.
 # Guide: docs/local-testing.md
 #
-#   scripts/local_check.sh quick   lint and unit tests; no Docker (Python 3.12+, Go 1.23+)
+#   scripts/local_check.sh quick   lint and unit tests; no Docker (Python 3.12+, Go 1.26+)
 #   scripts/local_check.sh full    quick, then start the stack and run the end-to-end
 #                                  checks (also needs Docker and Terraform)
 #   scripts/local_check.sh down    stop the stack and delete its data
@@ -63,9 +63,9 @@ require_tools() {
   if command -v go >/dev/null; then
     local go_version
     go_version=$(go env GOVERSION | sed 's/^go//')
-    at_least "$go_version" 1.23 || { echo "Go is $go_version; need 1.23+"; missing=1; }
+    at_least "$go_version" 1.26 || { echo "Go is $go_version; need 1.26+"; missing=1; }
   else
-    echo "go not found (need 1.23+)"
+    echo "go not found (need 1.26+)"
     missing=1
   fi
   if [ "$MODE" = full ]; then

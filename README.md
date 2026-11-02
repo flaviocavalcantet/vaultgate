@@ -146,7 +146,7 @@ docs/adr/       Architecture decision records
 
 Everything runs on your machine at no cost: PostgreSQL, LocalStack (S3, KMS, SQS) and Keycloak run as containers, and Terraform applies against LocalStack instead of a real AWS account.
 
-Requirements: Docker, Python 3.12+, Go 1.23+, Terraform 1.6+. For Kubernetes: k3d or kind, Helm.
+Requirements: Docker, Python 3.12+, Go 1.26+, Terraform 1.6+. For Kubernetes: k3d or kind, Helm.
 
 **New here?** [docs/local-testing.md](docs/local-testing.md) lists what to install and what each check proves. `scripts/local_check.sh quick` runs lint and unit tests without Docker, and `scripts/local_check.sh full` checks the whole stack end to end. On Windows, `scripts\local_check.ps1` does the same without Docker Desktop, using Docker Engine in WSL2.
 

@@ -1,4 +1,4 @@
-FROM golang:1.23 AS build
+FROM golang:1.26 AS build
 WORKDIR /src
 # Modules first, checked against go.sum, so they are cached across source changes.
 COPY go.mod go.sum ./
