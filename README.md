@@ -53,6 +53,8 @@ They handle different traffic. FastAPI fits the control plane: many small, valid
 
 Scanning is CPU-bound and runs over every byte of every upload. A small, statically compiled Go worker scales independently of the Python services and ships as a distroless image. Detectors require a checksum to pass where the format has one (CPF check digits, Luhn for cards), which keeps false positives low enough to block on.
 
+The scanner reads text out of PDFs, Word, Excel, PowerPoint and OpenDocument files, and opens zip archives and documents embedded in documents. PDFs go through PDFium (Chrome's PDF engine) compiled to WebAssembly, so untrusted PDFs are parsed in a memory-isolated sandbox with a memory cap and a time limit. A file it cannot read completely (encrypted, damaged, nested too deep, expanding past its limit) is reported as unscannable, never as clean.
+
 ## Security model
 
 - **Authentication:** OIDC authorization code flow with PKCE. The API validates tokens against the issuer's JWKS and checks signature algorithm, issuer, audience and expiry on every request (see [Calling the API](#calling-the-api)).
@@ -265,6 +267,7 @@ Try the scanner on its own:
 
 ```bash
 echo "Contact ana@example.com, CPF 529.982.247-25, card 4111 1111 1111 1111" | (cd scanner && go run ./cmd/scanner)
+(cd scanner && go run ./cmd/scanner internal/extract/testdata/report.pdf)   # any document; exit status 3 if it cannot be scanned
 ```
 
 ### Access policies
@@ -328,7 +331,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
 - [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
   - [x] Payment card detector (Luhn and card network ranges) and a streaming scan that holds one window in memory
   - [x] Decrypting stored objects (VGE1) in Go, checked against vectors from the Python implementation
-  - [ ] Text extraction from Office documents and PDFs, with size and expansion limits
+  - [x] Text extraction from Office documents and PDFs, with size and expansion limits
   - [ ] Scan state in the API: status and findings per file, results endpoint, SQS events, re-sending stuck scans
   - [ ] Scanner worker: SQS consumer, queue and dead-letter queue in Terraform, compose service, metrics
   - [ ] Quarantine: downloads need a clean scan; admin release and rescan; end-to-end check

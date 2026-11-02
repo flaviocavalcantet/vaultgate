@@ -3,8 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/flaviocavalcantet/vaultgate/scanner/internal/extract"
 )
 
 func TestRunLogsCountsButNeverValues(t *testing.T) {
@@ -44,5 +48,39 @@ func TestLoggerLevelFilter(t *testing.T) {
 	logger.Warn("shown")
 	if strings.Contains(logs.String(), "hidden") || !strings.Contains(logs.String(), `"level":"warn"`) {
 		t.Fatalf("unexpected log output: %s", logs.String())
+	}
+}
+
+func TestScanDocumentExtractsBeforeScanning(t *testing.T) {
+	var out, logs bytes.Buffer
+	e := &extract.Extractor{Limits: extract.DefaultLimits()}
+	data, err := os.ReadFile("../../internal/extract/testdata/report.docx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scanDocument(e, bytes.NewReader(data), int64(len(data)), &out, newLogger(&logs, "info")); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{`"kind":"payment_card"`, `"kind":"br_cpf"`, `"kind":"email"`} {
+		if !strings.Contains(out.String(), kind) {
+			t.Errorf("no %s finding in %s", kind, out.String())
+		}
+	}
+	if !strings.Contains(logs.String(), `"format":"office"`) {
+		t.Errorf("format not logged: %s", logs.String())
+	}
+	for _, secret := range []string{"4111", "529.982", "ana@example.com"} {
+		if strings.Contains(out.String()+logs.String(), secret) {
+			t.Errorf("matched value %q leaked into output", secret)
+		}
+	}
+}
+
+func TestScanDocumentReportsUnscannableFiles(t *testing.T) {
+	var out, logs bytes.Buffer
+	e := &extract.Extractor{Limits: extract.DefaultLimits()} // no PDF support configured
+	err := scanDocument(e, strings.NewReader("%PDF-1.7 not really"), 19, &out, newLogger(&logs, "info"))
+	if !errors.Is(err, extract.ErrUnscannable) {
+		t.Fatalf("got %v, want ErrUnscannable", err)
 	}
 }
