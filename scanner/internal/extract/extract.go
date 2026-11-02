@@ -69,6 +69,9 @@ type Limits struct {
 	// Containers (PDFs, archives) inside each other: a zip in a zip is depth 2. The
 	// text inside the deepest one does not count.
 	MaxDepth int
+	// One XML token (a text run, a CDATA section, a comment, a tag with its
+	// attributes): the XML decoder holds a whole token in memory.
+	MaxTokenBytes int64
 }
 
 // DefaultLimits suit uploads of up to 5 GiB: text streams through without a size
@@ -79,6 +82,7 @@ func DefaultLimits() Limits {
 		MaxExtractedBytes: 1 << 30,
 		MaxEntries:        10000,
 		MaxDepth:          3,
+		MaxTokenBytes:     16 << 20, // a cell or text run is a few KiB at most
 	}
 }
 
@@ -356,10 +360,12 @@ func (x *run) xmlText(f *zip.File) error {
 		return err
 	}
 	defer rc.Close()
-	dec := xml.NewDecoder(rc)
+	in := &tokenCap{r: rc, max: x.e.Limits.MaxTokenBytes, name: f.Name}
+	dec := xml.NewDecoder(in)
 	dec.Strict = false // unknown entities stay as written, for expand
 	entities := map[string][]byte{}
 	for {
+		in.boundary = dec.InputOffset() // where the last token ended
 		tok, err := dec.Token()
 		if err == io.EOF {
 			return x.separate()
@@ -408,6 +414,26 @@ func (x *run) xmlText(f *zip.File) error {
 			}
 		}
 	}
+}
+
+// tokenCap refuses to read more than max bytes past the end of the last token, so the
+// XML decoder never holds a larger token. The decoder reads ahead by a few KiB, which
+// only adds slack.
+type tokenCap struct {
+	r        io.Reader
+	max      int64
+	name     string
+	read     int64
+	boundary int64
+}
+
+func (c *tokenCap) Read(p []byte) (int, error) {
+	if c.read-c.boundary > c.max {
+		return 0, unscannable("%q has an XML token over %d bytes", c.name, c.max)
+	}
+	n, err := c.r.Read(p)
+	c.read += int64(n)
+	return n, err
 }
 
 // An internal general entity: <!ENTITY name "value"> or 'value'. Parameter entities

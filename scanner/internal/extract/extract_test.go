@@ -463,3 +463,28 @@ func TestEntityBombsAreRefusedBeforeTheyExpand(t *testing.T) {
 		assertUnscannable(t, "entity bomb "+name, small, odt)
 	}
 }
+
+// One XML token is held whole by the decoder, so a token is capped: a huge text run
+// or CDATA section (which may contain "<") is refused instead of buffered.
+func TestHugeXMLTokensAreRefused(t *testing.T) {
+	docx := func(body string) []byte {
+		return zipOf(t,
+			entry{name: "[Content_Types].xml", data: []byte("<Types/>")},
+			entry{name: "word/document.xml", data: []byte("<doc><w:t>" + body + "</w:t></doc>")})
+	}
+	capped := extractor()
+	capped.Limits.MaxTokenBytes = 1 << 20
+	assertUnscannable(t, "5 MB text run", capped, docx(strings.Repeat("a", 5<<20)))
+	assertUnscannable(t, "5 MB CDATA with <", capped,
+		docx("<![CDATA["+strings.Repeat("a<b ", 5<<18)+"]]>"))
+	assertUnscannable(t, "5 MB comment", capped, docx("<!--"+strings.Repeat("a", 5<<20)+"-->"))
+
+	// Many tokens, each small, add up to more than the cap and are fine.
+	var many strings.Builder
+	for i := 0; i < 50_000; i++ {
+		many.WriteString("<w:r>text run 0123456789</w:r>")
+	}
+	if _, _, err := scan(t, capped, docx(many.String()+"CPF 529.982.247-25")); err != nil {
+		t.Fatalf("many small tokens: %v", err)
+	}
+}
