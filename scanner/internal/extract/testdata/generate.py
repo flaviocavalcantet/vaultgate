@@ -85,6 +85,19 @@ def pdfs() -> None:
     data = (HERE / "report.pdf").read_bytes()
     (HERE / "truncated.pdf").write_bytes(data[: len(data) // 2])
 
+    # An innocent page with a file attached: the attachment is not page text.
+    a = new()
+    a.cell(0, 10, "Nothing to see on this page.")
+    a.embed_file(basename="customers.csv", bytes=b"name;card\nAna;5555 5555 5555 4444\n")
+    a.output(HERE / "attached.pdf")
+
+    # A small PDF with a large, compressible attachment: limits must apply to what
+    # the attachment expands to, not to the size of the PDF.
+    big = new()
+    big.cell(0, 10, "Small page, large attachment.")
+    big.embed_file(basename="dump.csv", bytes=b"0" * (1 << 20) + b"\n4111 1111 1111 1111\n", compress=True)
+    big.output(HERE / "big_attachment.pdf")
+
 
 if __name__ == "__main__":
     word()

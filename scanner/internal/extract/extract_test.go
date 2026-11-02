@@ -297,7 +297,7 @@ func TestPDFTimeoutIsUnscannableAndBounded(t *testing.T) {
 
 	started := time.Now()
 	var out bytes.Buffer
-	err = slow.Text(reader, 1000, &out)
+	_, err = slow.Text(reader, 1000, &out, 1<<20)
 	if !errors.Is(err, ErrUnscannable) {
 		t.Fatalf("got %v, want ErrUnscannable", err)
 	}
@@ -365,4 +365,48 @@ func TestContainerSnifferSeesSignaturesAcrossWrites(t *testing.T) {
 			t.Fatalf("plain text refused: %v", err)
 		}
 	}
+}
+
+// A file can be a PDF and a zip at once: PDF readers start at the header, zip tools at
+// the index at the end. Both must be scanned.
+func TestPDFWithAZipAppendedIsScannedAsBoth(t *testing.T) {
+	data := append(testdata(t, "report.pdf"),
+		zipOf(t, entry{name: "customers.csv", data: []byte("cpf\n111.444.777-35\n")})...)
+	found, report, err := scan(t, extractor(), data)
+	if err != nil || report.Format != FormatPDF {
+		t.Fatalf("format %s, err %v", report.Format, err)
+	}
+	expect(t, "PDF + zip", found, "payment_card=4111 1111 1111 1111", "br_cpf=529.982.247-25",
+		"email=ana@example.com", "br_cpf=111.444.777-35")
+}
+
+// Files attached to a PDF are not page text; they are documents of their own.
+func TestPDFAttachmentsAreScanned(t *testing.T) {
+	found, report, err := scan(t, extractor(), testdata(t, "attached.pdf"))
+	if err != nil || report.Format != FormatPDF {
+		t.Fatalf("format %s, err %v", report.Format, err)
+	}
+	expect(t, "attached.pdf", found, "payment_card=5555 5555 5555 4444")
+	if report.Parts != 2 {
+		t.Errorf("parts %d, want 2 (the PDF and its attachment)", report.Parts)
+	}
+}
+
+func TestPDFAttachmentLimits(t *testing.T) {
+	data := testdata(t, "big_attachment.pdf") // a few KiB, with a 1 MiB attachment
+	found, _, err := scan(t, extractor(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, "big attachment", found, "payment_card=4111 1111 1111 1111")
+
+	small := extractor()
+	small.Limits.MaxDocumentBytes = 64 << 10 // the PDF fits, its attachment does not
+	if int64(len(data)) > small.Limits.MaxDocumentBytes {
+		t.Fatalf("the PDF itself is %d bytes", len(data))
+	}
+	assertUnscannable(t, "attachment over the size limit", small, data)
+	budget := extractor()
+	budget.Limits.MaxExtractedBytes = 512 << 10
+	assertUnscannable(t, "attachment over the expansion budget", budget, data)
 }

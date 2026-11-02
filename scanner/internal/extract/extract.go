@@ -3,12 +3,13 @@
 // The format comes from the content, never from the file name or declared type:
 //
 //   - PDF ("%PDF-" in the first KiB, where PDF readers accept it): the text of every
-//     page, through PDFium;
+//     page, through PDFium, and every attached file as a document of its own;
 //   - Office Open XML (Word, Excel, PowerPoint) and OpenDocument: the text of their
 //     XML parts, with line breaks only at paragraph, cell and row ends, so a number
 //     Word splits across text runs stays whole;
 //   - any other zip archive: each entry, recursively. Zip tools find an archive from
-//     the end of a file, so a zip appended to other data is found the same way;
+//     the end of a file, so a zip appended to other data is found the same way,
+//     a PDF included: a file that is both is scanned as both;
 //   - anything else: the bytes as they are (plain text, CSV, JSON, ...).
 //
 // Detection leans towards opening a file: a PDF or zip scanned as raw bytes would
@@ -79,9 +80,16 @@ func DefaultLimits() Limits {
 	}
 }
 
-// PDFText writes the text of a PDF's pages to w.
+// PDFText writes the text of a PDF's pages to w and returns the files attached to
+// it, refusing (ErrUnscannable) attachments larger than maxAttachments in total.
 type PDFText interface {
-	Text(r io.ReadSeeker, size int64, w io.Writer) error
+	Text(r io.ReadSeeker, size int64, w io.Writer, maxAttachments int64) ([]Attachment, error)
+}
+
+// Attachment is a file embedded in a PDF.
+type Attachment struct {
+	Name string
+	Data []byte
 }
 
 // Extractor extracts text within its limits.
@@ -118,20 +126,32 @@ func unscannable(format string, args ...any) error {
 
 func (x *run) document(r io.ReaderAt, size int64, depth int) (Format, error) {
 	x.parts++
+	format := FormatText
 	head := make([]byte, min(size, 1024))
 	n, _ := r.ReadAt(head, 0)
 	if at := bytes.Index(head[:n], []byte("%PDF-")); at >= 0 {
-		err := x.pdf(r, size, depth)
-		if !(at > 0 && errors.Is(err, ErrNotPDF)) {
+		switch err := x.pdf(r, size, depth); {
+		case err == nil:
+			format = FormatPDF
+		case at > 0 && errors.Is(err, ErrNotPDF): // text that mentions the header
+		default:
 			return FormatPDF, err
 		}
 	}
-	// Reading the archive index costs only the end of the file, whatever its size.
+	// Reading the archive index costs only the end of the file, whatever its size. A
+	// PDF is probed too: one with a zip appended opens in zip tools as well.
 	if zr, err := zip.NewReader(r, size); err == nil && len(zr.File) > 0 {
 		if err := x.container(FormatZip, size, depth); err != nil {
 			return FormatZip, err
 		}
-		return x.archive(zr, depth)
+		archive, err := x.archive(zr, depth)
+		if format == FormatPDF {
+			return format, err
+		}
+		return archive, err
+	}
+	if format == FormatPDF {
+		return format, nil
 	}
 	if _, err := io.Copy(x.w, io.NewSectionReader(r, 0, size)); err != nil {
 		return FormatText, err
@@ -146,10 +166,25 @@ func (x *run) pdf(r io.ReaderAt, size int64, depth int) error {
 	if x.e.PDF == nil {
 		return unscannable("no PDF support configured")
 	}
-	if err := x.e.PDF.Text(io.NewSectionReader(r, 0, size), size, x.w); err != nil {
+	attachments, err := x.e.PDF.Text(io.NewSectionReader(r, 0, size), size, x.w, x.e.Limits.MaxDocumentBytes)
+	if err != nil {
 		return err
 	}
-	return x.separate()
+	if err := x.separate(); err != nil {
+		return err
+	}
+	// Attachments are documents of their own, scanned once PDFium has let go of this
+	// one (an attached PDF needs an instance of its own).
+	for _, a := range attachments {
+		x.budget += int64(len(a.Data))
+		if x.budget > x.e.Limits.MaxExtractedBytes {
+			return unscannable("PDF attachments expand beyond %d bytes (at %q)", x.e.Limits.MaxExtractedBytes, a.Name)
+		}
+		if _, err := x.document(bytes.NewReader(a.Data), int64(len(a.Data)), depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // container checks the limits on opening a PDF or an archive.
