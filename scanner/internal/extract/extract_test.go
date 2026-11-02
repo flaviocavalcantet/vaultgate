@@ -194,6 +194,13 @@ func TestZipAfterOtherDataIsFound(t *testing.T) {
 	expect(t, "appended zip", found, "br_cpf=529.982.247-25")
 }
 
+// smallContainers opens archives of a few KiB but streams any entry over 4 KiB as text.
+func smallContainers() *Extractor {
+	e := extractor()
+	e.Limits.MaxDocumentBytes = 4096
+	return e
+}
+
 func TestLimits(t *testing.T) {
 	csv := entry{name: "a.csv", data: []byte("CPF 529.982.247-25")}
 	nest := func(levels int) []byte {
@@ -227,6 +234,21 @@ func TestLimits(t *testing.T) {
 	if _, _, err := scan(t, few, zipOf(t, many[:5]...)); err != nil {
 		t.Errorf("5 entries: %v", err)
 	}
+
+	// An entry over the container limit is streamed as text, so it cannot be opened as
+	// a container: one holding a zip or PDF anywhere is refused instead.
+	bigText := append(bytes.Repeat([]byte("filler "), 1000), []byte("CPF 529.982.247-25")...)
+	bigFound, _, err := scan(t, smallContainers(), zipOf(t, entry{name: "big.csv", data: bigText}))
+	if err != nil {
+		t.Errorf("big text entry: %v", err)
+	}
+	expect(t, "big text entry", bigFound, "br_cpf=529.982.247-25")
+	hidden := append(bytes.Repeat([]byte("filler "), 1000), zipOf(t, csv)...)
+	assertUnscannable(t, "zip hidden after padding in a big entry", smallContainers(),
+		zipOf(t, entry{name: "padding.bin", data: hidden}))
+	hiddenPDF := append(bytes.Repeat([]byte("filler "), 1000), testdata(t, "report.pdf")...)
+	assertUnscannable(t, "PDF after padding in a big entry", smallContainers(),
+		zipOf(t, entry{name: "padding.bin", data: hiddenPDF}))
 
 	assertUnscannable(t, "encrypted entry", extractor(),
 		zipOf(t, entry{name: "secret.csv", data: []byte("x"), flags: 0x1}))
@@ -307,7 +329,12 @@ func TestCraftedOfficeFilesCannotHidePII(t *testing.T) {
 			data: []byte(`<doc><x v="529.982.247-25"/></doc>`)}), []string{"br_cpf=529.982.247-25"}},
 		{"PII in an XML comment", office(entry{name: "word/document.xml",
 			data: []byte(`<doc><!-- 4111 1111 1111 1111 --></doc>`)}), []string{"payment_card=4111 1111 1111 1111"}},
-		{"a real image is skipped", office(entry{name: "word/media/image1.png", data: png}), nil},
+		{"a real image yields nothing", office(entry{name: "word/media/image1.png", data: png}), nil},
+		// A media signature in front proves nothing either: nothing is skipped.
+		{"CSV behind a PNG signature", office(entry{name: "data.csv",
+			data: append(bytes.Clone(png[:8]), []byte("\n529.982.247-25\n")...)}), []string{"br_cpf=529.982.247-25"}},
+		{"CSV whose first column is ID3", zipOf(t, entry{name: "export.csv",
+			data: []byte("ID3;cpf\n1;529.982.247-25\n")}), []string{"br_cpf=529.982.247-25"}},
 	}
 	for _, c := range cases {
 		found, _, err := scan(t, extractor(), c.data)
@@ -316,5 +343,26 @@ func TestCraftedOfficeFilesCannotHidePII(t *testing.T) {
 			continue
 		}
 		expect(t, c.name, found, c.want...)
+	}
+}
+
+func TestContainerSnifferSeesSignaturesAcrossWrites(t *testing.T) {
+	for _, sig := range containerSignatures {
+		for split := 0; split <= len(sig); split++ {
+			var out bytes.Buffer
+			c := &containerSniffer{w: &out, name: "x"}
+			_, err1 := c.Write(append([]byte("text before "), sig[:split]...))
+			_, err2 := c.Write(append(bytes.Clone(sig[split:]), []byte(" text after")...))
+			if !errors.Is(err1, ErrUnscannable) && !errors.Is(err2, ErrUnscannable) {
+				t.Errorf("%q split at %d was not noticed", sig, split)
+			}
+		}
+	}
+	var out bytes.Buffer
+	c := &containerSniffer{w: &out, name: "x"}
+	for _, piece := range []string{"PK is a ", "fine word; so is %PD", "F without the dash"} {
+		if _, err := c.Write([]byte(piece)); err != nil {
+			t.Fatalf("plain text refused: %v", err)
+		}
 	}
 }

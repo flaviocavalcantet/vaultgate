@@ -202,70 +202,63 @@ func (x *run) archive(zr *zip.Reader, depth int) (Format, error) {
 }
 
 // entry reads one archive entry. In Office and OpenDocument files the XML parts hold
-// the text; other entries are media or embedded documents. In a plain zip archive
-// every entry is a document. Names do not decide what is skipped: the uploader
-// chooses them. An entry is skipped only when its first bytes are an image, audio,
-// video or font; anything else, whatever it is called, is opened as a document.
+// the text; in a plain zip archive every entry is a document. Nothing is skipped as
+// "media": the uploader chooses names and first bytes alike, and an image read as
+// text yields nothing but costs little.
+//
+// An entry that fits under MaxDocumentBytes is a document of its own (a nested PDF or
+// archive is opened). A larger one is streamed as text, so it cannot be opened as a
+// container; holding one anyway (a zip after padding, say) makes the file
+// unscannable instead of hiding what is inside.
 func (x *run) entry(f *zip.File, container Format, depth int) error {
 	if container != FormatZip {
-		switch ext := path.Ext(strings.ToLower(f.Name)); {
-		case ext == ".xml" || ext == ".rels": // parts and their relationships
+		switch path.Ext(strings.ToLower(f.Name)) {
+		case ".xml", ".rels": // parts and their relationships
 			return x.xmlText(f)
 		}
 	}
-	head, err := x.head(f, 64)
-	if err != nil {
-		return err
-	}
-	if isMedia(head) {
-		return nil
-	}
-	data, err := x.small(f, x.e.Limits.MaxDocumentBytes)
-	if err != nil {
-		return err
-	}
-	_, err = x.document(bytes.NewReader(data), int64(len(data)), depth+1)
-	return err
-}
-
-// head reads the first n bytes of an entry, charged to the budget like the rest.
-func (x *run) head(f *zip.File, n int) ([]byte, error) {
 	rc, err := x.open(f)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rc.Close()
-	buf := make([]byte, n)
-	got, err := io.ReadFull(rc, buf)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return nil, err
+	limit := x.e.Limits.MaxDocumentBytes
+	data, err := io.ReadAll(io.LimitReader(rc, limit+1))
+	if err != nil {
+		return err
 	}
-	return buf[:got], nil
+	if int64(len(data)) <= limit {
+		_, err = x.document(bytes.NewReader(data), int64(len(data)), depth+1)
+		return err
+	}
+	x.parts++
+	sniff := &containerSniffer{w: x.w, name: f.Name}
+	if _, err := io.Copy(sniff, io.MultiReader(bytes.NewReader(data), rc)); err != nil {
+		return err
+	}
+	return x.separate()
 }
 
-// isMedia recognizes the binary media Office files embed, by their magic numbers.
-// Text hidden after a media file's own data is not looked for.
-func isMedia(head []byte) bool {
-	for _, magic := range [][]byte{
-		[]byte("\x89PNG\r\n\x1a\n"), []byte("\xff\xd8\xff"), []byte("GIF87a"), []byte("GIF89a"),
-		[]byte("II*\x00"), []byte("MM\x00*"), []byte("\xd7\xcd\xc6\x9a"), // TIFF, WMF
-		[]byte("\x00\x01\x00\x00"), []byte("OTTO"), []byte("wOFF"), []byte("wOF2"), // fonts
-		[]byte("ID3"), []byte("OggS"), []byte("fLaC"), []byte("\x1aE\xdf\xa3"), // audio, Matroska
-	} {
-		if bytes.HasPrefix(head, magic) {
-			return true
+// containerSniffer passes text on, refusing it once it holds the start of a zip
+// entry or a PDF header: streamed text cannot be opened as a container.
+type containerSniffer struct {
+	w    io.Writer
+	name string
+	tail []byte // the end of the previous write, for signatures across writes
+}
+
+var containerSignatures = [][]byte{[]byte("PK\x03\x04"), []byte("%PDF-")}
+
+func (c *containerSniffer) Write(p []byte) (int, error) {
+	window := append(c.tail, p...)
+	for _, sig := range containerSignatures {
+		if bytes.Contains(window, sig) {
+			return 0, unscannable("archive entry %q is over the size limit and holds an archive or PDF", c.name)
 		}
 	}
-	switch {
-	case len(head) >= 12 && string(head[4:8]) == "ftyp": // MP4, MOV, M4A, HEIC
-		return true
-	case len(head) >= 12 && string(head[:4]) == "RIFF" &&
-		(string(head[8:12]) == "WAVE" || string(head[8:12]) == "AVI " || string(head[8:12]) == "WEBP"):
-		return true
-	case len(head) >= 44 && head[0] == 1 && string(head[40:44]) == " EMF":
-		return true
-	}
-	return false
+	keep := min(len(window), 4) // longest signature minus one
+	c.tail = append(c.tail[:0], window[len(window)-keep:]...)
+	return c.w.Write(p)
 }
 
 // open returns an entry's decompressed bytes as they come out, charged to the run's
