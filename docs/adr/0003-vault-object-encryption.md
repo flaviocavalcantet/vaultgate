@@ -67,5 +67,7 @@ aad     = header || file_id (16 B)
 - The format is frozen by test vectors (`gateway/tests/vectors/vge1.json`) and checked
   against an independent reference decoder written from this document. A future change
   needs a new version byte and must keep reading VGE1.
+- The scanner decrypts objects with its own Go reader (`scanner/internal/vge1`), which
+  must decrypt the same vectors and refuse every attack in the table above.
 - One process encrypts at roughly 500 MiB/s per stream on AES-NI hardware, well above
   what one connection carries.
