@@ -256,6 +256,11 @@ func TestLimits(t *testing.T) {
 	tight := extractor()
 	tight.Limits.MaxDocumentBytes = 1000
 	assertUnscannable(t, "PDF over the size limit", tight, testdata(t, "report.pdf"))
+
+	// The text a PDF produces counts against the expansion budget too.
+	little := extractor()
+	little.Limits.MaxExtractedBytes = 100
+	assertUnscannable(t, "PDF text over the expansion budget", little, testdata(t, "report.pdf"))
 	assertUnscannable(t, "zip over the size limit", tight, testdata(t, "clients.xlsx"))
 	// Plain text streams through: no size limit.
 	text := append(bytes.Repeat([]byte("lorem ipsum "), 1000), []byte("CPF 529.982.247-25")...)

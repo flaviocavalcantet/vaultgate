@@ -57,6 +57,12 @@ services:
       VAULTGATE_INTERNAL_TOKEN: dev-internal-token-change-me
       # The scanner worker's secret for its internal routes (local value, like the above).
       VAULTGATE_SCANNER_TOKEN: dev-scanner-token-change-me
+      # Scan requests go to this queue, created by `make tf-local`. Until it exists the
+      # API's resender keeps trying; uploads still complete.
+      VAULTGATE_SCAN_QUEUE_URL: http://localstack:4566/000000000000/vaultgate-local-scans
+      VAULTGATE_AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -73,6 +79,21 @@ services:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
     ports: ["8888:8888"]
+    depends_on: [api, localstack]
+
+  # PII scanner worker: takes scan requests from the queue, reads and decrypts each
+  # file from S3 in memory, and reports what it found to the API's internal port.
+  scanner:
+    build: ./scanner
+    entrypoint: ["/worker"]
+    environment:
+      VAULTGATE_SCAN_QUEUE_URL: http://localstack:4566/000000000000/vaultgate-local-scans
+      VAULTGATE_API_INTERNAL_URL: http://api:8001
+      VAULTGATE_SCANNER_TOKEN: dev-scanner-token-change-me
+      VAULTGATE_BUCKET: vaultgate-local-vault
+      VAULTGATE_AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
     depends_on: [api, localstack]
 
   # --- Observability (M1.5) ---------------------------------------------------

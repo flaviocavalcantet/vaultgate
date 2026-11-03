@@ -177,7 +177,10 @@ func (x *run) pdf(r io.ReaderAt, size int64, depth int) error {
 	if x.e.PDF == nil {
 		return unscannable("no PDF support configured")
 	}
-	attachments, err := x.e.PDF.Text(io.NewSectionReader(r, 0, size), size, x.w, x.e.Limits.MaxDocumentBytes)
+	// The text PDFium produces is charged to the budget like any other expansion: a
+	// small PDF can draw a lot of text.
+	text := &budgetWriter{run: x, name: "PDF text"}
+	attachments, err := x.e.PDF.Text(io.NewSectionReader(r, 0, size), size, text, x.e.Limits.MaxDocumentBytes)
 	if err != nil {
 		return err
 	}
@@ -527,6 +530,19 @@ func (b *budgetReader) Read(p []byte) (int, error) {
 }
 
 func (b *budgetReader) Close() error { return b.rc.Close() }
+
+// budgetWriter charges what it writes to the budget before passing it on.
+type budgetWriter struct {
+	run  *run
+	name string
+}
+
+func (b *budgetWriter) Write(p []byte) (int, error) {
+	if err := b.run.charge(len(p), b.name); err != nil {
+		return 0, err
+	}
+	return b.run.w.Write(p)
+}
 
 type countingWriter struct {
 	w io.Writer

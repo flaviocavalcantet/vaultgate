@@ -7,7 +7,7 @@ groups:
   - name: vaultgate.availability
     rules:
       - alert: VaultGateTargetDown
-        expr: up{job=~"api|gateway"} == 0
+        expr: up{job=~"api|gateway|scanner"} == 0
         for: 2m
         labels:
           severity: critical

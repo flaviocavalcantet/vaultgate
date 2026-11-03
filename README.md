@@ -78,7 +78,7 @@ All services log one JSON object per line (stdout for the API and gateway, stder
 
 ### Metrics
 
-The API and gateway serve Prometheus metrics on a separate port, `VAULTGATE_METRICS_PORT` (default `9100`), so the scrape endpoint is never reachable through the public port.
+The API, gateway and scanner worker serve Prometheus metrics on a separate port, `VAULTGATE_METRICS_PORT` (default `9100`), so the scrape endpoint is never reachable through the public port.
 
 | Metric | Type | Labels | Service |
 |---|---|---|---|
@@ -99,7 +99,12 @@ The API and gateway serve Prometheus metrics on a separate port, `VAULTGATE_METR
 | `vaultgate_api_scan_send_failures_total` | counter | | API |
 | `vaultgate_api_scan_results_total` | counter | `verdict` | API |
 | `vaultgate_api_scans_abandoned_total` | counter | | API |
-| `vaultgate_build_info` | info | `service`, `version` | both |
+| `vaultgate_scanner_jobs_total` | counter | `outcome` (`clean`, `quarantined`, `unscannable`, `stale`, `retry`, `invalid`) | scanner |
+| `vaultgate_scanner_job_duration_seconds` | histogram | | scanner |
+| `vaultgate_scanner_text_bytes_total` | counter | | scanner |
+| `vaultgate_scanner_jobs_in_progress` | gauge | | scanner |
+| `vaultgate_scanner_queue_errors_total` | counter | `op` (`receive`, `delete`, `extend`) | scanner |
+| `vaultgate_build_info` | info | `service`, `version` | all |
 
 `route` is the path template (`/uploads/{upload_id}`), never the raw path; anything that matches no route is counted as `<unmatched>`, so clients cannot create new time series by probing URLs. Standard `process_*` and `python_*` metrics are included, which is how gateway memory is shown to stay flat under load.
 
@@ -307,9 +312,10 @@ Refusals are a plain `403 Access denied by policy`. The log line `access denied 
 
 Every completed upload is scanned for personal data (M4). The API keeps the scan state; the Go scanner reads the file.
 
-- When the gateway reports an upload complete, the file gets a scan request (a new `scan_id`), and the API sends `{"file_id", "scan_id"}` to the SQS queue in `VAULTGATE_SCAN_QUEUE_URL`. The database is the record of what still needs scanning; the queue only delivers it. A request that never reached the queue, or got no result within `VAULTGATE_SCAN_RESEND_AFTER_SECONDS` (15 min), is sent again, checked every `VAULTGATE_SCAN_RESEND_INTERVAL_SECONDS` (1 min). After `VAULTGATE_SCAN_MAX_ATTEMPTS` (5) sends with no result the file is marked unscannable. With no queue configured nothing is sent and files stay pending.
+- When the gateway reports an upload complete, the file gets a scan request (a new `scan_id`), and the API sends `{"file_id", "scan_id"}` to the SQS queue in `VAULTGATE_SCAN_QUEUE_URL`. The database is the record of what still needs scanning; the queue only delivers it. A request that never reached the queue, or got no result within `VAULTGATE_SCAN_RESEND_AFTER_SECONDS` (15 min), is sent again, checked every `VAULTGATE_SCAN_RESEND_INTERVAL_SECONDS` (1 min). After `VAULTGATE_SCAN_MAX_ATTEMPTS` (5) sends with no result the file is marked unscannable. With no queue configured nothing is sent and files stay pending. In compose, `make tf-local` creates the queue.
 - The scanner uses two internal routes, with its own secret (`Authorization: Bearer $VAULTGATE_SCANNER_TOKEN`; the gateway's secret does not open them, nor this one the gateway's): `GET /internal/scans/{scan_id}` returns the object key and the KMS-wrapped data key, and `POST /internal/scans/{scan_id}/result` records `{"outcome": "scanned" | "unscannable", "findings": [{"kind", "count"}], "reason"}`. Repeating the recorded result succeeds; a different one, or a result for a scan that was replaced, is refused.
 - Only the kind of personal data and how many matches were found are stored, never the matches or where they are. `GET /files/{id}` shows them in `scan`: `{verdict, findings, reason, scanned_at}`.
+- The **scanner worker** (`scanner/cmd/worker`) takes requests from the queue. For each it fetches the scan job, has KMS unwrap the data key (bound to the file ID, as for downloads), and reads the object from S3 with range requests, decrypting chunks in memory as the text extraction needs them: plaintext never touches disk. A stored object that fails authentication, or does not match its recorded size, is reported unscannable. Failures that say nothing about the file (the API, KMS or S3 unreachable, a timeout) leave the message in the queue: it comes back after the visibility timeout, and after 5 deliveries moves to the dead-letter queue (`infra/terraform/modules/scanning`), while the API's resender keeps its own count. While a scan runs, the worker renews the message's visibility, so no other worker picks it up. Settings: `VAULTGATE_SCAN_QUEUE_URL`, `VAULTGATE_API_INTERNAL_URL`, `VAULTGATE_SCANNER_TOKEN`, `VAULTGATE_BUCKET`, `VAULTGATE_AWS_REGION`, `VAULTGATE_AWS_ENDPOINT_URL`, `VAULTGATE_SCANNER_CONCURRENCY` (2), `VAULTGATE_SCAN_TIMEOUT_SECONDS` (600), `VAULTGATE_SCAN_VISIBILITY_SECONDS` (120). It stops on SIGTERM after finishing the scans in progress.
 - Verdicts: `pending`, `clean`, `quarantined` (a finding of a kind in `VAULTGATE_QUARANTINE_KINDS`, default `payment_card,br_cpf`; `email` is only recorded) and `unscannable` (with the reason, such as an encrypted PDF). They are worked out when read, so changing the quarantine kinds applies to files already scanned. Downloads will need a `clean` verdict once quarantine is enforced (a later M4 step).
 
 Files uploaded before this version are scanned too: the upgrade gives them a pending scan, sent on the resender's first round.
@@ -350,7 +356,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Decrypting stored objects (VGE1) in Go, checked against vectors from the Python implementation
   - [x] Text extraction from Office documents and PDFs, with size and expansion limits
   - [x] Scan state in the API: status and findings per file, results endpoint, SQS events, re-sending stuck scans
-  - [ ] Scanner worker: SQS consumer, queue and dead-letter queue in Terraform, compose service, metrics
+  - [x] Scanner worker: SQS consumer, queue and dead-letter queue in Terraform, compose service, metrics
   - [ ] Quarantine: downloads need a clean scan; admin release and rescan; end-to-end check
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services

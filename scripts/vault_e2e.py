@@ -14,11 +14,14 @@ then, as alice:
 6. as carol (admin), adds temporary deny policies and checks that the API refuses,
    that the gateway refuses an intent issued before the policy (and that the refused
    intent stays usable), that the gateway reports a known client address, and that
-   deny wins over the seeded allow policy. The `e2e:` policies are always removed.
+   deny wins over the seeded allow policy. The `e2e:` policies are always removed;
+7. waits for the scanner worker's verdicts: the random file is clean, a text with a
+   test card number and CPF is quarantined with those counts, and an encrypted PDF
+   is unscannable with the reason.
 
     python3 scripts/vault_e2e.py [--keycloak URL] [--api URL] [--s3 URL] [--bucket NAME]
 
-Needs the bucket and KMS key from `make tf-local` and the seeded allow policy from
+Needs the bucket, KMS key and scan queue from `make tf-local`, the scanner worker, and the seeded allow policy from
 scripts/seed_policies.py (`make vault-check` does both). Standard library only, so it
 runs in CI without installing anything. The S3 read is unsigned, which LocalStack accepts;
 it is a test of the local stack, not something that works against AWS.
@@ -35,10 +38,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 from keycloak_smoke import login, wait_for, wait_for_api
 
 MiB = 1024 * 1024
+ROOT = Path(__file__).resolve().parent.parent
 E2E_POLICY = "e2e: "  # prefix of the temporary policies this check creates
 # VGE1 framing (ADR 0003): 16-byte header, 64 KiB chunks, 16-byte tag per chunk.
 VGE1_HEADER, VGE1_CHUNK, VGE1_TAG = 16, 64 * 1024, 16
@@ -160,8 +165,8 @@ def run(args) -> None:
     assert status == 200 and file["status"] == "uploaded", (status, file)
     assert file["size"] == size and file["sha256"] == sha256, file
     print("ok  API shows the file uploaded with the right size and SHA-256")
-    assert file["scan"]["verdict"] == "pending", file
-    print("ok  the upload is waiting for a PII scan")
+    assert file["scan"]["verdict"] in ("pending", "clean"), file  # the worker may be done
+    print("ok  the upload has a PII scan")
 
     # 3. What is in S3 is ciphertext.
     object_url = f"{args.s3}/{args.bucket}/files/{file_id}"
@@ -218,6 +223,48 @@ def run(args) -> None:
         check_policies(args, file_id, sha256, alice, bob, carol)
     finally:
         remove_e2e_policies(args.api, carol)
+
+    # 7. PII scans by the worker.
+    check_scans(args, file_id, alice)
+
+
+def upload_bytes(api: str, token: str, name: str, data: bytes) -> str:
+    status, created = api_call(api, "POST", "/files", token, {"name": name, "size": len(data)})
+    assert status == 201, status
+    status, _ = upload(created["upload"]["url"], created["upload"]["token"], [data], len(data))
+    assert status == 201, f"upload of {name}: {status}"
+    return created["file"]["id"]
+
+
+def scan_result(api: str, token: str, file_id: str, timeout: float = 120) -> dict:
+    """The file's scan once it has a verdict other than pending."""
+    deadline = time.monotonic() + timeout
+    while True:
+        status, file = api_call(api, "GET", f"/files/{file_id}", token)
+        assert status == 200, status
+        if file["scan"]["verdict"] != "pending":
+            return file["scan"]
+        assert time.monotonic() < deadline, f"no scan result after {timeout:.0f}s: {file}"
+        time.sleep(1)
+
+
+def check_scans(args, random_file: str, alice: str) -> None:
+    scan = scan_result(args.api, alice, random_file)
+    assert scan["verdict"] == "clean", scan
+    print("ok  scan: the random file is clean")
+
+    # Well-known test values, valid by their check digits.
+    text = b"Card 4111 1111 1111 1111, CPF 529.982.247-25 and 111.444.777-35.\n"
+    scan = scan_result(args.api, alice, upload_bytes(args.api, alice, "pii.txt", text))
+    findings = {f["kind"]: f["count"] for f in scan["findings"]}
+    assert scan["verdict"] == "quarantined", scan
+    assert findings == {"payment_card": 1, "br_cpf": 2}, findings
+    print("ok  scan: a card number and two CPFs quarantine the file")
+
+    encrypted = (ROOT / "scanner/internal/extract/testdata/encrypted.pdf").read_bytes()
+    scan = scan_result(args.api, alice, upload_bytes(args.api, alice, "locked.pdf", encrypted))
+    assert scan["verdict"] == "unscannable" and scan["reason"] == "PDF is encrypted", scan
+    print("ok  scan: an encrypted PDF is unscannable, with the reason")
 
 
 def check_policies(args, file_id: str, sha256: str, alice: str, bob: str, carol: str) -> None:

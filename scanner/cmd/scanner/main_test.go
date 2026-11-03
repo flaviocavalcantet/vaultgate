@@ -9,12 +9,13 @@ import (
 	"testing"
 
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/extract"
+	"github.com/flaviocavalcantet/vaultgate/scanner/internal/logging"
 )
 
 func TestRunLogsCountsButNeverValues(t *testing.T) {
 	var out, logs bytes.Buffer
 	input := "Contact ana@example.com, CPF 529.982.247-25"
-	if err := run(strings.NewReader(input), &out, newLogger(&logs, "info")); err != nil {
+	if err := run(strings.NewReader(input), &out, logging.New(&logs, "info")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -43,7 +44,7 @@ func TestRunLogsCountsButNeverValues(t *testing.T) {
 
 func TestLoggerLevelFilter(t *testing.T) {
 	var logs bytes.Buffer
-	logger := newLogger(&logs, "warn")
+	logger := logging.New(&logs, "warn")
 	logger.Info("hidden")
 	logger.Warn("shown")
 	if strings.Contains(logs.String(), "hidden") || !strings.Contains(logs.String(), `"level":"warn"`) {
@@ -58,7 +59,7 @@ func TestScanDocumentExtractsBeforeScanning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := scanDocument(e, bytes.NewReader(data), int64(len(data)), &out, newLogger(&logs, "info")); err != nil {
+	if err := scanDocument(e, bytes.NewReader(data), int64(len(data)), &out, logging.New(&logs, "info")); err != nil {
 		t.Fatal(err)
 	}
 	for _, kind := range []string{`"kind":"payment_card"`, `"kind":"br_cpf"`, `"kind":"email"`} {
@@ -79,7 +80,7 @@ func TestScanDocumentExtractsBeforeScanning(t *testing.T) {
 func TestScanDocumentReportsUnscannableFiles(t *testing.T) {
 	var out, logs bytes.Buffer
 	e := &extract.Extractor{Limits: extract.DefaultLimits()} // no PDF support configured
-	err := scanDocument(e, strings.NewReader("%PDF-1.7 not really"), 19, &out, newLogger(&logs, "info"))
+	err := scanDocument(e, strings.NewReader("%PDF-1.7 not really"), 19, &out, logging.New(&logs, "info"))
 	if !errors.Is(err, extract.ErrUnscannable) {
 		t.Fatalf("got %v, want ErrUnscannable", err)
 	}
