@@ -13,7 +13,7 @@ from sqlalchemy import select, update
 from tests.conftest import requires_db
 from tests.test_files import as_user, uploaded
 from vaultgate_api import scans
-from vaultgate_api.config import settings
+from vaultgate_api.config import Settings, settings
 from vaultgate_api.internal import internal_app
 from vaultgate_api.models import File
 
@@ -369,3 +369,16 @@ def test_without_a_queue_url_requests_are_not_sent(monkeypatch) -> None:
         assert isinstance(scans.get_scan_queue(), scans.NoScanQueue)
     finally:
         scans.get_scan_queue.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("value", "kinds"),
+    [
+        ("payment_card,br_cpf,email", ["payment_card", "br_cpf", "email"]),
+        (" payment_card , email ", ["payment_card", "email"]),
+        ("", []),
+    ],
+)
+def test_quarantine_kinds_are_comma_separated(monkeypatch, value, kinds) -> None:
+    monkeypatch.setenv("VAULTGATE_QUARANTINE_KINDS", value)
+    assert Settings().quarantine_kinds == kinds

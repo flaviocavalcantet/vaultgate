@@ -67,7 +67,8 @@ class Settings(BaseSettings):
     # LocalStack locally; unset in AWS.
     aws_endpoint_url: str | None = None
     # Finding kinds that quarantine a file; other kinds (email) are only recorded.
-    quarantine_kinds: list[str] = ["payment_card", "br_cpf"]
+    # Comma-separated, like trusted_proxies ("payment_card,br_cpf").
+    quarantine_kinds: Annotated[list[str], NoDecode] = ["payment_card", "br_cpf"]
     # A pending scan with no result after this long is sent again, up to
     # scan_max_attempts sends; then it is marked unscannable. Keep it above the
     # queue's visibility timeout so a scan still running is not sent twice.
@@ -80,6 +81,13 @@ class Settings(BaseSettings):
     @classmethod
     def split_networks(cls, value):
         return parse_networks(value) if isinstance(value, str) else value
+
+    @field_validator("quarantine_kinds", mode="before")
+    @classmethod
+    def split_kinds(cls, value):
+        if isinstance(value, str):
+            return [kind.strip() for kind in value.split(",") if kind.strip()]
+        return value
 
 
 settings = Settings()
