@@ -7,7 +7,6 @@ import boto3
 import httpx
 import pytest
 from moto import mock_aws
-from pydantic import SecretStr
 from sqlalchemy import select, update
 
 from tests.conftest import requires_db
@@ -16,38 +15,6 @@ from vaultgate_api import scans
 from vaultgate_api.config import Settings, settings
 from vaultgate_api.internal import internal_app
 from vaultgate_api.models import File
-
-SCANNER_TOKEN = "scanner-secret-for-tests"
-
-
-class FakeQueue:
-    def __init__(self) -> None:
-        self.sent: list[tuple[uuid.UUID, uuid.UUID]] = []
-        self.failing = False
-
-    async def send(self, file_id: uuid.UUID, scan_id: uuid.UUID) -> None:
-        if self.failing:
-            raise ConnectionError("queue unavailable")
-        self.sent.append((file_id, scan_id))
-
-
-@pytest.fixture
-def queue() -> FakeQueue:
-    return FakeQueue()
-
-
-@pytest.fixture
-async def scanner(clients, queue, monkeypatch):
-    """Public, gateway and scanner clients; scan requests go to `queue`."""
-    monkeypatch.setattr(settings, "scanner_token", SecretStr(SCANNER_TOKEN))
-    internal_app.dependency_overrides[scans.get_scan_queue] = lambda: queue
-    client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=internal_app),
-        base_url="http://internal",
-        headers={"Authorization": f"Bearer {SCANNER_TOKEN}"},
-    )
-    async with client:
-        yield (*clients, client)
 
 
 async def scanned_upload(public, internal, provider, queue) -> tuple[str, str]:
@@ -75,7 +42,13 @@ async def test_completed_upload_gets_a_pending_scan_request(scanner, provider, q
     public, internal, _ = scanner
     file_id, scan_id = await scanned_upload(public, internal, provider, queue)
     scan = (await file_of(public, provider, file_id))["scan"]
-    assert scan == {"verdict": "pending", "findings": [], "reason": None, "scanned_at": None}
+    assert scan == {
+        "verdict": "pending",
+        "findings": [],
+        "reason": None,
+        "scanned_at": None,
+        "release": None,
+    }
     assert uuid.UUID(scan_id)
 
 

@@ -107,6 +107,7 @@ class File(Base):
         CheckConstraint("declared_size >= 0", name="declared_size"),
         CheckConstraint(f"scan_status IN {SCAN_STATUSES}", name="scan_status"),
         CheckConstraint("(scan_status IS NULL) = (scan_id IS NULL)", name="scan_id"),
+        CheckConstraint("(released_at IS NULL) = (release_reason IS NULL)", name="release"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -140,6 +141,13 @@ class File(Base):
     scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Why a file is unscannable, e.g. "PDF is encrypted". Never contains file content.
     scan_reason: Mapped[str | None] = mapped_column(String(500))
+    # An admin's release of a quarantined or unscannable file: its owner may download it
+    # anyway. A rescan clears it, so it covers only the scan it was given for.
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    released_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    release_reason: Mapped[str | None] = mapped_column(String(500))
 
     findings: Mapped[list["ScanFinding"]] = relationship(
         lazy="selectin", cascade="all, delete-orphan", order_by="ScanFinding.kind"

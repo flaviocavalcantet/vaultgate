@@ -7,7 +7,8 @@ then, as alice:
 2. checks the API shows it uploaded with the right size and SHA-256;
 3. reads the stored object straight from S3 and checks it is a VGE1 ciphertext of the
    expected size that does not contain the plaintext;
-4. asks for a download intent, streams the file back and compares bytes and digest;
+4. waits for the scanner worker's verdict (clean: random bytes hold no card or CPF),
+   then asks for a download intent, streams the file back and compares bytes and digest;
 5. checks that upload and download tokens are single use, that bob cannot get a
    download intent for alice's file, and that an upload with the wrong size is
    refused and marks the file failed;
@@ -15,9 +16,10 @@ then, as alice:
    that the gateway refuses an intent issued before the policy (and that the refused
    intent stays usable), that the gateway reports a known client address, and that
    deny wins over the seeded allow policy. The `e2e:` policies are always removed;
-7. waits for the scanner worker's verdicts: the random file is clean, a text with a
-   test card number and CPF is quarantined with those counts, and an encrypted PDF
-   is unscannable with the reason.
+7. checks the other verdicts and quarantine: a text with a test card number and CPFs
+   is quarantined with those counts and cannot be downloaded until carol releases it,
+   a rescan puts it back in quarantine, and an encrypted PDF is unscannable with the
+   reason.
 
     python3 scripts/vault_e2e.py [--keycloak URL] [--api URL] [--s3 URL] [--bucket NAME]
 
@@ -177,7 +179,10 @@ def run(args) -> None:
     assert first[0][:4096] not in stored, "plaintext found in the stored object"
     print(f"ok  S3 object is VGE1 ciphertext ({len(stored)} bytes), no plaintext")
 
-    # 4. Download it back.
+    # 4. Download it back, once the scan says it is clean.
+    scan = scan_result(args.api, alice, file_id)
+    assert scan["verdict"] == "clean", scan
+    print("ok  scan: the random file is clean")
     status, intent = api_call(args.api, "POST", f"/files/{file_id}/download", alice)
     assert status == 201, f"POST /files/{{id}}/download: {status}"
     started = time.monotonic()
@@ -224,8 +229,8 @@ def run(args) -> None:
     finally:
         remove_e2e_policies(args.api, carol)
 
-    # 7. PII scans by the worker.
-    check_scans(args, file_id, alice)
+    # 7. PII scans by the worker, and quarantine.
+    check_scans(args, alice, carol)
 
 
 def upload_bytes(api: str, token: str, name: str, data: bytes) -> str:
@@ -248,18 +253,40 @@ def scan_result(api: str, token: str, file_id: str, timeout: float = 120) -> dic
         time.sleep(1)
 
 
-def check_scans(args, random_file: str, alice: str) -> None:
-    scan = scan_result(args.api, alice, random_file)
-    assert scan["verdict"] == "clean", scan
-    print("ok  scan: the random file is clean")
-
+def check_scans(args, alice: str, carol: str) -> None:
+    api = args.api
     # Well-known test values, valid by their check digits.
     text = b"Card 4111 1111 1111 1111, CPF 529.982.247-25 and 111.444.777-35.\n"
-    scan = scan_result(args.api, alice, upload_bytes(args.api, alice, "pii.txt", text))
+    pii = upload_bytes(api, alice, "pii.txt", text)
+    scan = scan_result(api, alice, pii)
     findings = {f["kind"]: f["count"] for f in scan["findings"]}
     assert scan["verdict"] == "quarantined", scan
     assert findings == {"payment_card": 1, "br_cpf": 2}, findings
     print("ok  scan: a card number and two CPFs quarantine the file")
+
+    status, _ = api_call(api, "POST", f"/files/{pii}/download", alice)
+    assert status == 409, f"download of a quarantined file: {status}"
+    status, listed = api_call(api, "GET", "/admin/files?verdict=quarantined&limit=100", carol)
+    assert status == 200 and pii in {f["id"] for f in listed["items"]}, status
+    status, _ = api_call(api, "POST", f"/admin/files/{pii}/release", alice, {"reason": "mine"})
+    assert status == 403, f"alice released her own file: {status}"
+    status, released = api_call(
+        api, "POST", f"/admin/files/{pii}/release", carol, {"reason": "e2e: test values"}
+    )
+    assert status == 200 and released["downloadable"], (status, released)
+    status, intent = api_call(api, "POST", f"/files/{pii}/download", alice)
+    assert status == 201, f"download after release: {status}"
+    status, _, _, size = download(intent["url"], intent["token"])
+    assert (status, size) == (200, len(text)), (status, size)
+    print("ok  quarantine: no download until an admin releases the file, then it works")
+
+    status, _ = api_call(api, "POST", f"/admin/files/{pii}/rescan", carol)
+    assert status == 202, f"rescan: {status}"
+    scan = scan_result(api, alice, pii)
+    assert scan["verdict"] == "quarantined" and scan["release"] is None, scan
+    status, _ = api_call(api, "POST", f"/files/{pii}/download", alice)
+    assert status == 409, f"download after a rescan: {status}"
+    print("ok  quarantine: a rescan ends the release")
 
     encrypted = (ROOT / "scanner/internal/extract/testdata/encrypted.pdf").read_bytes()
     scan = scan_result(args.api, alice, upload_bytes(args.api, alice, "locked.pdf", encrypted))

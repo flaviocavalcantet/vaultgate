@@ -6,7 +6,8 @@ be probed for existence. Every route first needs its action allowed by the acces
 policies (vaultgate_api.access): read, upload or download.
 
 An uploaded file shows its scan verdict and the kinds of personal data found, with
-counts; the matches themselves are never stored (vaultgate_api.scans).
+counts; the matches themselves are never stored (vaultgate_api.scans). Only a clean
+file, or one an admin released, can be downloaded (quarantine, ADR 0005).
 """
 
 import re
@@ -64,12 +65,19 @@ class FindingOut(BaseModel):
     count: int
 
 
+class ReleaseOut(BaseModel):
+    released_at: datetime
+    reason: str
+
+
 class ScanOut(BaseModel):
     verdict: scans.Verdict
     findings: list[FindingOut]
     # Why the file could not be scanned, when it could not.
     reason: str | None
     scanned_at: datetime | None
+    # Set when an admin released a quarantined or unscannable file for download.
+    release: ReleaseOut | None
 
 
 class FileOut(BaseModel):
@@ -84,17 +92,24 @@ class FileOut(BaseModel):
     uploaded_at: datetime | None
     # None until the upload completes.
     scan: ScanOut | None
+    # Whether POST /files/{id}/download would be allowed by the scan (access policies
+    # still apply): a clean verdict, or a release.
+    downloadable: bool
 
     @classmethod
     def of(cls, file: File) -> "FileOut":
         verdict = scans.verdict(file)
         scan = None
         if verdict is not None:
+            release = None
+            if scans.released(file):
+                release = ReleaseOut(released_at=file.released_at, reason=file.release_reason)
             scan = ScanOut(
                 verdict=verdict,
                 findings=[FindingOut(kind=f.kind, count=f.count) for f in file.findings],
                 reason=file.scan_reason,
                 scanned_at=file.scanned_at,
+                release=release,
             )
         return cls(
             id=file.id,
@@ -107,6 +122,7 @@ class FileOut(BaseModel):
             created_at=file.created_at,
             uploaded_at=file.uploaded_at,
             scan=scan,
+            downloadable=file.status == "uploaded" and scans.blocked(file) is None,
         )
 
 
@@ -218,6 +234,8 @@ async def create_download(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
     if file.status != "uploaded":
         raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
+    if reason := scans.check_download(file, checked_by="api"):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=reason)
     token, expires_at = await intents.issue(
         session,
         file=file,
