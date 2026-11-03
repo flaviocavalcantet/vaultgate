@@ -369,6 +369,15 @@ async def uploaded(public, internal, provider, sub="alice") -> dict:
     return created
 
 
+async def scanned_clean(session, file_id: str) -> None:
+    """Record a clean scan, so the file can be downloaded (test_quarantine.py covers the
+    other verdicts)."""
+    await session.execute(
+        update(File).where(File.id == uuid.UUID(file_id)).values(scan_status="scanned")
+    )
+    await session.flush()
+
+
 def consume_download(internal, file_id: str, token: str):
     return internal.post(
         "/internal/intents/consume",
@@ -376,10 +385,11 @@ def consume_download(internal, file_id: str, token: str):
     )
 
 
-async def test_download_intent_returns_what_the_gateway_needs(clients, provider) -> None:
+async def test_download_intent_returns_what_the_gateway_needs(clients, provider, session) -> None:
     public, internal = clients
     created = await uploaded(public, internal, provider)
     file_id = created["file"]["id"]
+    await scanned_clean(session, file_id)
 
     response = await public.post(f"/files/{file_id}/download", headers=as_user(provider))
     assert response.status_code == 201
@@ -434,6 +444,7 @@ async def test_download_intent_is_refused_if_file_stops_being_available(
     public, internal = clients
     created = await uploaded(public, internal, provider)
     file_id = created["file"]["id"]
+    await scanned_clean(session, file_id)
     intent = (await public.post(f"/files/{file_id}/download", headers=as_user(provider))).json()
     await session.execute(update(File).where(File.id == uuid.UUID(file_id)).values(status="failed"))
     assert (await consume_download(internal, file_id, intent["token"])).status_code == 409

@@ -6,7 +6,8 @@ the result with `complete` or `fail`. Before serving a download it calls `consum
 a download intent, which returns the wrapped data key needed to decrypt the object.
 
 `consume` also re-checks the access policies for the intent's user, with the client
-address the gateway saw (ADR 0004), and refuses intents of deactivated users. A refusal
+address the gateway saw (ADR 0004), refuses intents of deactivated users, and, for
+downloads, refuses files the scan does not allow (quarantine, ADR 0005). A refusal
 leaves the intent unspent.
 
 A completed upload gets a scan request (vaultgate_api.scans). The scanner worker uses
@@ -123,6 +124,11 @@ async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeRe
     elif file.status != "uploaded":
         await session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
+    elif reason := scans.check_download(file, checked_by="gateway"):
+        # The verdict changed since the intent was issued (a rescan, other quarantine
+        # kinds); the intent stays unspent.
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=reason)
     await session.commit()
     logger.info("intent consumed", extra={"file_id": str(file.id), "kind": body.kind})
     response = ConsumeResponse(

@@ -60,7 +60,7 @@ The scanner reads text out of PDFs, Word, Excel, PowerPoint and OpenDocument fil
 - **Authentication:** OIDC authorization code flow with PKCE. The API validates tokens against the issuer's JWKS and checks signature algorithm, issuer, audience and expiry on every request (see [Calling the API](#calling-the-api)).
 - **Authorization:** deny by default. Policies are evaluated on every request, not cached in the session.
 - **Encryption:** each file gets its own data key from KMS (wrapped key stored, bound to the file through the KMS encryption context) and is encrypted by the gateway as a stream of AES-256-GCM chunks that also detects reordering and truncation ([ADR 0003](docs/adr/0003-vault-object-encryption.md)). S3 server-side encryption and a public access block on top.
-- **PII handling:** the scanner reports finding types and positions only. Matched values are never logged or stored.
+- **PII handling:** every upload is scanned, and only a clean file (or one an admin released) can be downloaded ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md)). The worker decrypts files in memory only, and reports finding kinds and counts; matched values are never logged or stored.
 - **Containers:** non-root user, read-only root filesystem, all Linux capabilities dropped.
 - **Audit:** append-only table; the application role has `INSERT` but no `UPDATE` or `DELETE`.
 
@@ -99,6 +99,9 @@ The API, gateway and scanner worker serve Prometheus metrics on a separate port,
 | `vaultgate_api_scan_send_failures_total` | counter | | API |
 | `vaultgate_api_scan_results_total` | counter | `verdict` | API |
 | `vaultgate_api_scans_abandoned_total` | counter | | API |
+| `vaultgate_api_downloads_blocked_total` | counter | `verdict`, `checked_by` | API |
+| `vaultgate_api_quarantine_releases_total` | counter | | API |
+| `vaultgate_api_rescans_total` | counter | | API |
 | `vaultgate_scanner_jobs_total` | counter | `outcome` (`clean`, `quarantined`, `unscannable`, `stale`, `retry`, `invalid`) | scanner |
 | `vaultgate_scanner_job_duration_seconds` | histogram | | scanner |
 | `vaultgate_scanner_text_bytes_total` | counter | | scanner |
@@ -264,7 +267,7 @@ curl -X POST -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:8000/file
 curl -OJ -H "Authorization: Bearer $DOWNLOAD_TOKEN" http://localhost:8888/downloads/$FILE_ID
 ```
 
-Only the owner gets a download intent, and only for an `uploaded` file. It is single use and lasts 5 minutes (`VAULTGATE_DOWNLOAD_INTENT_TTL_SECONDS`). The gateway consumes it, has KMS unwrap the file's data key (bound to the file ID), and streams the object from S3, decrypting in `VAULTGATE_READ_SIZE` pieces (256 KiB). It waits for each piece to reach the client before reading the next, so a slow client never makes the gateway buffer the file. In a local run, a 100 MiB download raised the gateway's resident memory from 64 to 74 MiB, at full speed and throttled alike.
+Only the owner gets a download intent, and only for an `uploaded` file whose PII scan is clean or released ([PII scanning](#pii-scanning)). It is single use and lasts 5 minutes (`VAULTGATE_DOWNLOAD_INTENT_TTL_SECONDS`). The gateway consumes it, has KMS unwrap the file's data key (bound to the file ID), and streams the object from S3, decrypting in `VAULTGATE_READ_SIZE` pieces (256 KiB). It waits for each piece to reach the client before reading the next, so a slow client never makes the gateway buffer the file. In a local run, a 100 MiB download raised the gateway's resident memory from 64 to 74 MiB, at full speed and throttled alike.
 
 The response is always an attachment (`Content-Disposition` with the original UTF-8 name, `nosniff`, a sandboxing CSP, `no-store`) with `Content-Length` and `Repr-Digest` (SHA-256 of the file, RFC 9530). If the stored object fails authentication, is truncated, or does not match the recorded size, the gateway closes the connection mid-body instead of finishing it. Because `Content-Length` is already sent, the client sees an incomplete download, never a damaged file that looks whole. Range requests are not supported yet.
 
@@ -316,9 +319,15 @@ Every completed upload is scanned for personal data (M4). The API keeps the scan
 - The scanner uses two internal routes, with its own secret (`Authorization: Bearer $VAULTGATE_SCANNER_TOKEN`; the gateway's secret does not open them, nor this one the gateway's): `GET /internal/scans/{scan_id}` returns the object key and the KMS-wrapped data key, and `POST /internal/scans/{scan_id}/result` records `{"outcome": "scanned" | "unscannable", "findings": [{"kind", "count"}], "reason"}`. Repeating the recorded result succeeds; a different one, or a result for a scan that was replaced, is refused.
 - Only the kind of personal data and how many matches were found are stored, never the matches or where they are. `GET /files/{id}` shows them in `scan`: `{verdict, findings, reason, scanned_at}`.
 - The **scanner worker** (`scanner/cmd/worker`) takes requests from the queue. For each it fetches the scan job, has KMS unwrap the data key (bound to the file ID, as for downloads), and reads the object from S3 with range requests, decrypting chunks in memory as the text extraction needs them: plaintext never touches disk. A stored object that fails authentication, or does not match its recorded size, is reported unscannable. Failures that say nothing about the file (the API, KMS or S3 unreachable, a timeout) leave the message in the queue: it comes back after the visibility timeout, and after 5 deliveries moves to the dead-letter queue (`infra/terraform/modules/scanning`), while the API's resender keeps its own count. While a scan runs, the worker renews the message's visibility, so no other worker picks it up. Settings: `VAULTGATE_SCAN_QUEUE_URL`, `VAULTGATE_API_INTERNAL_URL`, `VAULTGATE_SCANNER_TOKEN`, `VAULTGATE_BUCKET`, `VAULTGATE_AWS_REGION`, `VAULTGATE_AWS_ENDPOINT_URL`, `VAULTGATE_SCANNER_CONCURRENCY` (2), `VAULTGATE_SCAN_TIMEOUT_SECONDS` (600), `VAULTGATE_SCAN_VISIBILITY_SECONDS` (120). It stops on SIGTERM after finishing the scans in progress.
-- Verdicts: `pending`, `clean`, `quarantined` (a finding of a kind in `VAULTGATE_QUARANTINE_KINDS`, default `payment_card,br_cpf`; `email` is only recorded) and `unscannable` (with the reason, such as an encrypted PDF). They are worked out when read, so changing the quarantine kinds applies to files already scanned. Downloads will need a `clean` verdict once quarantine is enforced (a later M4 step).
+- Verdicts: `pending`, `clean`, `quarantined` (a finding of a kind in `VAULTGATE_QUARANTINE_KINDS`, default `payment_card,br_cpf`; `email` is only recorded) and `unscannable` (with the reason, such as an encrypted PDF). They are worked out when read, so changing the quarantine kinds applies to files already scanned.
 
-Files uploaded before this version are scanned too: the upgrade gives them a pending scan, sent on the resender's first round.
+**Quarantine** ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md)) is fail closed: only a `clean` file can be downloaded. `POST /files/{id}/download` answers `409` with the reason for a pending, quarantined or unscannable file, and the gateway's intent consume checks again, so a verdict that changes after the intent was issued still applies (the refused intent stays unspent). `GET /files/{id}` shows `downloadable`. Admins (`VAULTGATE_ADMIN_GROUPS`) decide on exceptions:
+
+- `GET /admin/files?verdict=quarantined` lists every user's files with a verdict (all of them without `verdict`), with their owner.
+- `POST /admin/files/{id}/release` with `{"reason": "..."}` lets the owner download a quarantined or unscannable file. The verdict and findings stay; the file shows `scan.release` with the reason, and the release records the admin who gave it.
+- `POST /admin/files/{id}/rescan` scans the file again: new request, findings dropped, any release ended.
+
+Files uploaded before scanning existed are scanned too: the upgrade gives them a pending scan, sent on the resender's first round. **Upgrading:** they cannot be downloaded until that scan is clean.
 
 To try the scanner and the scan state by hand, see [Try the PII scanner](docs/local-testing.md#try-the-pii-scanner).
 
@@ -351,13 +360,13 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Trusted client addresses: `X-Forwarded-For` only from configured proxies, in the API and the gateway
   - [x] Admin API for policies, with a dry run that explains a decision
   - [x] Enforcement on file reads and transfer intents, re-checked by the gateway; seed policy for local use and CI
-- [ ] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
+- [x] **M4 — PII scanning:** SQS-driven scanner worker, quarantine, card number detector (Luhn)
   - [x] Payment card detector (Luhn and card network ranges) and a streaming scan that holds one window in memory
   - [x] Decrypting stored objects (VGE1) in Go, checked against vectors from the Python implementation
   - [x] Text extraction from Office documents and PDFs, with size and expansion limits
   - [x] Scan state in the API: status and findings per file, results endpoint, SQS events, re-sending stuck scans
   - [x] Scanner worker: SQS consumer, queue and dead-letter queue in Terraform, compose service, metrics
-  - [ ] Quarantine: downloads need a clean scan; admin release and rescan; end-to-end check
+  - [x] Quarantine: downloads need a clean scan; admin release and rescan; end-to-end check ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md))
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway

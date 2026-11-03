@@ -91,3 +91,16 @@ SCANS_ABANDONED = Counter(
     "vaultgate_api_scans_abandoned_total",
     "Scans marked unscannable because no result came after the last send",
 )
+DOWNLOADS_BLOCKED = Counter(
+    "vaultgate_api_downloads_blocked_total",
+    "Download requests refused because of the file's scan, by verdict and where",
+    ["verdict", "checked_by"],
+)
+RELEASES = Counter(
+    "vaultgate_api_quarantine_releases_total",
+    "Quarantined or unscannable files an admin released for download",
+)
+RESCANS = Counter(
+    "vaultgate_api_rescans_total",
+    "Scans an admin started again",
+)

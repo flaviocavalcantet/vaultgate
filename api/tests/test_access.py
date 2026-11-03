@@ -104,7 +104,16 @@ async def mark_uploaded(session: AsyncSession, file_id: str) -> None:
     await session.execute(
         update(File)
         .where(File.id == uuid.UUID(file_id))
-        .values(status="uploaded", size=3, sha256="0" * 64, wrapped_key=b"k", kms_key_id="k")
+        .values(
+            status="uploaded",
+            size=3,
+            sha256="0" * 64,
+            wrapped_key=b"k",
+            kms_key_id="k",
+            # Scanned clean: quarantine has its own tests (test_quarantine.py).
+            scan_status="scanned",
+            scan_id=uuid.uuid4(),
+        )
     )
     await session.flush()
 

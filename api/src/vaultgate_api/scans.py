@@ -10,8 +10,13 @@ file is marked unscannable.
 
 Verdicts are worked out when they are read, from the findings and the configured
 quarantine kinds, so changing VAULTGATE_QUARANTINE_KINDS applies to files already
-scanned. A pending or unscannable file is never clean: downloads will need a clean
-scan (fail closed).
+scanned.
+
+Quarantine (ADR 0005): a file can be downloaded only when its verdict is clean, or an
+admin released it after a quarantined or unscannable verdict. Pending and unscannable
+files are blocked like quarantined ones (fail closed). The API checks this when it
+issues a download intent and again when the gateway consumes it. A rescan starts a new
+scan request and clears the release, which covered only the scan it was given for.
 """
 
 import asyncio
@@ -50,8 +55,44 @@ def verdict(file: File) -> Verdict | None:
     return "quarantined" if any(f.kind in quarantine for f in file.findings) else "clean"
 
 
+# Why a download is refused, by verdict.
+BLOCKED = {
+    "pending": "File is waiting for its PII scan",
+    "quarantined": "File is quarantined: it contains personal data",
+    "unscannable": "File could not be scanned for personal data",
+}
+
+
+def released(file: File) -> bool:
+    """An admin released the file's current quarantined or unscannable verdict."""
+    return file.released_at is not None and verdict(file) in ("quarantined", "unscannable")
+
+
+def blocked(file: File) -> str | None:
+    """Why the file may not be downloaded, or None if it may (an uploaded file only)."""
+    v = verdict(file)
+    if v is None:
+        return "File is not available"
+    if v == "clean" or released(file):
+        return None
+    return BLOCKED[v]
+
+
+def check_download(file: File, checked_by: str) -> str | None:
+    """blocked(), counted and logged when it refuses."""
+    reason = blocked(file)
+    if reason is not None:
+        v = verdict(file) or "none"
+        metrics.DOWNLOADS_BLOCKED.labels(v, checked_by).inc()
+        logger.info(
+            "download blocked by scan",
+            extra={"file_id": str(file.id), "verdict": v, "checked_by": checked_by},
+        )
+    return reason
+
+
 def new_scan(now: datetime) -> dict:
-    """Column values for a new scan request, counted as sent once."""
+    """Column values for a new scan request, counted as sent once. Any release ends."""
     return {
         "scan_status": "pending",
         "scan_id": uuid.uuid4(),
@@ -59,6 +100,9 @@ def new_scan(now: datetime) -> dict:
         "scan_attempts": 1,
         "scanned_at": None,
         "scan_reason": None,
+        "released_at": None,
+        "released_by": None,
+        "release_reason": None,
     }
 
 
@@ -114,6 +158,18 @@ async def send_request(queue: ScanQueue, file_id: uuid.UUID, scan_id: uuid.UUID)
         logger.warning("scan request not sent", extra={"file_id": str(file_id), "error": repr(exc)})
         return False
     return True
+
+
+async def rescan(session: AsyncSession, file: File, queue: ScanQueue) -> None:
+    """Start a new scan of an uploaded file: findings and any release are dropped, and
+    the request is sent (or left to the resender if the queue fails)."""
+    for column, value in new_scan(datetime.now(UTC)).items():
+        setattr(file, column, value)
+    file.findings = []
+    await session.commit()
+    metrics.RESCANS.inc()
+    if await send_request(queue, file.id, file.scan_id):
+        metrics.SCAN_REQUESTS_SENT.labels("first").inc()
 
 
 async def resend_stuck_scans(

@@ -136,10 +136,10 @@ Notes:
 |---|---|
 | Start the stack | `docker compose up --build`, then waits until LocalStack, Keycloak, the API (`/readyz`), the gateway and Grafana answer (the scanner worker starts with them) |
 | Terraform | the storage module creates the encrypted, versioned bucket, the KMS key and alias, and the multipart-cleanup rule in LocalStack; the scanning module creates the scan queue and its dead-letter queue |
-| API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, and scan state (requests, results, verdicts, the resender), against a real database (`vaultgate_test`, created automatically) |
+| API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, scan state (requests, results, verdicts, the resender) and quarantine (downloads refused until clean or released, admin release, rescan, listing by verdict), against a real database (`vaultgate_test`, created automatically) |
 | Access policy for local use | adds a policy that lets every signed-in user read, upload and download (`scripts/seed_policies.py`); access is denied by default |
 | Login | real Keycloak PKCE login for alice, bob and carol. Checks issuer, audience, lifetime and groups. The API accepts access tokens and refuses ID tokens, only carol sees `/admin/users`, and insecure flows are refused |
-| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean, quarantines a text with a card number and CPFs, and reports an encrypted PDF unscannable |
+| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean before it is downloaded, quarantines a text with a card number and CPFs (no download until carol releases it; a rescan ends the release), and reports an encrypted PDF unscannable |
 | Observability | Prometheus config and alert rule tests, Loki and Alloy configs, Grafana dashboards, and every Prometheus scrape target up |
 
 ## Try it yourself
@@ -173,7 +173,8 @@ curl -T /tmp/hello.txt -H "Authorization: Bearer $UPLOAD_TOKEN" http://localhost
 # 3. What S3 actually stores: VGE1 ciphertext, not your text
 curl -s http://localhost:4566/vaultgate-local-vault/files/$FILE_ID | head -c 4; echo
 
-# 4. Download it back
+# 4. Download it back. The PII scan must be clean first, which takes a second or two:
+#    a 409 "File is waiting for its PII scan" means try again.
 DOWNLOAD_TOKEN=$(curl -s -X POST http://localhost:8000/files/$FILE_ID/download \
   -H "Authorization: Bearer $TOKEN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
 curl -OJ -H "Authorization: Bearer $DOWNLOAD_TOKEN" http://localhost:8888/downloads/$FILE_ID
@@ -199,7 +200,7 @@ Invoke-RestMethod -Method Put "http://localhost:8888/uploads/$Id" -Headers @{ Au
 $Stored = (Invoke-WebRequest "http://localhost:4566/vaultgate-local-vault/files/$Id" -UseBasicParsing).Content
 [Text.Encoding]::ASCII.GetString($Stored[0..3])
 
-# 4. Download it back
+# 4. Download it back, once its PII scan is clean (a 409 a second after the upload means try again)
 $Download = Invoke-RestMethod -Method Post "http://localhost:8000/files/$Id/download" -Headers $Auth
 Invoke-WebRequest "http://localhost:8888/downloads/$Id" -Headers @{ Authorization = "Bearer $($Download.token)" } -OutFile hello-downloaded.txt -UseBasicParsing
 Get-Content hello-downloaded.txt
@@ -289,7 +290,7 @@ To see the decisions: the **VaultGate / Service overview** dashboard in Grafana 
 
 ### Try the PII scanner
 
-Uploaded files are scanned for personal data (M4; [README](../README.md#pii-scanning)). Try the scanner on its own, on any file, then the scans the worker runs on your uploads. Downloads are not blocked by a scan yet; quarantine comes in the next M4 step.
+Uploaded files are scanned for personal data (M4; [README](../README.md#pii-scanning)). Try the scanner on its own, on any file, then the scans the worker runs on your uploads and the quarantine: only a clean file can be downloaded, unless an admin releases it ([ADR 0005](adr/0005-pii-scanning-and-quarantine.md)).
 
 **The scanner on its own** needs only Go, no stack. Build it once, then point it at a file. It prints one JSON line per match (kind and position in the extracted text; the value itself is never printed), then a summary on stderr. The repository has sample documents in `scanner/internal/extract/testdata` (generated by `generate.py` there):
 
@@ -344,7 +345,26 @@ LOCKED_ID=$(upload scanner/internal/extract/testdata/encrypted.pdf)
 sleep 2; curl -s http://localhost:8000/files/$LOCKED_ID -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 # "scan": {"verdict": "unscannable", "findings": [], "reason": "PDF is encrypted", ...}
 
-# 4. The queue holds requests while the worker is down
+# 4. Quarantine: the owner can't download pii.txt...
+curl -s -X POST http://localhost:8000/files/$PII_ID/download -H "Authorization: Bearer $TOKEN"; echo
+# {"detail":"File is quarantined: it contains personal data"}
+
+# 5. ...until carol (admin) releases it, with a reason. Log in as carol for this one.
+ADMIN=$(python3 scripts/vaultgate_login.py --switch-user)
+curl -s "http://localhost:8000/admin/files?verdict=quarantined" -H "Authorization: Bearer $ADMIN" | python3 -m json.tool
+curl -s -X POST http://localhost:8000/admin/files/$PII_ID/release -H "Authorization: Bearer $ADMIN" \
+  -H "Content-Type: application/json" -d '{"reason": "Test values only"}' | python3 -m json.tool
+# "downloadable": true, "scan": {"verdict": "quarantined", ..., "release": {"reason": "Test values only", ...}}
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8000/files/$PII_ID/download -H "Authorization: Bearer $TOKEN"
+# 201
+
+# 6. A rescan ends the release: the file waits for its new verdict, then is quarantined again
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8000/admin/files/$PII_ID/rescan -H "Authorization: Bearer $ADMIN"
+# 202
+sleep 2; curl -s -X POST http://localhost:8000/files/$PII_ID/download -H "Authorization: Bearer $TOKEN"; echo
+# {"detail":"File is quarantined: it contains personal data"}
+
+# 7. The queue holds requests while the worker is down
 docker compose stop scanner
 CLEAN_ID=$(upload /tmp/hello.txt)
 curl -s http://localhost:8000/files/$CLEAN_ID -H "Authorization: Bearer $TOKEN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["scan"]["verdict"])'
@@ -354,7 +374,7 @@ sleep 10; curl -s http://localhost:8000/files/$CLEAN_ID -H "Authorization: Beare
 # clean
 ```
 
-Try your own Word, Excel, PDF or zip files the same way. Emails are recorded but don't quarantine a file. Which kinds do is `VAULTGATE_QUARANTINE_KINDS` on the API (default `payment_card,br_cpf`); the verdict is worked out when read, so after changing it in `docker-compose.yml` and running `docker compose up -d api`, files already scanned show the new verdict. Downloads are not blocked by a verdict yet.
+Tokens last 5 minutes; if a step answers `401`, log in again. Try your own Word, Excel, PDF or zip files the same way. Emails are recorded but don't quarantine a file. Which kinds do is `VAULTGATE_QUARANTINE_KINDS` on the API (default `payment_card,br_cpf`); the verdict is worked out when read, so after changing it in `docker-compose.yml` and running `docker compose up -d api`, files already scanned show the new verdict. The unscannable PDF from step 3 can be released the same way.
 
 The same in PowerShell, in the window of the PowerShell walkthrough after its step 2, with `$Auth` and `$Id`. `Compose` runs `docker compose` in the repository on the engine `local_check.ps1` uses: Docker Engine in WSL, or Docker Desktop.
 
@@ -379,7 +399,22 @@ $PiiId = Upload pii.txt; Start-Sleep 2
 $LockedId = Upload scanner\internal\extract\testdata\encrypted.pdf; Start-Sleep 2
 (Invoke-RestMethod "http://localhost:8000/files/$LockedId" -Headers $Auth).scan
 
-# 4. The queue holds requests while the worker is down
+# 4. Quarantine: the owner can't download pii.txt (Conflict)...
+try { Invoke-RestMethod -Method Post "http://localhost:8000/files/$PiiId/download" -Headers $Auth } catch { $_.Exception.Response.StatusCode }
+
+# 5. ...until carol (admin) releases it, with a reason
+$Admin = .\.venv\Scripts\python scripts\vaultgate_login.py --switch-user   # log in as carol
+$AsCarol = @{ Authorization = "Bearer $Admin" }
+(Invoke-RestMethod "http://localhost:8000/admin/files?verdict=quarantined" -Headers $AsCarol).items | Format-Table name, owner_username
+$Released = Invoke-RestMethod -Method Post "http://localhost:8000/admin/files/$PiiId/release" -Headers $AsCarol -ContentType 'application/json' -Body (@{ reason = 'Test values only' } | ConvertTo-Json)
+$Released.downloadable   # True
+(Invoke-RestMethod -Method Post "http://localhost:8000/files/$PiiId/download" -Headers $Auth).url
+
+# 6. A rescan ends the release (Conflict again once the new scan is done)
+Invoke-RestMethod -Method Post "http://localhost:8000/admin/files/$PiiId/rescan" -Headers $AsCarol | Out-Null; Start-Sleep 2
+try { Invoke-RestMethod -Method Post "http://localhost:8000/files/$PiiId/download" -Headers $Auth } catch { $_.Exception.Response.StatusCode }
+
+# 7. The queue holds requests while the worker is down
 Compose stop scanner
 $CleanId = Upload hello.txt
 (Invoke-RestMethod "http://localhost:8000/files/$CleanId" -Headers $Auth).scan.verdict   # pending
@@ -387,7 +422,7 @@ Compose start scanner; Start-Sleep 10
 (Invoke-RestMethod "http://localhost:8000/files/$CleanId" -Headers $Auth).scan.verdict   # clean
 ```
 
-To watch it: `docker compose logs scanner` shows each scan (`scan reported`, with the verdict and the counts per kind, never the values), and in Grafana, **Explore → Prometheus** with `vaultgate_scanner_jobs_total` counts scans by outcome. **Explore → Loki** with `{service=~"api|scanner"} |= "scan"` follows a request from the API to the worker and back.
+To watch it: `docker compose logs scanner` shows each scan (`scan reported`, with the verdict and the counts per kind, never the values), and in Grafana, **Explore → Prometheus** with `vaultgate_scanner_jobs_total` counts scans by outcome. **Explore → Loki** with `{service=~"api|scanner"} |= "scan"` follows a request from the API to the worker and back; `|= "quarantine"` shows releases with the admin and the reason, and `|= "download blocked"` the refused downloads.
 
 ## Troubleshooting
 
