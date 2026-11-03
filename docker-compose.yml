@@ -55,6 +55,8 @@ services:
       # Shared secret for the internal API (port 8001, gateway only, not published on
       # the host). Local development value; real deployments inject a random secret.
       VAULTGATE_INTERNAL_TOKEN: dev-internal-token-change-me
+      # The scanner worker's secret for its internal routes (local value, like the above).
+      VAULTGATE_SCANNER_TOKEN: dev-scanner-token-change-me
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }

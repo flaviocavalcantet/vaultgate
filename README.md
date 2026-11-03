@@ -314,6 +314,8 @@ Every completed upload is scanned for personal data (M4). The API keeps the scan
 
 Files uploaded before this version are scanned too: the upgrade gives them a pending scan, sent on the resender's first round.
 
+To try the scanner and the scan state by hand, see [Try the PII scanner](docs/local-testing.md#try-the-pii-scanner).
+
 ### Client addresses behind a proxy
 
 Access policies can restrict by network (M3), so the API and the gateway must know the real client address. They take it from `X-Forwarded-For` only when the request comes from a proxy listed in `VAULTGATE_TRUSTED_PROXIES`, a comma-separated list of networks (for example the ingress controller's pod range). The header is read from the right, skipping trusted hops; the first other address is the client. With the list empty (the default, and what compose uses), the header is ignored and the TCP peer is the client. List proxy addresses only: a client inside a trusted range can claim any address. If a trusted proxy passes on something that isn't an address, the client counts as unknown rather than as the proxy. Logs record the resolved address as `client_ip`.
