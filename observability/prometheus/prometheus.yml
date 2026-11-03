@@ -17,6 +17,10 @@ scrape_configs:
     static_configs:
       - targets: ["gateway:9100"]
 
+  - job_name: scanner
+    static_configs:
+      - targets: ["scanner:9100"]
+
   # The observability stack watches itself too, so a broken pipeline is visible.
   - job_name: prometheus
     static_configs:

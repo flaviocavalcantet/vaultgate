@@ -24,16 +24,10 @@ event, then:
 
 1. Fix every 🔴 blocking finding that holds up, and the 🟡 suggestions that are cheap and
    clearly right; push.
-2. Reply on each thread: what changed, or why it stays as is.
-   A finding moved to a later PR gets a reply starting with **Deferred to** and the
-   branch or PR that will fix it; when that fix lands, reply on the same thread naming
-   the PR.
-3. Tell the owner which findings were acted on and which were declined, and why.
-
-Replies on PR threads are posted as the owner, so write them like a person would:
-one or two short sentences (what changed, or why it stays), no long explanations and
-no commit hashes and no review message footer. Give the owner the detailed reasoning in
-the session instead.
+2. Do not reply on PR threads. Resolve the threads whose findings were fixed; leave
+   the others open.
+3. Tell the owner, in the session, which findings were acted on, which were declined
+   or deferred (and to which branch), and why.
 
 If the Action fails or posts nothing, report it to the owner instead of reviewing in its
 place.

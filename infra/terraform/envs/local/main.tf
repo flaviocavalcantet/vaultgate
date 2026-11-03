@@ -29,5 +29,11 @@ module "storage" {
   name   = "vaultgate-local"
 }
 
+module "scanning" {
+  source = "../../modules/scanning"
+  name   = "vaultgate-local"
+}
+
 output "bucket_name" { value = module.storage.bucket_name }
 output "kms_alias" { value = module.storage.kms_alias }
+output "scan_queue_url" { value = module.scanning.queue_url }
