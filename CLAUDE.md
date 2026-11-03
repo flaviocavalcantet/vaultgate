@@ -32,7 +32,8 @@ event, then:
 
 Replies on PR threads are posted as the owner, so write them like a person would:
 one or two short sentences (what changed, or why it stays), no long explanations and
-no commit hashes. Give the owner the detailed reasoning in the session instead.
+no commit hashes and no review message footer. Give the owner the detailed reasoning in
+the session instead.
 
 If the Action fails or posts nothing, report it to the owner instead of reviewing in its
 place.
