@@ -160,6 +160,8 @@ def run(args) -> None:
     assert status == 200 and file["status"] == "uploaded", (status, file)
     assert file["size"] == size and file["sha256"] == sha256, file
     print("ok  API shows the file uploaded with the right size and SHA-256")
+    assert file["scan"]["verdict"] == "pending", file
+    print("ok  the upload is waiting for a PII scan")
 
     # 3. What is in S3 is ciphertext.
     object_url = f"{args.s3}/{args.bucket}/files/{file_id}"

@@ -88,6 +88,7 @@ class Group(Base):
 
 
 FILE_STATUSES = ("pending", "uploading", "uploaded", "failed")
+SCAN_STATUSES = ("pending", "scanned", "unscannable")
 
 
 class File(Base):
@@ -95,12 +96,17 @@ class File(Base):
 
     Lifecycle: pending (metadata created, upload intent issued) -> uploading (the
     gateway consumed the intent and is receiving bytes) -> uploaded | failed.
+
+    An uploaded file is scanned for personal data (vaultgate_api.scans): scan_status
+    is pending until the scanner reports, then scanned (with findings) or unscannable.
     """
 
     __tablename__ = "files"
     __table_args__ = (
         CheckConstraint(f"status IN {FILE_STATUSES}", name="status"),
         CheckConstraint("declared_size >= 0", name="declared_size"),
+        CheckConstraint(f"scan_status IN {SCAN_STATUSES}", name="scan_status"),
+        CheckConstraint("(scan_status IS NULL) = (scan_id IS NULL)", name="scan_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -122,6 +128,39 @@ class File(Base):
     kms_key_id: Mapped[str | None] = mapped_column(String(2048))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Scan state; all NULL until the upload completes.
+    scan_status: Mapped[str | None] = mapped_column(String(16))
+    # Names one scan request. Queue messages and results carry it, so a result for an
+    # older request (before a rescan) cannot overwrite the current one.
+    scan_id: Mapped[uuid.UUID | None] = mapped_column(unique=True)
+    # When the request was last sent to the queue, and how many times it was sent.
+    scan_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scan_attempts: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
+    scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Why a file is unscannable, e.g. "PDF is encrypted". Never contains file content.
+    scan_reason: Mapped[str | None] = mapped_column(String(500))
+
+    findings: Mapped[list["ScanFinding"]] = relationship(
+        lazy="selectin", cascade="all, delete-orphan", order_by="ScanFinding.kind"
+    )
+
+
+class ScanFinding(Base):
+    """How many matches of one kind of personal data the scanner found in a file.
+
+    Only the kind and the count are kept: matched values and their positions never
+    leave the scanner.
+    """
+
+    __tablename__ = "scan_findings"
+    __table_args__ = (CheckConstraint("count > 0", name="count"),)
+
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("files.id", ondelete="CASCADE"), primary_key=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    count: Mapped[int] = mapped_column(BigInteger)
 
 
 class TransferIntent(Base):

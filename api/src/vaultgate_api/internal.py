@@ -9,9 +9,14 @@ a download intent, which returns the wrapped data key needed to decrypt the obje
 address the gateway saw (ADR 0004), and refuses intents of deactivated users. A refusal
 leaves the intent unspent.
 
-Every request must carry `Authorization: Bearer <VAULTGATE_INTERNAL_TOKEN>`. If no
-token is configured, every request is refused: the internal API fails closed. The port
-is never exposed through an ingress or published on the host.
+A completed upload gets a scan request (vaultgate_api.scans). The scanner worker uses
+the `/internal/scans` routes: fetch what it needs to decrypt the object, then report
+findings or that the file could not be read.
+
+Gateway routes need `Authorization: Bearer <VAULTGATE_INTERNAL_TOKEN>` and scanner
+routes `Bearer <VAULTGATE_SCANNER_TOKEN>`; neither secret opens the other's routes. A
+secret that is not configured refuses every request: the internal API fails closed.
+The port is never exposed through an ingress or published on the host.
 """
 
 import base64
@@ -21,33 +26,43 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, IPvAnyAddress
-from sqlalchemy import update
+from pydantic import BaseModel, Field, IPvAnyAddress, SecretStr, field_validator
+from sqlalchemy import select, update
 
-from vaultgate_api import intents
+from vaultgate_api import intents, metrics, scans
 from vaultgate_api.access import DENIED, authorize
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
 from vaultgate_api.logs import RequestContextMiddleware
-from vaultgate_api.models import File, User
+from vaultgate_api.models import File, ScanFinding, User
 
 logger = logging.getLogger(__name__)
 
 _bearer = HTTPBearer(auto_error=False)
 
 
-async def require_gateway(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-) -> None:
-    expected = settings.internal_token.get_secret_value() if settings.internal_token else ""
+def _check(credentials: HTTPAuthorizationCredentials | None, secret: SecretStr | None) -> None:
+    expected = secret.get_secret_value() if secret else ""
     presented = credentials.credentials if credentials else ""
     if not expected or not hmac.compare_digest(presented.encode(), expected.encode()):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
 
+Credentials = Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
+
+
+async def require_gateway(credentials: Credentials) -> None:
+    _check(credentials, settings.internal_token)
+
+
+async def require_scanner(credentials: Credentials) -> None:
+    _check(credentials, settings.scanner_token)
+
+
 router = APIRouter(prefix="/internal", dependencies=[Depends(require_gateway)])
+scanner_router = APIRouter(prefix="/internal/scans", dependencies=[Depends(require_scanner)])
 
 
 class ConsumeRequest(BaseModel):
@@ -148,7 +163,13 @@ async def _finish(session, file_id: uuid.UUID, values: dict) -> File:
 
 
 @router.post("/files/{file_id}/complete")
-async def complete_upload(file_id: uuid.UUID, body: CompleteRequest, session: SessionDep) -> dict:
+async def complete_upload(
+    file_id: uuid.UUID,
+    body: CompleteRequest,
+    session: SessionDep,
+    queue: scans.ScanQueueDep,
+    background: BackgroundTasks,
+) -> dict:
     try:
         wrapped = base64.b64decode(body.wrapped_key, validate=True)
     except ValueError:
@@ -166,13 +187,24 @@ async def complete_upload(file_id: uuid.UUID, body: CompleteRequest, session: Se
         if all(getattr(done, k) == v for k, v in values.items()):
             return {"status": done.status}
         raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not being uploaded")
+    now = datetime.now(UTC)
     file = await _finish(
         session,
         file_id,
-        {**values, "status": "uploaded", "uploaded_at": datetime.now(UTC)},
+        {**values, "status": "uploaded", "uploaded_at": now, **scans.new_scan(now)},
     )
     logger.info("upload completed", extra={"file_id": str(file.id), "bytes": body.size})
+    # After the response, so a slow queue does not hold up the gateway; a request that
+    # is not sent is picked up by the resender.
+    background.add_task(_send_first_request, queue, file.id, file.scan_id)
     return {"status": file.status}
+
+
+async def _send_first_request(
+    queue: scans.ScanQueue, file_id: uuid.UUID, scan_id: uuid.UUID
+) -> None:
+    if await scans.send_request(queue, file_id, scan_id):
+        metrics.SCAN_REQUESTS_SENT.labels("first").inc()
 
 
 @router.post("/files/{file_id}/fail")
@@ -182,8 +214,102 @@ async def fail_upload(file_id: uuid.UUID, session: SessionDep) -> dict:
     return {"status": file.status}
 
 
+class ScanJob(BaseModel):
+    file_id: uuid.UUID
+    storage_key: str
+    size: int
+    content_type: str
+    wrapped_key: str = Field(description="base64")
+    kms_key_id: str
+
+
+async def _scan_file(session, scan_id: uuid.UUID, *, lock: bool = False) -> File:
+    query = select(File).where(File.scan_id == scan_id)
+    file = await session.scalar(query.with_for_update() if lock else query)
+    if file is None:
+        # Unknown, or replaced by a newer request: the worker drops the message.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Scan not found")
+    return file
+
+
+@scanner_router.get("/{scan_id}")
+async def get_scan_job(scan_id: uuid.UUID, session: SessionDep) -> ScanJob:
+    """What the scanner needs to read the object: where it is and its wrapped data key.
+    Only while the scan is pending."""
+    file = await _scan_file(session, scan_id)
+    if file.scan_status != "pending":
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Scan already has a result")
+    return ScanJob(
+        file_id=file.id,
+        storage_key=file.storage_key,
+        size=file.size,
+        content_type=file.content_type,
+        wrapped_key=base64.b64encode(file.wrapped_key).decode(),
+        kms_key_id=file.kms_key_id,
+    )
+
+
+class FindingIn(BaseModel):
+    # The scanner's detector names, e.g. payment_card, br_cpf, email.
+    kind: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    count: int = Field(ge=1)
+
+
+class ScanResult(BaseModel):
+    outcome: Literal["scanned", "unscannable"]
+    # Findings of an unscannable file are what was read before it failed.
+    findings: list[FindingIn] = Field(default=[], max_length=64)
+    # Why the file could not be read; never file content.
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("findings")
+    @classmethod
+    def one_entry_per_kind(cls, value: list[FindingIn]) -> list[FindingIn]:
+        if len({f.kind for f in value}) != len(value):
+            raise ValueError("each kind may appear only once")
+        return sorted(value, key=lambda f: f.kind)
+
+
+def _recorded(file: File) -> ScanResult:
+    return ScanResult(
+        outcome=file.scan_status,
+        findings=[FindingIn(kind=f.kind, count=f.count) for f in file.findings],
+        reason=file.scan_reason,
+    )
+
+
+@scanner_router.post("/{scan_id}/result")
+async def report_scan(scan_id: uuid.UUID, body: ScanResult, session: SessionDep) -> dict:
+    """Record a scan result. Repeating the result already recorded succeeds (the worker
+    retries when a response is lost); a different one for the same scan is a conflict."""
+    file = await _scan_file(session, scan_id, lock=True)
+    if file.scan_status != "pending":
+        same, verdict = _recorded(file) == body, scans.verdict(file)
+        await session.rollback()  # release the lock
+        if same:
+            return {"verdict": verdict}
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Scan already has a result")
+    file.scan_status = body.outcome
+    file.scan_reason = body.reason
+    file.scanned_at = datetime.now(UTC)
+    file.findings = [ScanFinding(kind=f.kind, count=f.count) for f in body.findings]
+    await session.commit()
+    verdict = scans.verdict(file)
+    metrics.SCAN_RESULTS.labels(verdict).inc()
+    logger.info(
+        "scan result recorded",
+        extra={
+            "file_id": str(file.id),
+            "verdict": verdict,
+            "findings": {f.kind: f.count for f in body.findings},
+        },
+    )
+    return {"verdict": verdict}
+
+
 internal_app = FastAPI(
     title="VaultGate internal API", docs_url=None, redoc_url=None, openapi_url=None
 )
 internal_app.add_middleware(RequestContextMiddleware)
 internal_app.include_router(router)
+internal_app.include_router(scanner_router)

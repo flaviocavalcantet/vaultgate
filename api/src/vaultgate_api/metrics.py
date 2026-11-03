@@ -71,3 +71,23 @@ class MetricsMiddleware:
             route = route_template(scope)
             HTTP_REQUESTS.labels(method, route, str(status_code)).inc()
             HTTP_DURATION.labels(method, route).observe(time.perf_counter() - start)
+
+
+SCAN_REQUESTS_SENT = Counter(
+    "vaultgate_api_scan_requests_sent_total",
+    "Scan requests sent to the queue, by whether it was the first send or a resend",
+    ["send"],
+)
+SCAN_SEND_FAILURES = Counter(
+    "vaultgate_api_scan_send_failures_total",
+    "Scan requests the queue did not accept; the resender tries again later",
+)
+SCAN_RESULTS = Counter(
+    "vaultgate_api_scan_results_total",
+    "Scan results recorded, by verdict (clean, quarantined, unscannable)",
+    ["verdict"],
+)
+SCANS_ABANDONED = Counter(
+    "vaultgate_api_scans_abandoned_total",
+    "Scans marked unscannable because no result came after the last send",
+)
