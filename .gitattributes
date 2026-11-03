@@ -2,3 +2,11 @@
 # containers and shells, also when the repository is cloned on Windows.
 * text=auto eol=lf
 *.png binary
+# Documents are binary even when they happen to look like text (a small PDF can be
+# plain ASCII); line ending changes would corrupt them.
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.odt binary
+*.zip binary
