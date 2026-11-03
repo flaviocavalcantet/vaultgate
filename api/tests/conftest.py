@@ -10,10 +10,19 @@ import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+
+from tests.fake_oidc import FakeProvider, make_validator
+from vaultgate_api.config import settings
+from vaultgate_api.db import get_session
+from vaultgate_api.internal import internal_app
+from vaultgate_api.main import app
+from vaultgate_api.models import Policy
 
 TEST_DATABASE_URL = os.getenv("VAULTGATE_TEST_DATABASE_URL")
 API_ROOT = Path(__file__).resolve().parent.parent
@@ -57,3 +66,39 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         ) as session:
             yield session
         await transaction.rollback()
+
+
+INTERNAL_TOKEN = "gateway-secret-for-tests"
+
+
+@pytest.fixture
+def provider() -> FakeProvider:
+    return FakeProvider()
+
+
+@pytest.fixture
+async def clients(provider: FakeProvider, session: AsyncSession, monkeypatch):
+    """Public API and internal API clients sharing the test's database session, with a
+    policy that allows every action to everyone (access policies have their own tests in
+    test_access.py)."""
+    session.add(Policy(name="everyone", effect="allow", actions=["read", "upload", "download"]))
+    await session.flush()
+
+    async def test_session():
+        yield session
+
+    monkeypatch.setattr(settings, "internal_token", SecretStr(INTERNAL_TOKEN))
+    app.state.token_validator = make_validator(provider)
+    for a in (app, internal_app):
+        a.dependency_overrides[get_session] = test_session
+    public = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://api")
+    internal = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=internal_app),
+        base_url="http://internal",
+        headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
+    )
+    async with public, internal:
+        yield public, internal
+    for a in (app, internal_app):
+        a.dependency_overrides.clear()
+    del app.state.token_validator

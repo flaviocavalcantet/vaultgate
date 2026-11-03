@@ -4,6 +4,9 @@ download intent.
 Another user's file is reported as not found, never as forbidden, so file IDs cannot
 be probed for existence. Every route first needs its action allowed by the access
 policies (vaultgate_api.access): read, upload or download.
+
+An uploaded file shows its scan verdict and the kinds of personal data found, with
+counts; the matches themselves are never stored (vaultgate_api.scans).
 """
 
 import re
@@ -15,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 
-from vaultgate_api import intents
+from vaultgate_api import intents, scans
 from vaultgate_api.access import DownloaderDep, ReaderDep, UploaderDep
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
@@ -56,6 +59,19 @@ class FileCreate(BaseModel):
         return value.lower()
 
 
+class FindingOut(BaseModel):
+    kind: str
+    count: int
+
+
+class ScanOut(BaseModel):
+    verdict: scans.Verdict
+    findings: list[FindingOut]
+    # Why the file could not be scanned, when it could not.
+    reason: str | None
+    scanned_at: datetime | None
+
+
 class FileOut(BaseModel):
     id: uuid.UUID
     name: str
@@ -66,10 +82,32 @@ class FileOut(BaseModel):
     sha256: str | None
     created_at: datetime
     uploaded_at: datetime | None
+    # None until the upload completes.
+    scan: ScanOut | None
 
     @classmethod
     def of(cls, file: File) -> "FileOut":
-        return cls.model_validate(file, from_attributes=True)
+        verdict = scans.verdict(file)
+        scan = None
+        if verdict is not None:
+            scan = ScanOut(
+                verdict=verdict,
+                findings=[FindingOut(kind=f.kind, count=f.count) for f in file.findings],
+                reason=file.scan_reason,
+                scanned_at=file.scanned_at,
+            )
+        return cls(
+            id=file.id,
+            name=file.name,
+            content_type=file.content_type,
+            declared_size=file.declared_size,
+            status=file.status,
+            size=file.size,
+            sha256=file.sha256,
+            created_at=file.created_at,
+            uploaded_at=file.uploaded_at,
+            scan=scan,
+        )
 
 
 class TransferOut(BaseModel):
