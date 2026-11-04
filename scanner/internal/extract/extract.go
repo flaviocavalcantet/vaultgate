@@ -10,7 +10,11 @@
 //   - any other zip archive: each entry, recursively. Zip tools find an archive from
 //     the end of a file, so a zip appended to other data is found the same way,
 //     a PDF included: a file that is both is scanned as both;
-//   - anything else: the bytes as they are (plain text, CSV, JSON, ...).
+//   - RTF: its text, with escaped characters decoded (encodings.go);
+//   - email (.eml): its header and every MIME part, decoded from base64 or
+//     quoted-printable, each part a document of its own (an attachment is opened);
+//   - anything else: the text as it is (plain text, CSV, JSON, HTML, ...), with UTF-16
+//     converted and HTML/XML character references (&#52;) decoded first.
 //
 // Detection leans towards opening a file: a PDF or zip scanned as raw bytes would
 // hide its compressed content. The one exception is a text file that merely
@@ -56,6 +60,8 @@ const (
 	FormatOfficeXML    Format = "office"
 	FormatOpenDocument Format = "opendocument"
 	FormatZip          Format = "zip"
+	FormatRTF          Format = "rtf"
+	FormatEmail        Format = "email"
 )
 
 // Limits bound the work one file can cause.
@@ -164,7 +170,20 @@ func (x *run) document(r io.ReaderAt, size int64, depth int) (Format, error) {
 	if bytes.HasPrefix(head[:n], []byte("PK\x03\x04")) || bytes.HasPrefix(head[:n], []byte("PK\x05\x06")) {
 		return FormatZip, unscannable("damaged zip archive")
 	}
-	if _, err := io.Copy(x.w, io.NewSectionReader(r, 0, size)); err != nil {
+	if isRTF(head[:n]) {
+		if err := x.rtf(io.NewSectionReader(r, 0, size)); err != nil {
+			return FormatRTF, err
+		}
+		return FormatRTF, x.separate()
+	}
+	if isEmail(r, size) {
+		return FormatEmail, x.email(r, size, depth)
+	}
+	text := newTextWriter(x.w)
+	if _, err := io.Copy(text, io.NewSectionReader(r, 0, size)); err != nil {
+		return FormatText, err
+	}
+	if err := text.Close(); err != nil {
 		return FormatText, err
 	}
 	return FormatText, x.separate()
@@ -280,9 +299,18 @@ func (x *run) entry(f *zip.File, container Format, depth int) error {
 		_, err = x.document(bytes.NewReader(data), int64(len(data)), depth+1)
 		return err
 	}
+	// Streamed text is decoded only as text: an RTF document or an email that large
+	// would be read without its escapes and encoded parts, so it is refused instead.
+	if isRTF(data[:min(len(data), headBytes)]) || isEmail(bytes.NewReader(data), int64(len(data))) {
+		return unscannable("archive entry %q is over the size limit and is an RTF document or an email", f.Name)
+	}
 	x.parts++
-	sniff := &containerSniffer{w: x.w, name: f.Name}
+	text := newTextWriter(x.w)
+	sniff := &containerSniffer{w: text, name: f.Name}
 	if _, err := io.Copy(sniff, io.MultiReader(bytes.NewReader(data), rc)); err != nil {
+		return err
+	}
+	if err := text.Close(); err != nil {
 		return err
 	}
 	return x.separate()

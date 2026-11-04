@@ -53,7 +53,7 @@ They handle different traffic. FastAPI fits the control plane: many small, valid
 
 Scanning is CPU-bound and runs over every byte of every upload. A small, statically compiled Go worker scales independently of the Python services and ships as a distroless image. Detectors require a checksum to pass where the format has one (CPF check digits, Luhn for cards), which keeps false positives low enough to block on.
 
-The scanner reads text out of PDFs, Word, Excel, PowerPoint and OpenDocument files, and opens zip archives and documents embedded in documents. PDFs go through PDFium (Chrome's PDF engine) compiled to WebAssembly, so untrusted PDFs are parsed in a memory-isolated sandbox with a memory cap and a time limit. A file it cannot read completely (encrypted, damaged, nested too deep, expanding past its limit) is reported as unscannable, never as clean.
+The scanner reads text out of PDFs, Word, Excel, PowerPoint, OpenDocument and RTF files and emails (.eml, every MIME part decoded, attachments opened), and opens zip archives and documents embedded in documents. Text is decoded before it is scanned: UTF-16 (spreadsheet "Unicode text" exports) and HTML/XML character references such as `&#52;`, so what a viewer shows is what is scanned. PDFs go through PDFium (Chrome's PDF engine) compiled to WebAssembly, so untrusted PDFs are parsed in a memory-isolated sandbox with a memory cap and a time limit. A file it cannot read completely (encrypted, damaged, nested too deep, expanding past its limit) is reported as unscannable, never as clean.
 
 ## Security model
 
@@ -387,7 +387,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Scanner worker: SQS consumer, queue and dead-letter queue in Terraform, compose service, metrics
   - [x] Quarantine: downloads need a clean scan; admin release and rescan; end-to-end check ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md))
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
-  - [ ] Scanner reads more encodings: UTF-16 text (spreadsheet "Unicode text" exports), HTML/XML character references, RTF escapes, base64 email attachments
+  - [x] Scanner reads more encodings: UTF-16 text (spreadsheet "Unicode text" exports), HTML/XML character references, RTF escapes, base64 email attachments
   - [x] Quarantine scope setting, `VAULTGATE_QUARANTINE_BLOCKS`: `download` (default; flagged files are neither downloaded nor shared) or `share` (the owner may download, nothing is shared); per kind later if needed
   - [x] Share links for owners: create (by email, external or internal recipient), list, revoke; the `share` policy action
   - [x] Releases scoped by purpose (download, share), each with its reason; a rescan still ends every release
