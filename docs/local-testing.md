@@ -306,7 +306,12 @@ cd scanner && go build -o scanner ./cmd/scanner
 echo "CPF 529.982.247-25, card 4111 1111 1111 1111, mail alice@example.com" | ./scanner
 ```
 
-Try your own files too: Word, Excel, PowerPoint, OpenDocument, PDF (attachments included), zip, or plain text; the format comes from the content, not the name. A file the scanner can't read completely (encrypted, damaged, over a size or expansion limit) exits with status 3: it is never reported as clean. The kinds are `payment_card`, `br_cpf` and `email`.
+Try your own files too: Word, Excel, PowerPoint, OpenDocument, PDF (attachments included), RTF, emails saved as .eml (attachments included), zip, or plain text in UTF-8 or UTF-16; the format comes from the content, not the name. For example, a CPF in UTF-16 and one written with HTML character references (text on stdin is scanned as it is, so these go through files):
+
+```bash
+printf 'CPF 529.982.247-25' | iconv -t UTF-16 > /tmp/utf16.txt && ./scanner /tmp/utf16.txt
+echo 'CPF 529&#46;982&#46;247-25' > /tmp/refs.html && ./scanner /tmp/refs.html
+``` A file the scanner can't read completely (encrypted, damaged, over a size or expansion limit) exits with status 3: it is never reported as clean. The kinds are `payment_card`, `br_cpf` and `email`.
 
 The same in PowerShell:
 
