@@ -16,7 +16,16 @@ from vaultgate_api.clientip import ClientAddressMiddleware
 from vaultgate_api.config import settings
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
-from vaultgate_api.routers import admin, admin_files, files, health, me, policies, shares
+from vaultgate_api.routers import (
+    admin,
+    admin_files,
+    files,
+    health,
+    me,
+    policies,
+    share_access,
+    shares,
+)
 
 # Routes that answer without a token. Everything else is mounted on `protected`,
 # so a new router is authenticated unless it is deliberately added here.
@@ -47,6 +56,9 @@ app.add_middleware(MetricsMiddleware)
 app.add_middleware(RequestContextMiddleware)
 app.add_middleware(ClientAddressMiddleware, trusted=settings.trusted_proxies)
 app.include_router(health.router)
+# Share recipients have no token: the link's own token and an emailed code authorize
+# them (vaultgate_api.routers.share_access).
+app.include_router(share_access.router)
 
 # Deny by default: every router below requires a valid bearer token.
 protected = APIRouter(dependencies=[Depends(get_principal)])
@@ -58,7 +70,8 @@ protected.include_router(files.router)
 protected.include_router(shares.router)
 app.include_router(protected)
 
-# Public: /healthz (liveness), /readyz (database reachable).
+# Public: /healthz (liveness), /readyz (database reachable), /shares/access (share
+#         recipients, authorized by the link's token and an emailed code).
 # Protected: /me (caller's user record, provisioned from the access token),
 #            /admin/users, /admin/groups, /admin/policies, /admin/files (members
 #            of VAULTGATE_ADMIN_GROUPS only; never subject to access policies),

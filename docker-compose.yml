@@ -63,9 +63,13 @@ services:
       VAULTGATE_AWS_ENDPOINT_URL: http://localstack:4566
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      # Share verification codes go to Mailpit, which catches them (UI on :8025).
+      VAULTGATE_SMTP_HOST: mailpit
+      VAULTGATE_SMTP_PORT: "1025"
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }
+      mailpit: { condition: service_started }
 
   gateway:
     build: ./gateway
@@ -80,6 +84,13 @@ services:
       AWS_SECRET_ACCESS_KEY: test
     ports: ["8888:8888"]
     depends_on: [api, localstack]
+
+  # Catches every email the stack sends (share verification codes) and shows it at
+  # http://localhost:8025; nothing leaves the machine. The e2e check reads codes from
+  # its API.
+  mailpit:
+    image: axllent/mailpit:v1.33.0
+    ports: ["127.0.0.1:8025:8025"]
 
   # PII scanner worker: takes scan requests from the queue, reads and decrypts each
   # file from S3 in memory, and reports what it found to the API's internal port.

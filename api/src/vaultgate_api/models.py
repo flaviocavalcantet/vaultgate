@@ -226,6 +226,31 @@ class Share(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ShareVerification(Base):
+    """An external recipient's proof of their address, for one share.
+
+    A code is sent to the share's address; only its salted hash is kept, with a few
+    attempts and a short life. A right code gives a grant (a token shown once, hashed
+    here) with which the recipient asks for download intents for a while.
+    """
+
+    __tablename__ = "share_verifications"
+
+    share_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shares.id", ondelete="CASCADE"), primary_key=True
+    )
+    code_hash: Mapped[str | None] = mapped_column(String(64))
+    code_salt: Mapped[str | None] = mapped_column(String(32))
+    code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    code_attempts: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
+    # Codes sent in the current hour, from window_started_at.
+    sends: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
+    window_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    grant_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
+    grant_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class TransferIntent(Base):
     """A short-lived, single-use permission to move one file's bytes through the gateway.
 
@@ -246,6 +271,8 @@ class TransferIntent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set for a recipient's download through a share; created_by is then the owner.
+    share_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("shares.id", ondelete="CASCADE"))
 
 
 POLICY_EFFECTS = ("allow", "deny")

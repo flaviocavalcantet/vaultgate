@@ -25,9 +25,16 @@ def hash_token(token: str) -> str:
 
 
 async def issue(
-    session: AsyncSession, *, file: File, kind: str, user_id: uuid.UUID, ttl: timedelta
+    session: AsyncSession,
+    *,
+    file: File,
+    kind: str,
+    user_id: uuid.UUID,
+    ttl: timedelta,
+    share_id: uuid.UUID | None = None,
 ) -> tuple[str, datetime]:
-    """Create an intent and return (token, expires_at). The token is not stored."""
+    """Create an intent and return (token, expires_at). The token is not stored. A
+    recipient's download through a share names the share; user_id is then the owner."""
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(UTC) + ttl
     session.add(
@@ -37,6 +44,7 @@ async def issue(
             file_id=file.id,
             created_by=user_id,
             expires_at=expires_at,
+            share_id=share_id,
         )
     )
     return token, expires_at

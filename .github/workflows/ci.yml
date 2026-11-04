@@ -93,7 +93,7 @@ jobs:
           terraform_wrapper: false
       - run: make vault-check
       - if: failure()
-        run: docker compose logs api gateway scanner localstack
+        run: docker compose logs api gateway scanner localstack mailpit
 
   helm:
     runs-on: ubuntu-latest

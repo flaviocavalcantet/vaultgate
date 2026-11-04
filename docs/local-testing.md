@@ -134,12 +134,12 @@ Notes:
 
 | Step | What it proves |
 |---|---|
-| Start the stack | `docker compose up --build`, then waits until LocalStack, Keycloak, the API (`/readyz`), the gateway and Grafana answer (the scanner worker starts with them) |
+| Start the stack | `docker compose up --build`, then waits until LocalStack, Keycloak, the API (`/readyz`), the gateway and Grafana answer (the scanner worker and Mailpit start with them) |
 | Terraform | the storage module creates the encrypted, versioned bucket, the KMS key and alias, and the multipart-cleanup rule in LocalStack; the scanning module creates the scan queue and its dead-letter queue |
-| API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, scan state (requests, results, verdicts, the resender) quarantine (downloads and shares refused until clean or released, the quarantine scope, releases by purpose, rescan, listing by verdict) and share links (limits, states, revoking), against a real database (`vaultgate_test`, created automatically) |
+| API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, scan state (requests, results, verdicts, the resender) quarantine (downloads and shares refused until clean or released, the quarantine scope, releases by purpose, rescan, listing by verdict) share links (limits, states, revoking) and external recipients (codes, grants, limits, revoking, rescans), against a real database (`vaultgate_test`, created automatically) |
 | Access policy for local use | adds a policy that lets every signed-in user read, upload and download (`scripts/seed_policies.py`); access is denied by default |
 | Login | real Keycloak PKCE login for alice, bob and carol. Checks issuer, audience, lifetime and groups. The API accepts access tokens and refuses ID tokens, only carol sees `/admin/users`, and insecure flows are refused |
-| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean before it is downloaded, quarantines a text with a card number and CPFs (no download until carol releases it; a rescan ends the release), and reports an encrypted PDF unscannable; alice shares the clean file and revokes the link, and can't share a file released for download only |
+| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean before it is downloaded, quarantines a text with a card number and CPFs (no download until carol releases it; a rescan ends the release), and reports an encrypted PDF unscannable; alice shares the clean file with an outside address: the recipient gets a code by email (Mailpit), verifies it and downloads through the gateway, and the revoke stops them; a file released for download only can't be shared |
 | Observability | Prometheus config and alert rule tests, Loki and Alloy configs, Grafana dashboards, and every Prometheus scrape target up |
 
 ## Try it yourself
@@ -151,6 +151,7 @@ With the stack up (after `full`, or `make up && make tf-local && make seed-polic
 | API docs | http://localhost:8000/docs | — |
 | Keycloak admin | http://localhost:8080 | admin / admin |
 | Grafana dashboards | http://localhost:3000 (folder **VaultGate**) | admin / admin |
+| Mailpit (email the stack sends) | http://localhost:8025 | — |
 | Prometheus | http://localhost:9090 | — |
 | Seed users | alice, bob, carol | `<user>-dev-password` |
 
@@ -431,9 +432,78 @@ Compose start scanner; Start-Sleep 10
 
 To watch it: `docker compose logs scanner` shows each scan (`scan reported`, with the verdict and the counts per kind, never the values), and in Grafana, **Explore → Prometheus** with `vaultgate_scanner_jobs_total` counts scans by outcome. **Explore → Loki** with `{service=~"api|scanner"} |= "scan"` follows a request from the API to the worker and back; `|= "quarantine"` shows releases with the admin and the reason, and `|= "download blocked"` the refused downloads.
 
+### Try sharing
+
+Share a file with someone outside VaultGate (M5; [README](../README.md#sharing)). This continues the Bash walkthrough above after its step 2 (Upload through the gateway), with the same `$TOKEN` and `$FILE_ID`; the file must be scanned clean. Alice shares; the "recipient" side uses no VaultGate login at all, only the link and the code that Mailpit catches.
+
+```bash
+# 1. As alice, share hello.txt with an outside address: 2 downloads, 1 day
+SHARE=$(curl -s -X POST http://localhost:8000/files/$FILE_ID/shares -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"recipient_email": "dana@example.com", "max_downloads": 2, "expires_in_days": 1}')
+echo "$SHARE" | python3 -m json.tool          # the link is in "url"; its token is shown only now
+LINK=$(echo "$SHARE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+SHARE_ID=$(echo "$SHARE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["share"]["id"])')
+
+# 2. As the recipient: what is this link? (no file name until the address is proven)
+curl -s "http://localhost:8000/shares/access?token=$LINK"; echo
+# {"recipient_kind":"external","recipient_hint":"d***@example.com","expires_at":"...","downloads_left":2}
+
+# 3. Ask for a code. It arrives in Mailpit: open http://localhost:8025, or read it from its API
+curl -s -X POST http://localhost:8000/shares/access/code -H "Content-Type: application/json" -d "{\"token\": \"$LINK\"}"; echo
+CODE=$(curl -s "http://localhost:8025/api/v1/messages?limit=1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["messages"][0]["Subject"].split()[-1])')
+
+# 4. Verify the code (a wrong one says how many tries are left), then download through the gateway
+GRANT=$(curl -s -X POST http://localhost:8000/shares/access/verify -H "Content-Type: application/json" \
+  -d "{\"token\": \"$LINK\", \"code\": \"$CODE\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["grant"])')
+SHARED_TOKEN=$(curl -s -X POST http://localhost:8000/shares/access/downloads -H "Content-Type: application/json" \
+  -d "{\"token\": \"$LINK\", \"grant\": \"$GRANT\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+curl -s -H "Authorization: Bearer $SHARED_TOKEN" http://localhost:8888/downloads/$FILE_ID; echo
+# hello vault
+
+# 5. As alice: the share counted the download. Revoke it, and the recipient is refused at once
+curl -s http://localhost:8000/files/$FILE_ID/shares -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE http://localhost:8000/files/$FILE_ID/shares/$SHARE_ID -H "Authorization: Bearer $TOKEN"
+# 204
+curl -s -X POST http://localhost:8000/shares/access/downloads -H "Content-Type: application/json" \
+  -d "{\"token\": \"$LINK\", \"grant\": \"$GRANT\"}"; echo
+# {"detail":"Share is revoked"}
+```
+
+A quarantined file can't be shared (`409`), and a shared file that a rescan quarantines stops downloading for its recipients at once; an admin's release for sharing (`"purpose": "share"`) lets it be shared anyway.
+
+The same in PowerShell, in the window of the PowerShell walkthrough after its step 2, with `$Auth` and `$Id`:
+
+```powershell
+# 1. As alice, share hello.txt with an outside address
+$Body = @{ recipient_email = 'dana@example.com'; max_downloads = 2; expires_in_days = 1 } | ConvertTo-Json
+$Share = Invoke-RestMethod -Method Post "http://localhost:8000/files/$Id/shares" -Headers $Auth -ContentType 'application/json' -Body $Body
+$Link = $Share.token
+
+# 2. As the recipient: what is this link?
+Invoke-RestMethod "http://localhost:8000/shares/access?token=$Link"
+
+# 3. Ask for a code and read it from Mailpit (or open http://localhost:8025)
+Invoke-RestMethod -Method Post http://localhost:8000/shares/access/code -ContentType 'application/json' -Body (@{ token = $Link } | ConvertTo-Json)
+$Code = ((Invoke-RestMethod 'http://localhost:8025/api/v1/messages?limit=1').messages[0].Subject -split ' ')[-1]
+
+# 4. Verify, then download through the gateway
+$Grant = (Invoke-RestMethod -Method Post http://localhost:8000/shares/access/verify -ContentType 'application/json' -Body (@{ token = $Link; code = $Code } | ConvertTo-Json)).grant
+$Download = Invoke-RestMethod -Method Post http://localhost:8000/shares/access/downloads -ContentType 'application/json' -Body (@{ token = $Link; grant = $Grant } | ConvertTo-Json)
+Invoke-WebRequest "http://localhost:8888/downloads/$Id" -Headers @{ Authorization = "Bearer $($Download.token)" } -OutFile shared.txt -UseBasicParsing
+Get-Content shared.txt
+
+# 5. As alice: the download is counted; revoke the share, and the recipient is refused (Gone)
+Invoke-RestMethod "http://localhost:8000/files/$Id/shares" -Headers $Auth | Format-Table recipient_email, downloads, state
+Invoke-RestMethod -Method Delete "http://localhost:8000/files/$Id/shares/$($Share.share.id)" -Headers $Auth
+try { Invoke-RestMethod -Method Post http://localhost:8000/shares/access/downloads -ContentType 'application/json' -Body (@{ token = $Link; grant = $Grant } | ConvertTo-Json) } catch { $_.Exception.Response.StatusCode }
+```
+
+`vaultgate_api_share_codes_sent_total`, `vaultgate_api_share_verifications_total` and `vaultgate_api_share_downloads_total` count each step; in Loki, `{service="api"} |= "share"` shows them by share, never by address.
+
 ## Troubleshooting
 
-- **A port is already in use** (5432, 8000, 8080, 8888, 4566, 3000, 9090): stop the other program, for example a local Postgres (`brew services stop postgresql`), or run `down` to clear an old stack.
+- **A port is already in use** (5432, 8000, 8080, 8888, 4566, 3000, 8025, 9090): stop the other program, for example a local Postgres (`brew services stop postgresql`), or run `down` to clear an old stack.
 - **API tests with PostgreSQL fail with `password authentication failed for user "vaultgate"` (Windows):** a PostgreSQL installed on Windows also listens on 5432. Windows lets it share the port with Docker, so the tests reach it instead of the stack. The PowerShell script detects this and says so. Stop it in an admin PowerShell with `Get-Service postgresql* | Stop-Service`; `Get-Service postgresql* | Set-Service -StartupType Manual` keeps it from starting at boot.
 - **A service never becomes ready:** run `docker compose ps` and `docker compose logs <service>`. Keycloak is the slowest to start (up to a minute or two).
 - **`make tf-local` fails because a resource already exists or is missing:** LocalStack and the Terraform state file disagree (for example, the state was deleted while LocalStack kept running). Run `scripts/local_check.sh down`, delete `infra/terraform/envs/local/terraform.tfstate*`, and run `full` again.

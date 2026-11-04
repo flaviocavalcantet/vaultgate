@@ -91,6 +91,27 @@ class Settings(BaseSettings):
     share_max_downloads: int = 100
     # Shares of one file that are still usable at once; more get 429.
     max_active_shares_per_file: int = 50
+    # External recipients prove their address with a code sent to it: 6 digits, valid
+    # share_code_ttl_seconds, share_code_attempts tries; at most share_code_sends_per_hour
+    # codes per share, share_code_resend_seconds apart. A right code gives a grant that
+    # lasts share_grant_ttl_seconds, to ask for download intents with.
+    share_code_ttl_seconds: int = 600
+    share_code_attempts: int = 5
+    share_code_sends_per_hour: int = 5
+    share_code_resend_seconds: int = 60
+    # Codes one owner's shares may send in an hour, all shares together: the code email
+    # goes to addresses the owner chose, so it must not become a way to mail anyone.
+    share_codes_per_owner_per_hour: int = 50
+    share_grant_ttl_seconds: int = 1800
+
+    # Outgoing email (verification codes). Mailpit locally; unset means no email can be
+    # sent, and external recipients cannot verify.
+    smtp_host: str | None = None
+    smtp_port: int = 25
+    smtp_starttls: bool = False
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from: str = "VaultGate <no-reply@vaultgate.local>"
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod

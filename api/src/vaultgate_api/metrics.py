@@ -119,3 +119,16 @@ RESCANS = Counter(
     "vaultgate_api_rescans_total",
     "Scans an admin started again",
 )
+SHARE_CODES_SENT = Counter(
+    "vaultgate_api_share_codes_sent_total",
+    "Verification codes emailed to external share recipients",
+)
+SHARE_VERIFICATIONS = Counter(
+    "vaultgate_api_share_verifications_total",
+    "Code checks by external recipients, by result (ok, wrong, expired, exhausted)",
+    ["result"],
+)
+SHARE_DOWNLOADS = Counter(
+    "vaultgate_api_share_downloads_total",
+    "Downloads through share links, counted when the gateway starts them",
+)
