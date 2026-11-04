@@ -88,16 +88,40 @@ func TestCharacterReferencesAreDecoded(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(t, "references", found, pii(card, cpf)...)
-	// Not references: left as they are.
-	for _, s := range []string{"a & b", "&#;", "&#xZZ;", "&#0;", "&#55296;", "&unknown;", "&#52", "&" + strings.Repeat("a", 40) + ";"} {
+	// Decoded the way a browser shows them; anything else left as it is.
+	for in, want := range map[string]string{
+		"&#52;":                                  "4",
+		"&#x34;":                                 "4",
+		"&#X34;":                                 "4",
+		"&#52":                                   "4", // no ';', at the end
+		"&#52x":                                  "4x",
+		"&#0000000000000000000000052;":           "4", // leading zeros do not count
+		"&#" + strings.Repeat("0", 5000) + "52;": "4",
+		"4111&nbsp1111":                          "4111 1111", // legacy name without ';'
+		"&ampx":                                  "&x",
+		"&amp;":                                  "&",
+		"&#0;":                                   "\uFFFD",
+		"&#55296;":                               "\uFFFD",
+		"&#99999999999999;":                      "\uFFFD",
+		"a & b":                                  "a & b",
+		"&#;":                                    "&#;",
+		"&#x;":                                   "&#x;",
+		"&#xZZ;":                                 "&#xZZ;",
+		"&unknown;":                              "&unknown;",
+		"&&#52;":                                 "&4",
+		"&" + strings.Repeat("a", 40) + ";":      "&" + strings.Repeat("a", 40) + ";",
+	} {
 		var out bytes.Buffer
 		tw := newTextWriter(&out)
-		_, _ = tw.Write([]byte(s))
+		_, _ = tw.Write([]byte(in))
 		_ = tw.Close()
-		if out.String() != s {
-			t.Errorf("%q became %q", s, out.String())
+		if out.String() != want {
+			t.Errorf("%.40q became %q, want %q", in, out.String(), want)
 		}
 	}
+	// A CPF written with references a browser decodes.
+	found, _, _ = scan(t, extractor(), []byte("CPF &#00000000053;29.982.247-2&#53"))
+	expect(t, "padded references", found, pii(cpf)...)
 }
 
 // A reference split across writes is still decoded.
@@ -278,4 +302,26 @@ func TestPaddedEmailHeadersAreStillAnEmail(t *testing.T) {
 	small.Limits.MaxDocumentBytes = 4096
 	padded := strings.Repeat("X-Pad: "+strings.Repeat("a", 70)+"\r\n", 30) + body + strings.Repeat("\r\n", 2000)
 	assertUnscannable(t, "padded large entry", small, zipOf(t, entry{name: "x.eml", data: []byte(padded)}))
+}
+
+// Long text whose lines merely contain a colon is text, read in full, not an email:
+// JSON lines, for example.
+func TestLongJSONLinesAreText(t *testing.T) {
+	var b strings.Builder
+	for b.Len() < 2*emailHeadMax {
+		b.WriteString(`{"id":1,"name":"x"}` + "\n")
+	}
+	b.WriteString(`{"cpf":"529.982.247-25"}` + "\n")
+	found, report, err := scan(t, extractor(), []byte(b.String()))
+	if err != nil || report.Format != FormatText {
+		t.Fatalf("%v, %s", err, report.Format)
+	}
+	expect(t, "JSON lines", found, pii(cpf)...)
+	small := extractor()
+	small.Limits.MaxDocumentBytes = 4096
+	found, _, err = scan(t, small, zipOf(t, entry{name: "big.jsonl", data: []byte(b.String())}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, "large JSON lines entry", found, pii(cpf)...)
 }

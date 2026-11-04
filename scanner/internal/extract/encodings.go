@@ -62,7 +62,7 @@ func (t *textWriter) start() error {
 		}
 		decoders = append(decoders, unicode.UTF16(order, policy).NewDecoder())
 	}
-	decoders = append(decoders, refDecoder{})
+	decoders = append(decoders, &refDecoder{})
 	t.out = transform.NewWriter(t.w, transform.Chain(decoders...))
 	head := t.head
 	t.head = nil
@@ -113,13 +113,40 @@ func utf16Order(head []byte) (order unicode.Endianness, bom, ok bool) {
 
 func textByte(b byte) bool { return b == '\t' || b == '\n' || b == '\r' || (b >= 0x20 && b < 0x7F) }
 
-// refDecoder replaces HTML and XML character references (&#52;, &#x34;, and the named
-// ones that matter between digits) with the characters they stand for. Anything else
-// passes through unchanged.
-type refDecoder struct{ transform.NopResetter }
+// refDecoder replaces HTML and XML character references with the characters they
+// stand for, as a browser does: numeric ones in decimal or hex with any number of
+// leading zeros and with or without the closing ';' (&#52;, &#x34, &#00000052;), named
+// ones that matter between digits (&nbsp;, &period;, &ndash;...), and the legacy names
+// browsers decode even without ';' (&nbsp1111). Invalid numbers become U+FFFD, as in a
+// browser. Anything else passes through unchanged.
+//
+// It reads byte by byte and keeps its state across calls, so a reference split across
+// writes, or padded with any number of zeros, needs no lookahead.
+type refDecoder struct {
+	state   refState
+	raw     []byte // the reference so far, to write back if it is none (capped)
+	name    []byte // letters of a named reference
+	value   rune
+	digits  bool // at least one digit seen
+	invalid bool // out of range
+}
 
-// The longest reference decoded: "&#x0010FFFF;" fits.
-const maxRef = 16
+type refState int
+
+const (
+	refText refState = iota
+	refAmp           // after '&'
+	refName          // after '&' and a letter
+	refHash          // after "&#"
+	refDec           // decimal digits
+	refHex           // after "&#x"
+)
+
+// Raw text kept for a reference that turns out not to be one, and the longest name.
+const (
+	maxRefRaw  = 64
+	maxRefName = 32
+)
 
 var namedRefs = map[string]rune{
 	"amp": '&', "lt": '<', "gt": '>', "quot": '"', "apos": '\'',
@@ -127,61 +154,159 @@ var namedRefs = map[string]rune{
 	"hyphen": '-', "dash": '-', "ndash": '-', "minus": '-', "period": '.', "sol": '/',
 }
 
-func (refDecoder) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
+// Names browsers decode without ';', longest first for prefix matching.
+var legacyRefs = []string{"nbsp", "quot", "amp", "lt", "gt"}
+
+func (d *refDecoder) Reset() { *d = refDecoder{} }
+
+// maxStepOut bounds what one byte can produce: a reference given back as text, the
+// rest of a name, and the byte itself.
+const maxStepOut = maxRefRaw + maxRefName + 2*utf8.UTFMax
+
+func (d *refDecoder) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
+	var out []byte
 	for nSrc < len(src) {
-		amp := bytes.IndexByte(src[nSrc:], '&')
-		if amp < 0 {
-			amp = len(src) - nSrc
-		}
-		if amp > 0 { // plain text up to the next '&'
-			n := copy(dst[nDst:], src[nSrc:nSrc+amp])
-			nDst += n
-			nSrc += n
-			if n < amp {
-				return nDst, nSrc, transform.ErrShortDst
-			}
-			continue
-		}
-		r, size, complete := parseRef(src[nSrc:])
-		if !complete && !atEOF {
-			return nDst, nSrc, transform.ErrShortSrc
-		}
-		if size == 0 { // not a reference: the '&' itself
-			r, size = '&', 1
-		}
-		if len(dst)-nDst < utf8.UTFMax {
+		// Room first: a step changes the state, so it must not be undone for lack of space.
+		if len(dst)-nDst < maxStepOut {
 			return nDst, nSrc, transform.ErrShortDst
 		}
-		nDst += utf8.EncodeRune(dst[nDst:], r)
-		nSrc += size
+		out = d.step(src[nSrc], out[:0])
+		nDst += copy(dst[nDst:], out)
+		nSrc++
+	}
+	if atEOF && d.state != refText {
+		if len(dst)-nDst < maxStepOut {
+			return nDst, nSrc, transform.ErrShortDst
+		}
+		out = d.finish(out[:0])
+		nDst += copy(dst[nDst:], out)
 	}
 	return nDst, nSrc, nil
 }
 
-// parseRef reads a reference at the start of b (which starts with '&'). It returns the
-// character and the reference's length, a zero length if b does not start with one,
-// and complete=false if b ends before that can be told.
-func parseRef(b []byte) (r rune, size int, complete bool) {
-	end := bytes.IndexByte(b[:min(len(b), maxRef)], ';')
-	if end < 0 {
-		return 0, 0, len(b) >= maxRef // a ';' may still come
+func (d *refDecoder) keep(c byte) {
+	if len(d.raw) < maxRefRaw {
+		d.raw = append(d.raw, c)
 	}
-	name := string(b[1:end])
-	if strings.HasPrefix(name, "#") {
-		base, digits := 10, name[1:]
-		if strings.HasPrefix(digits, "x") || strings.HasPrefix(digits, "X") {
-			base, digits = 16, digits[1:]
+}
+
+// step takes one byte and appends what it produces to out.
+func (d *refDecoder) step(c byte, out []byte) []byte {
+	switch d.state {
+	case refText:
+		if c == '&' {
+			d.state, d.raw = refAmp, append(d.raw[:0], c)
+			return out
 		}
-		n, err := strconv.ParseUint(digits, base, 32)
-		if err != nil || digits == "" || digits[0] == '+' || n == 0 || n > utf8.MaxRune || (n >= 0xD800 && n <= 0xDFFF) {
-			return 0, 0, true
+		return append(out, c)
+	case refAmp:
+		switch {
+		case c == '#':
+			d.state, d.value, d.digits, d.invalid = refHash, 0, false, false
+			d.keep(c)
+			return out
+		case isLetter(c):
+			d.state, d.name = refName, append(d.name[:0], c)
+			d.keep(c)
+			return out
 		}
-		return rune(n), end + 1, true
+	case refName:
+		switch {
+		case (isLetter(c) || (c >= '0' && c <= '9')) && len(d.name) < maxRefName:
+			d.name = append(d.name, c)
+			d.keep(c)
+			return out
+		case c == ';':
+			if r, ok := namedRefs[string(d.name)]; ok {
+				d.state = refText
+				return utf8.AppendRune(out, r)
+			}
+		}
+		return d.step(c, d.finishName(out))
+	case refHash:
+		switch {
+		case c == 'x' || c == 'X':
+			d.state = refHex
+			d.keep(c)
+			return out
+		case c >= '0' && c <= '9':
+			d.state = refDec
+			return d.step(c, out)
+		}
+	case refDec, refHex:
+		if digit, ok := refDigit(c, d.state == refHex); ok {
+			d.keep(c) // past the cap (leading zeros, say) digits are not kept, nor needed
+			d.digits = true
+			base := rune(10)
+			if d.state == refHex {
+				base = 16
+			}
+			if !d.invalid {
+				d.value = d.value*base + digit
+				if d.value > utf8.MaxRune {
+					d.invalid = true
+				}
+			}
+			return out
+		}
+		if c == ';' && d.digits {
+			return d.finish(out)
+		}
+		return d.step(c, d.finish(out))
 	}
-	if r, ok := namedRefs[name]; ok {
-		return r, end + 1, true
+	// Not a reference after all: the text so far, then this byte as text.
+	out = d.flush(out)
+	return d.step(c, out)
+}
+
+// finish ends whatever reference is in progress and appends what it stands for.
+func (d *refDecoder) finish(out []byte) []byte {
+	switch d.state {
+	case refDec, refHex:
+		if !d.digits {
+			return d.flush(out)
+		}
+		r := d.value
+		if d.invalid || r == 0 || (r >= 0xD800 && r <= 0xDFFF) {
+			r = utf8.RuneError
+		}
+		d.state = refText
+		return utf8.AppendRune(out, r)
+	case refName:
+		return d.finishName(out)
 	}
-	return 0, 0, true
+	return d.flush(out)
+}
+
+// finishName ends a named reference that had no ';': a legacy name at its start is
+// decoded and the rest of the letters follow as text, as a browser does.
+func (d *refDecoder) finishName(out []byte) []byte {
+	name := string(d.name)
+	for _, legacy := range legacyRefs {
+		if strings.HasPrefix(name, legacy) {
+			d.state = refText
+			out = utf8.AppendRune(out, namedRefs[legacy])
+			return append(out, name[len(legacy):]...)
+		}
+	}
+	return d.flush(out)
+}
+
+func (d *refDecoder) flush(out []byte) []byte {
+	d.state = refText
+	return append(out, d.raw...)
+}
+
+func refDigit(c byte, hex bool) (rune, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return rune(c - '0'), true
+	case hex && c >= 'a' && c <= 'f':
+		return rune(c-'a') + 10, true
+	case hex && c >= 'A' && c <= 'F':
+		return rune(c-'A') + 10, true
+	}
+	return 0, false
 }
 
 // --- RTF ---------------------------------------------------------------------------
@@ -359,7 +484,9 @@ func controlWord(in *bufio.Reader, first byte) (word string, param int, hasParam
 
 // --- Email ---------------------------------------------------------------------------
 
-var headerLine = regexp.MustCompile(`^[!-9;-~]+:`)
+// A header field name is an RFC 7230 token, directly followed by ':'. JSON lines
+// ({"id":...) or prose with a colon do not qualify.
+var headerLine = regexp.MustCompile("^[A-Za-z0-9!#$%&'*+.^_`|~-]+:")
 
 // emailHeadMax is how much of a file is read to tell whether it starts with an email
 // header. Mail clients accept any fields in any order, so the decision takes the whole
