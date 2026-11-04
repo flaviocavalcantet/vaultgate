@@ -82,3 +82,4 @@ def _require(action: policies.Action):
 ReaderDep = Annotated[User, _require("read")]
 UploaderDep = Annotated[User, _require("upload")]
 DownloaderDep = Annotated[User, _require("download")]
+SharerDep = Annotated[User, _require("share")]

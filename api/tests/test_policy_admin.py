@@ -243,7 +243,7 @@ async def test_dry_run_with_a_users_groups(api, admin, provider) -> None:
         {"action": "read", "client_ip": "10.0.0.1"},  # nobody to evaluate
         {"action": "read", "client_ip": "10.0.0.1", "groups": [], "user_id": str(uuid.uuid4())},
         {"action": "read", "client_ip": "10.0.0.0/8", "groups": []},
-        {"action": "share", "client_ip": "10.0.0.1", "groups": []},
+        {"action": "delete", "client_ip": "10.0.0.1", "groups": []},
         {"action": "read", "client_ip": "10.0.0.1", "groups": [], "at": "2026-11-04T15:00:00"},
     ],
 )

@@ -99,7 +99,7 @@ async def test_an_admin_release_lets_the_owner_download(
 ):
     public, _, _ = scanner
     file_id, _ = await with_verdict(scanner, provider, queue, outcome, findings)
-    before = counter("vaultgate_api_quarantine_releases_total")
+    before = counter("vaultgate_api_quarantine_releases_total", purpose="download")
     response = await public.post(
         f"/admin/files/{file_id}/release",
         json={"reason": "Customer contract, checked with the DPO"},
@@ -108,12 +108,14 @@ async def test_an_admin_release_lets_the_owner_download(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["downloadable"] is True
-    assert body["released_by"] is not None
-    assert counter("vaultgate_api_quarantine_releases_total") == before + 1
+    assert body["released_by"]["download"] is not None
+    assert counter("vaultgate_api_quarantine_releases_total", purpose="download") == before + 1
 
     file = await file_of(public, provider, file_id)
     assert file["scan"]["verdict"] in ("quarantined", "unscannable")  # the verdict stands
-    assert file["scan"]["release"]["reason"] == "Customer contract, checked with the DPO"
+    [release] = file["scan"]["releases"]
+    assert release["purpose"] == "download"
+    assert release["reason"] == "Customer contract, checked with the DPO"
     assert file["downloadable"] is True
     assert (await download(public, provider, file_id)).status_code == 201
     # Still only the owner's file.
@@ -167,7 +169,7 @@ async def test_a_rescan_drops_the_findings_and_the_release(scanner, provider, qu
         "findings": [],
         "reason": None,
         "scanned_at": None,
-        "release": None,
+        "releases": [],
     }
     assert (await download(public, provider, file_id)).status_code == 409
     # A late result for the old scan does not count; the new one does.

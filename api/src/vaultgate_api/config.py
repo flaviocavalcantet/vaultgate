@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import IPvAnyNetwork, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     aws_region: str = "ap-northeast-1"
     # LocalStack locally; unset in AWS.
     aws_endpoint_url: str | None = None
+    # What quarantine blocks (ADR 0005): "download" (default) blocks the owner's
+    # downloads and sharing alike; "share" lets the owner download any verdict and
+    # blocks sharing only. Files are never shared before a clean verdict or a release.
+    quarantine_blocks: Literal["download", "share"] = "download"
     # Finding kinds that quarantine a file; other kinds (email) are only recorded.
     # Comma-separated, like trusted_proxies ("payment_card,br_cpf").
     quarantine_kinds: Annotated[list[str], NoDecode] = ["payment_card", "br_cpf"]
@@ -76,6 +80,17 @@ class Settings(BaseSettings):
     scan_max_attempts: int = 5
     # How often stuck scans are looked for; 0 = off.
     scan_resend_interval_seconds: int = 60
+
+    # Sharing (M5). Links last share_default_days (at most share_max_days) and allow
+    # share_default_downloads downloads (at most share_max_downloads); the owner may
+    # choose within those bounds.
+    public_api_url: str = "http://localhost:8000"
+    share_default_days: int = 7
+    share_max_days: int = 30
+    share_default_downloads: int = 5
+    share_max_downloads: int = 100
+    # Shares of one file that are still usable at once; more get 429.
+    max_active_shares_per_file: int = 50
 
     @field_validator("trusted_proxies", mode="before")
     @classmethod

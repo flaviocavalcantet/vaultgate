@@ -136,10 +136,10 @@ Notes:
 |---|---|
 | Start the stack | `docker compose up --build`, then waits until LocalStack, Keycloak, the API (`/readyz`), the gateway and Grafana answer (the scanner worker starts with them) |
 | Terraform | the storage module creates the encrypted, versioned bucket, the KMS key and alias, and the multipart-cleanup rule in LocalStack; the scanning module creates the scan queue and its dead-letter queue |
-| API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, scan state (requests, results, verdicts, the resender) and quarantine (downloads refused until clean or released, admin release, rescan, listing by verdict), against a real database (`vaultgate_test`, created automatically) |
+| API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, scan state (requests, results, verdicts, the resender) quarantine (downloads and shares refused until clean or released, the quarantine scope, releases by purpose, rescan, listing by verdict) and share links (limits, states, revoking), against a real database (`vaultgate_test`, created automatically) |
 | Access policy for local use | adds a policy that lets every signed-in user read, upload and download (`scripts/seed_policies.py`); access is denied by default |
 | Login | real Keycloak PKCE login for alice, bob and carol. Checks issuer, audience, lifetime and groups. The API accepts access tokens and refuses ID tokens, only carol sees `/admin/users`, and insecure flows are refused |
-| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean before it is downloaded, quarantines a text with a card number and CPFs (no download until carol releases it; a rescan ends the release), and reports an encrypted PDF unscannable |
+| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean before it is downloaded, quarantines a text with a card number and CPFs (no download until carol releases it; a rescan ends the release), and reports an encrypted PDF unscannable; alice shares the clean file and revokes the link, and can't share a file released for download only |
 | Observability | Prometheus config and alert rule tests, Loki and Alloy configs, Grafana dashboards, and every Prometheus scrape target up |
 
 ## Try it yourself
@@ -354,7 +354,7 @@ ADMIN=$(python3 scripts/vaultgate_login.py --switch-user)
 curl -s "http://localhost:8000/admin/files?verdict=quarantined" -H "Authorization: Bearer $ADMIN" | python3 -m json.tool
 curl -s -X POST http://localhost:8000/admin/files/$PII_ID/release -H "Authorization: Bearer $ADMIN" \
   -H "Content-Type: application/json" -d '{"reason": "Test values only"}' | python3 -m json.tool
-# "downloadable": true, "scan": {"verdict": "quarantined", ..., "release": {"reason": "Test values only", ...}}
+# "downloadable": true, "shareable": false, "scan": {"verdict": "quarantined", ..., "releases": [{"purpose": "download", "reason": "Test values only", ...}]}
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8000/files/$PII_ID/download -H "Authorization: Bearer $TOKEN"
 # 201
 

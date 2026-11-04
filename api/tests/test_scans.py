@@ -47,7 +47,7 @@ async def test_completed_upload_gets_a_pending_scan_request(scanner, provider, q
         "findings": [],
         "reason": None,
         "scanned_at": None,
-        "release": None,
+        "releases": [],
     }
     assert uuid.UUID(scan_id)
 

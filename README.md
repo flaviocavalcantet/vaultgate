@@ -100,7 +100,10 @@ The API, gateway and scanner worker serve Prometheus metrics on a separate port,
 | `vaultgate_api_scan_results_total` | counter | `verdict` | API |
 | `vaultgate_api_scans_abandoned_total` | counter | | API |
 | `vaultgate_api_downloads_blocked_total` | counter | `verdict`, `checked_by` | API |
-| `vaultgate_api_quarantine_releases_total` | counter | | API |
+| `vaultgate_api_quarantine_releases_total` | counter | `purpose` | API |
+| `vaultgate_api_shares_blocked_total` | counter | `verdict`, `checked_by` | API |
+| `vaultgate_api_shares_created_total` | counter | `kind` | API |
+| `vaultgate_api_shares_revoked_total` | counter | | API |
 | `vaultgate_api_rescans_total` | counter | | API |
 | `vaultgate_scanner_jobs_total` | counter | `outcome` (`clean`, `quarantined`, `unscannable`, `stale`, `retry`, `invalid`) | scanner |
 | `vaultgate_scanner_job_duration_seconds` | histogram | | scanner |
@@ -284,7 +287,7 @@ echo "Contact ana@example.com, CPF 529.982.247-25, card 4111 1111 1111 1111" | (
 
 ### Access policies
 
-Deny by default: a user may `read` (list and view their files), `upload` or `download` only when an enabled **allow** policy matches and no **deny** policy does ([ADR 0004](docs/adr/0004-access-policies.md)). A policy names its actions and any of these conditions, all of which must hold:
+Deny by default: a user may `read` (list and view their files), `upload`, `download` or `share` only when an enabled **allow** policy matches and no **deny** policy does ([ADR 0004](docs/adr/0004-access-policies.md)). A policy names its actions and any of these conditions, all of which must hold:
 
 - `groups`: the user is in one of them or a subgroup (`/finance` covers `/finance/payroll`);
 - `networks` / `excluded_networks`: the client address is in one of `networks` and in none of `excluded_networks`;
@@ -321,15 +324,31 @@ Every completed upload is scanned for personal data (M4). The API keeps the scan
 - The **scanner worker** (`scanner/cmd/worker`) takes requests from the queue. For each it fetches the scan job, has KMS unwrap the data key (bound to the file ID, as for downloads), and reads the object from S3 with range requests, decrypting chunks in memory as the text extraction needs them: plaintext never touches disk. A stored object that fails authentication, or does not match its recorded size, is reported unscannable. Failures that say nothing about the file (the API, KMS or S3 unreachable, a timeout) leave the message in the queue: it comes back after the visibility timeout, and after 5 deliveries moves to the dead-letter queue (`infra/terraform/modules/scanning`), while the API's resender keeps its own count. While a scan runs, the worker renews the message's visibility, so no other worker picks it up. Settings: `VAULTGATE_SCAN_QUEUE_URL`, `VAULTGATE_API_INTERNAL_URL`, `VAULTGATE_SCANNER_TOKEN`, `VAULTGATE_BUCKET`, `VAULTGATE_AWS_REGION`, `VAULTGATE_AWS_ENDPOINT_URL`, `VAULTGATE_SCANNER_CONCURRENCY` (2), `VAULTGATE_SCAN_TIMEOUT_SECONDS` (600), `VAULTGATE_SCAN_VISIBILITY_SECONDS` (120). It stops on SIGTERM after finishing the scans in progress.
 - Verdicts: `pending`, `clean`, `quarantined` (a finding of a kind in `VAULTGATE_QUARANTINE_KINDS`, default `payment_card,br_cpf`; `email` is only recorded) and `unscannable` (with the reason, such as an encrypted PDF). They are worked out when read, so changing the quarantine kinds applies to files already scanned.
 
-**Quarantine** ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md)) is fail closed: only a `clean` file can be downloaded. `POST /files/{id}/download` answers `409` with the reason for a pending, quarantined or unscannable file, and the gateway's intent consume checks again, so a verdict that changes after the intent was issued still applies (the refused intent stays unspent). `GET /files/{id}` shows `downloadable`. Admins (`VAULTGATE_ADMIN_GROUPS`) decide on exceptions:
+**Quarantine** ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md)) is fail closed. A file is **shared** only with a `clean` verdict, whatever the settings. What the owner may **download** depends on `VAULTGATE_QUARANTINE_BLOCKS`:
+
+- `download` (the default): only a `clean` file. `POST /files/{id}/download` answers `409` with the reason for a pending, quarantined or unscannable one;
+- `share`: any verdict. Owners take their own files back; nothing flagged leaves to anyone else.
+
+The gateway's intent consume checks again, so a verdict that changes after the intent was issued still applies (the refused intent stays unspent). `GET /files/{id}` shows `downloadable` and `shareable`. Admins (`VAULTGATE_ADMIN_GROUPS`) decide on exceptions:
 
 - `GET /admin/files?verdict=quarantined` lists every user's files with a verdict (all of them without `verdict`), with their owner.
-- `POST /admin/files/{id}/release` with `{"reason": "..."}` lets the owner download a quarantined or unscannable file. The verdict and findings stay; the file shows `scan.release` with the reason, and the release records the admin who gave it.
-- `POST /admin/files/{id}/rescan` scans the file again: new request, findings dropped, any release ended.
+- `POST /admin/files/{id}/release` with `{"reason": "...", "purpose": "download" | "share"}` (default `download`) lets the owner download a quarantined or unscannable file, or lets it be shared. Each purpose is released on its own, with its reason; a release for download does not make a file shareable. The verdict and findings stay; the file lists `scan.releases`, and each release records the admin who gave it.
+- `POST /admin/files/{id}/rescan` scans the file again: new request, findings dropped, every release ended.
 
 Files uploaded before scanning existed are scanned too: the upgrade gives them a pending scan, sent on the resender's first round. **Upgrading:** they cannot be downloaded until that scan is clean.
 
 To try the scanner and the scan state by hand, see [Try the PII scanner](docs/local-testing.md#try-the-pii-scanner).
+
+### Sharing
+
+The owner of a file shares it with one recipient, named by email address (M5; the recipient's side is in progress):
+
+- `POST /files/{id}/shares` with `{"recipient_email", "recipient_kind": "external" | "internal", "expires_in_days", "max_downloads"}` needs the `share` action and a file the scan allows to be shared. It returns the share and its link, whose token is shown only then; only the token's SHA-256 is stored. An **external** recipient will prove the address with a code sent to it; an **internal** one signs in, with a verified email equal to the address.
+- Links last 7 days (`VAULTGATE_SHARE_DEFAULT_DAYS`, at most `VAULTGATE_SHARE_MAX_DAYS`, 30) and allow 5 downloads (`VAULTGATE_SHARE_DEFAULT_DOWNLOADS`, at most `VAULTGATE_SHARE_MAX_DOWNLOADS`, 100); the owner chooses within those bounds. A file has at most `VAULTGATE_MAX_ACTIVE_SHARES_PER_FILE` (50) usable shares at once.
+- `GET /files/{id}/shares` lists them with their state (`active`, `expired`, `used`, `revoked`); `DELETE /files/{id}/shares/{share_id}` revokes one at once. Revoking needs only ownership, so a user who may no longer share can still take links back.
+- The token travels in the link's query string (`.../shares/access?token=...`), which is never logged. Logs name the share, never the recipient's address.
+
+**Upgrading:** existing policies keep their actions, so sharing is denied until an admin adds `share` to a policy (`make seed-policies` updates the local one).
 
 ### Client addresses behind a proxy
 
@@ -369,8 +388,12 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Quarantine: downloads need a clean scan; admin release and rescan; end-to-end check ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md))
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
   - [ ] Scanner reads more encodings: UTF-16 text (spreadsheet "Unicode text" exports), HTML/XML character references, RTF escapes, base64 email attachments
-  - [ ] Quarantine scope setting, `VAULTGATE_QUARANTINE_BLOCKS`: `download` (default; flagged files are neither downloaded nor shared) or `share` (the owner may download, nothing is shared); per kind later if needed
-  - [ ] Releases scoped by purpose (download, share), each with its reason; a rescan still ends every release
+  - [x] Quarantine scope setting, `VAULTGATE_QUARANTINE_BLOCKS`: `download` (default; flagged files are neither downloaded nor shared) or `share` (the owner may download, nothing is shared); per kind later if needed
+  - [x] Share links for owners: create (by email, external or internal recipient), list, revoke; the `share` policy action
+  - [x] Releases scoped by purpose (download, share), each with its reason; a rescan still ends every release
+  - [ ] External recipients: a one-time code sent to the address (Mailpit locally), then a download through the gateway, counted against the share's limits
+  - [ ] Internal recipients: sign in; the token's verified email must be the share's address
+  - [ ] End-to-end check of both recipient flows; ADR 0006
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)

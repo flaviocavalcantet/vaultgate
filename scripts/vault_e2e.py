@@ -16,7 +16,8 @@ then, as alice:
    that the gateway refuses an intent issued before the policy (and that the refused
    intent stays usable), that the gateway reports a known client address, and that
    deny wins over the seeded allow policy. The `e2e:` policies are always removed;
-7. checks the other verdicts and quarantine: a text with a test card number and CPFs
+7. shares the file with an email address and revokes the link, then checks the other
+   verdicts and quarantine: a text with a test card number and CPFs
    is quarantined with those counts and cannot be downloaded until carol releases it,
    a rescan puts it back in quarantine, and an encrypted PDF is unscannable with the
    reason.
@@ -229,7 +230,8 @@ def run(args) -> None:
     finally:
         remove_e2e_policies(args.api, carol)
 
-    # 7. PII scans by the worker, and quarantine.
+    # 7. Share links, PII scans by the worker, and quarantine.
+    check_shares(args.api, file_id, alice)
     check_scans(args, alice, carol)
 
 
@@ -251,6 +253,21 @@ def scan_result(api: str, token: str, file_id: str, timeout: float = 120) -> dic
             return file["scan"]
         assert time.monotonic() < deadline, f"no scan result after {timeout:.0f}s: {file}"
         time.sleep(1)
+
+
+def check_shares(api: str, file_id: str, alice: str) -> None:
+    status, created = api_call(
+        api, "POST", f"/files/{file_id}/shares", alice, {"recipient_email": "Bob@Example.com"}
+    )
+    assert status == 201, f"share: {status}"
+    share = created["share"]
+    assert share["recipient_email"] == "bob@example.com" and share["state"] == "active", share
+    assert f"token={created['token']}" in created["url"], created["url"]
+    path = f"/files/{file_id}/shares/{share['id']}"
+    assert api_call(api, "DELETE", path, alice)[0] == 204, "revoke"
+    status, listed = api_call(api, "GET", f"/files/{file_id}/shares", alice)
+    assert status == 200 and {s["state"] for s in listed} == {"revoked"}, listed
+    print("ok  shares: alice shares a clean file and revokes the link")
 
 
 def check_scans(args, alice: str, carol: str) -> None:
@@ -279,11 +296,15 @@ def check_scans(args, alice: str, carol: str) -> None:
     status, _, _, size = download(intent["url"], intent["token"])
     assert (status, size) == (200, len(text)), (status, size)
     print("ok  quarantine: no download until an admin releases the file, then it works")
+    share = {"recipient_email": "e2e@example.com"}
+    status, _ = api_call(api, "POST", f"/files/{pii}/shares", alice, share)
+    assert status == 409, f"share of a file released for download only: {status}"
+    print("ok  quarantine: a release for download does not let the file be shared")
 
     status, _ = api_call(api, "POST", f"/admin/files/{pii}/rescan", carol)
     assert status == 202, f"rescan: {status}"
     scan = scan_result(api, alice, pii)
-    assert scan["verdict"] == "quarantined" and scan["release"] is None, scan
+    assert scan["verdict"] == "quarantined" and scan["releases"] == [], scan
     status, _ = api_call(api, "POST", f"/files/{pii}/download", alice)
     assert status == 409, f"download after a rescan: {status}"
     print("ok  quarantine: a rescan ends the release")

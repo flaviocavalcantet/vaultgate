@@ -59,6 +59,23 @@ error so the extraction cannot mistake a failed read for a damaged document.
   ended. Useful when the scanner learns a format or a failure was transient.
 - **list** files by verdict, across all users, to work through the quarantine.
 
+## Update (M5): what quarantine blocks
+
+Sharing and the owner's downloads are decided separately:
+
+- **Sharing always needs a clean verdict**, or an admin's release for sharing. No
+  setting relaxes this: a share sends the file to someone else.
+- **The owner's downloads** follow `VAULTGATE_QUARANTINE_BLOCKS`. `download` (the
+  default) blocks them like sharing. `share` lets owners take their own files back
+  whatever the verdict, for organizations that only care about data leaving to others.
+  The default stays strict because loosening it later is easy and tightening it is not.
+- **Releases name their purpose** (`download` or `share`), each with its reason and
+  admin, and each covers the current scan only. A release for download does not make a
+  file shareable.
+- **Agents (M13)** count as sharing: what a tool reads goes into a model's context, often
+  at an outside provider. Pending, quarantined and unscannable content never reaches a
+  model, whatever the scope; agents see only the verdict and the kinds and counts.
+
 ## Consequences
 
 - No file is downloadable before its scan. Uploads are usable after a few seconds for

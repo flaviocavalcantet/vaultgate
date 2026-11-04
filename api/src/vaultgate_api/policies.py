@@ -36,7 +36,7 @@ from vaultgate_api.models import Policy
 
 logger = logging.getLogger(__name__)
 
-Action = Literal["read", "upload", "download"]
+Action = Literal["read", "upload", "download", "share"]
 
 
 @dataclass(frozen=True)

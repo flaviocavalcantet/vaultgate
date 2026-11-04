@@ -12,11 +12,14 @@ Verdicts are worked out when they are read, from the findings and the configured
 quarantine kinds, so changing VAULTGATE_QUARANTINE_KINDS applies to files already
 scanned.
 
-Quarantine (ADR 0005): a file can be downloaded only when its verdict is clean, or an
-admin released it after a quarantined or unscannable verdict. Pending and unscannable
-files are blocked like quarantined ones (fail closed). The API checks this when it
-issues a download intent and again when the gateway consumes it. A rescan starts a new
-scan request and clears the release, which covered only the scan it was given for.
+Quarantine (ADR 0005) decides two things for a file: whether its owner may download
+it, and whether it may be shared. Sharing needs a clean verdict, or an admin's release
+for sharing after a quarantined or unscannable one. Downloads need the same with
+VAULTGATE_QUARANTINE_BLOCKS=download (the default); with "share", owners download
+their own files whatever the verdict. Pending and unscannable files are blocked like
+quarantined ones (fail closed). The API checks when it issues an intent or creates a
+share, and again when the gateway consumes an intent. A release covers the scan it
+was given for: a rescan starts a new request, and releases no longer apply.
 """
 
 import asyncio
@@ -63,36 +66,45 @@ BLOCKED = {
 }
 
 
-def released(file: File) -> bool:
-    """An admin released the file's current quarantined or unscannable verdict."""
-    return file.released_at is not None and verdict(file) in ("quarantined", "unscannable")
+Purpose = Literal["download", "share"]
 
 
-def blocked(file: File) -> str | None:
-    """Why the file may not be downloaded, or None if it may (an uploaded file only)."""
+def released(file: File, purpose: Purpose) -> bool:
+    """An admin released the file's current quarantined or unscannable verdict for
+    this purpose."""
+    return verdict(file) in ("quarantined", "unscannable") and any(
+        r.purpose == purpose and r.scan_id == file.scan_id for r in file.releases
+    )
+
+
+def blocked(file: File, purpose: Purpose = "download") -> str | None:
+    """Why the file may not be downloaded by its owner, or shared; None if it may."""
     v = verdict(file)
     if v is None:
         return "File is not available"
-    if v == "clean" or released(file):
+    if v == "clean" or released(file, purpose):
+        return None
+    if purpose == "download" and settings.quarantine_blocks == "share":
         return None
     return BLOCKED[v]
 
 
-def check_download(file: File, checked_by: str) -> str | None:
+def check(file: File, purpose: Purpose, checked_by: str) -> str | None:
     """blocked(), counted and logged when it refuses."""
-    reason = blocked(file)
+    reason = blocked(file, purpose)
     if reason is not None:
         v = verdict(file) or "none"
-        metrics.DOWNLOADS_BLOCKED.labels(v, checked_by).inc()
+        counter = metrics.DOWNLOADS_BLOCKED if purpose == "download" else metrics.SHARES_BLOCKED
+        counter.labels(v, checked_by).inc()
         logger.info(
-            "download blocked by scan",
+            f"{purpose} blocked by scan",
             extra={"file_id": str(file.id), "verdict": v, "checked_by": checked_by},
         )
     return reason
 
 
 def new_scan(now: datetime) -> dict:
-    """Column values for a new scan request, counted as sent once. Any release ends."""
+    """Column values for a new scan request, counted as sent once."""
     return {
         "scan_status": "pending",
         "scan_id": uuid.uuid4(),
@@ -100,9 +112,6 @@ def new_scan(now: datetime) -> dict:
         "scan_attempts": 1,
         "scanned_at": None,
         "scan_reason": None,
-        "released_at": None,
-        "released_by": None,
-        "release_reason": None,
     }
 
 
@@ -166,6 +175,7 @@ async def rescan(session: AsyncSession, file: File, queue: ScanQueue) -> None:
     for column, value in new_scan(datetime.now(UTC)).items():
         setattr(file, column, value)
     file.findings = []
+    file.releases = []  # they named the old scan; dropped so they don't linger
     await session.commit()
     metrics.RESCANS.inc()
     if await send_request(queue, file.id, file.scan_id):

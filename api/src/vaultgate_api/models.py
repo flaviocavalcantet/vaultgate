@@ -107,7 +107,6 @@ class File(Base):
         CheckConstraint("declared_size >= 0", name="declared_size"),
         CheckConstraint(f"scan_status IN {SCAN_STATUSES}", name="scan_status"),
         CheckConstraint("(scan_status IS NULL) = (scan_id IS NULL)", name="scan_id"),
-        CheckConstraint("(released_at IS NULL) = (release_reason IS NULL)", name="release"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -141,16 +140,12 @@ class File(Base):
     scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Why a file is unscannable, e.g. "PDF is encrypted". Never contains file content.
     scan_reason: Mapped[str | None] = mapped_column(String(500))
-    # An admin's release of a quarantined or unscannable file: its owner may download it
-    # anyway. A rescan clears it, so it covers only the scan it was given for.
-    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    released_by: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL")
-    )
-    release_reason: Mapped[str | None] = mapped_column(String(500))
 
     findings: Mapped[list["ScanFinding"]] = relationship(
         lazy="selectin", cascade="all, delete-orphan", order_by="ScanFinding.kind"
+    )
+    releases: Mapped[list["ScanRelease"]] = relationship(
+        lazy="selectin", cascade="all, delete-orphan", order_by="ScanRelease.purpose"
     )
 
 
@@ -169,6 +164,66 @@ class ScanFinding(Base):
     )
     kind: Mapped[str] = mapped_column(String(32), primary_key=True)
     count: Mapped[int] = mapped_column(BigInteger)
+
+
+RELEASE_PURPOSES = ("download", "share")
+
+
+class ScanRelease(Base):
+    """An admin's release of a quarantined or unscannable file for one purpose: its
+    owner may download it, or it may be shared. It covers the scan it was given for
+    (scan_id) only: after a rescan it no longer applies (ADR 0005)."""
+
+    __tablename__ = "scan_releases"
+    __table_args__ = (CheckConstraint(f"purpose IN {RELEASE_PURPOSES}", name="purpose"),)
+
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("files.id", ondelete="CASCADE"), primary_key=True
+    )
+    purpose: Mapped[str] = mapped_column(String(16), primary_key=True)
+    scan_id: Mapped[uuid.UUID]
+    released_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    released_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    reason: Mapped[str] = mapped_column(String(500))
+
+
+SHARE_KINDS = ("external", "internal")
+
+
+class Share(Base):
+    """A link to one file for one recipient, named by email address.
+
+    An external recipient proves they hold the address with a code sent to it; an
+    internal one signs in, with a verified email equal to the address. The link's token
+    is shown to the owner once; only its SHA-256 is stored. A share ends when it
+    expires, when its downloads are used up, or when the owner revokes it.
+    """
+
+    __tablename__ = "shares"
+    __table_args__ = (
+        CheckConstraint(f"recipient_kind IN {SHARE_KINDS}", name="recipient_kind"),
+        CheckConstraint("max_downloads > 0", name="max_downloads"),
+        CheckConstraint("downloads >= 0 AND downloads <= max_downloads", name="downloads"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("files.id", ondelete="CASCADE"), index=True
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    # Lower case; the address the recipient must prove.
+    recipient_email: Mapped[str] = mapped_column(String(320))
+    recipient_kind: Mapped[str] = mapped_column(String(16))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    max_downloads: Mapped[int] = mapped_column(SmallInteger)
+    downloads: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TransferIntent(Base):
@@ -194,7 +249,7 @@ class TransferIntent(Base):
 
 
 POLICY_EFFECTS = ("allow", "deny")
-POLICY_ACTIONS = ("read", "upload", "download")
+POLICY_ACTIONS = ("read", "upload", "download", "share")
 
 
 class Policy(Base):

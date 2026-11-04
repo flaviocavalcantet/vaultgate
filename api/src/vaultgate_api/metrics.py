@@ -96,9 +96,24 @@ DOWNLOADS_BLOCKED = Counter(
     "Download requests refused because of the file's scan, by verdict and where",
     ["verdict", "checked_by"],
 )
+SHARES_BLOCKED = Counter(
+    "vaultgate_api_shares_blocked_total",
+    "Shares refused because of the file's scan, by verdict and where",
+    ["verdict", "checked_by"],
+)
 RELEASES = Counter(
     "vaultgate_api_quarantine_releases_total",
-    "Quarantined or unscannable files an admin released for download",
+    "Quarantined or unscannable files an admin released, by purpose",
+    ["purpose"],
+)
+SHARES_CREATED = Counter(
+    "vaultgate_api_shares_created_total",
+    "Share links created, by recipient kind",
+    ["kind"],
+)
+SHARES_REVOKED = Counter(
+    "vaultgate_api_shares_revoked_total",
+    "Share links their owner revoked",
 )
 RESCANS = Counter(
     "vaultgate_api_rescans_total",
