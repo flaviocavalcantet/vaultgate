@@ -20,7 +20,7 @@ from fastapi import Depends, HTTPException, Request, status
 from prometheus_client import Counter
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vaultgate_api import policies
+from vaultgate_api import audit, policies
 from vaultgate_api.db import SessionDep
 from vaultgate_api.models import User
 from vaultgate_api.provisioning import CurrentUserDep
@@ -72,6 +72,20 @@ def _require(action: policies.Action):
             session, action=action, user=user, client_ip=client_ip, checked_by="api"
         )
         if not decision.allowed:
+            # Nothing is pending here (provisioning commits its own changes); the
+            # refusal is recorded and committed on its own.
+            user_id = user.id
+            await audit.record_refusal(
+                session,
+                "access.denied",
+                actor_id=user_id,
+                details={
+                    "action": action,
+                    "reason": decision.reason,
+                    "deny_policies": list(decision.deny),
+                    "path": request.url.path,
+                },
+            )
             raise HTTPException(status.HTTP_403_FORBIDDEN, detail=DENIED)
         return user
 

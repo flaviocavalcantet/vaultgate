@@ -32,7 +32,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, IPvAnyAddress, SecretStr, field_validator
 from sqlalchemy import select, update
 
-from vaultgate_api import intents, metrics, scans
+from vaultgate_api import audit, intents, metrics, scans
 from vaultgate_api.access import DENIED, authorize
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
@@ -88,51 +88,101 @@ class ConsumeResponse(BaseModel):
     kms_key_id: str | None = None
 
 
+async def _refuse(
+    session, code: int, detail: str, action: str, *, client_ip: str | None, **fields
+) -> HTTPException:
+    """Roll back (the intent stays unspent), record the refusal, and return the error
+    to raise."""
+    await session.rollback()
+    await audit.record_refusal(session, action, client_ip=client_ip, **fields)
+    return HTTPException(code, detail=detail)
+
+
 @router.post("/intents/consume")
 async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeResponse:
     """Validate and spend a client's intent token. For uploads, mark the file uploading;
     for downloads, return what the gateway needs to decrypt and serve it."""
+    client_ip = str(body.client_ip) if body.client_ip else None
+    target = {"target_kind": "file", "target_id": body.file_id}
     try:
         intent = await intents.consume(
             session, token=body.token, kind=body.kind, file_id=body.file_id
         )
     except intents.IntentRejected:
-        await session.rollback()
         logger.info("intent rejected", extra={"file_id": str(body.file_id), "kind": body.kind})
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Intent not valid") from None
-    user = await session.get(User, intent.created_by)
-    if user is None or not user.is_active:
-        await session.rollback()
-        logger.info("intent of an inactive user refused", extra={"file_id": str(body.file_id)})
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="User is deactivated")
-    if intent.share_id is None:
-        decision = await authorize(
+        raise await _refuse(
             session,
-            action=body.kind,
-            user=user,
-            client_ip=str(body.client_ip) if body.client_ip else None,
-            checked_by="gateway",
+            status.HTTP_403_FORBIDDEN,
+            "Intent not valid",
+            "intent.rejected",
+            client_ip=client_ip,
+            actor_kind="gateway",
+            details={"kind": body.kind},
+            **target,
+        ) from None
+    user = await session.get(User, intent.created_by)
+    user_id, share_id = intent.created_by, intent.share_id
+    if user is None or not user.is_active:
+        logger.info("intent of an inactive user refused", extra={"file_id": str(body.file_id)})
+        raise await _refuse(
+            session,
+            status.HTTP_403_FORBIDDEN,
+            "User is deactivated",
+            "intent.refused",
+            client_ip=client_ip,
+            actor_id=user_id,
+            details={"kind": body.kind, "reason": "user deactivated"},
+            **target,
+        )
+    if share_id is None:
+        decision = await authorize(
+            session, action=body.kind, user=user, client_ip=client_ip, checked_by="gateway"
         )
         if not decision.allowed:
-            await session.rollback()  # the intent stays unspent
-            raise HTTPException(status.HTTP_403_FORBIDDEN, detail=DENIED)
+            raise await _refuse(
+                session,
+                status.HTTP_403_FORBIDDEN,
+                DENIED,
+                "access.denied",
+                client_ip=client_ip,
+                actor_id=user_id,
+                details={
+                    "action": body.kind,
+                    "reason": decision.reason,
+                    "deny_policies": list(decision.deny),
+                    "checked_by": "gateway",
+                },
+                **target,
+            )
     file = await intents.file_for(session, intent)
-    if intent.share_id is not None:
-        client_ip = str(body.client_ip) if body.client_ip else None
+    if share_id is not None:
         return await _consume_share_download(session, intent, file, client_ip)
+    refused = None
     if body.kind == "upload":
         if file.status != "pending":
-            await session.rollback()
-            raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not awaiting upload")
-        file.status = "uploading"
+            refused = "File is not awaiting upload"
+        else:
+            file.status = "uploading"
     elif file.status != "uploaded":
-        await session.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
+        refused = "File is not available"
     elif reason := scans.check(file, "download", checked_by="gateway"):
         # The verdict changed since the intent was issued (a rescan, other quarantine
         # kinds); the intent stays unspent.
-        await session.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, detail=reason)
+        refused = reason
+    if refused:
+        raise await _refuse(
+            session,
+            status.HTTP_409_CONFLICT,
+            refused,
+            f"{body.kind}.refused",
+            client_ip=client_ip,
+            actor_id=user_id,
+            details={"reason": refused, "checked_by": "gateway"},
+            **target,
+        )
+    await audit.record(
+        session, f"{body.kind}.started", actor_id=user_id, client_ip=client_ip, **target
+    )
     await session.commit()
     logger.info("intent consumed", extra={"file_id": str(file.id), "kind": body.kind})
     response = ConsumeResponse(
@@ -164,9 +214,33 @@ async def _consume_share_download(
     their own policies apply to the download, the owner must still be active, and their
     verified email must still be the share's address.
     """
-    share_id, file_id = intent.share_id, file.id  # for logs: a rollback expires both
+    share_id, file_id = intent.share_id, file.id  # a rollback expires both
     share = await session.get(Share, share_id)
-    if share is not None and share.recipient_kind == "internal":
+    internal = share is not None and share.recipient_kind == "internal"
+    # The audit names the recipient: a user when internal, the share's address otherwise.
+    who = (
+        {"actor_kind": "user", "actor_id": intent.created_by}
+        if internal
+        else {"actor_kind": "recipient", "actor_id": None}
+    )
+    target = {"target_kind": "file", "target_id": file_id}
+    details = {"share_id": str(share_id)}
+    if share is not None:
+        details["recipient_email"] = share.recipient_email
+
+    async def refuse(code: int, detail: str, event: str = "share.download_refused", **more):
+        return await _refuse(
+            session,
+            code,
+            detail,
+            event,
+            client_ip=client_ip,
+            details=details | {"reason": detail, "checked_by": "gateway"} | more,
+            **who,
+            **target,
+        )
+
+    if internal:
         recipient = await session.get(User, intent.created_by)
         owner = await session.get(User, share.created_by)
         if (
@@ -175,24 +249,22 @@ async def _consume_share_download(
             or not recipient.email_verified
             or (recipient.email or "").lower() != share.recipient_email
         ):
-            await session.rollback()
-            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Share is no longer active")
+            raise await refuse(status.HTTP_403_FORBIDDEN, "Share is no longer active")
         decision = await authorize(
-            session,
-            action="download",
-            user=recipient,
-            client_ip=client_ip,
-            checked_by="gateway",
+            session, action="download", user=recipient, client_ip=client_ip, checked_by="gateway"
         )
         if not decision.allowed:
-            await session.rollback()
-            raise HTTPException(status.HTTP_403_FORBIDDEN, detail=DENIED)
+            raise await refuse(
+                status.HTTP_403_FORBIDDEN,
+                DENIED,
+                "access.denied",
+                action="download",
+                deny_policies=list(decision.deny),
+            )
     if file.status != "uploaded":
-        await session.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
+        raise await refuse(status.HTTP_409_CONFLICT, "File is not available")
     if reason := scans.check(file, "share", checked_by="gateway"):
-        await session.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, detail=reason)
+        raise await refuse(status.HTTP_409_CONFLICT, reason)
     now = datetime.now(UTC)
     counted = await session.scalar(
         update(Share)
@@ -206,9 +278,11 @@ async def _consume_share_download(
         .returning(Share.id)
     )
     if counted is None:
-        await session.rollback()
         logger.info("share download refused", extra={"share_id": str(share_id)})
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Share is no longer active")
+        raise await refuse(status.HTTP_403_FORBIDDEN, "Share is no longer active")
+    await audit.record(
+        session, "share.downloaded", client_ip=client_ip, details=details, **who, **target
+    )
     await session.commit()
     metrics.SHARE_DOWNLOADS.inc()
     logger.info(
@@ -236,7 +310,9 @@ class CompleteRequest(BaseModel):
     kms_key_id: str = Field(min_length=1, max_length=2048)
 
 
-async def _finish(session, file_id: uuid.UUID, values: dict) -> File:
+async def _finish(
+    session, file_id: uuid.UUID, values: dict, action: str, details: dict | None = None
+) -> File:
     file = await session.scalar(
         update(File)
         .where(File.id == file_id, File.status == "uploading")
@@ -246,6 +322,14 @@ async def _finish(session, file_id: uuid.UUID, values: dict) -> File:
     if file is None:
         await session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not being uploaded")
+    await audit.record(
+        session,
+        action,
+        actor_kind="gateway",
+        target_kind="file",
+        target_id=file.id,
+        details={"owner_id": str(file.owner_id)} | (details or {}),
+    )
     await session.commit()
     return file
 
@@ -280,6 +364,8 @@ async def complete_upload(
         session,
         file_id,
         {**values, "status": "uploaded", "uploaded_at": now, **scans.new_scan(now)},
+        "upload.completed",
+        {"size": body.size, "sha256": body.sha256},
     )
     logger.info("upload completed", extra={"file_id": str(file.id), "bytes": body.size})
     # After the response, so a slow queue does not hold up the gateway; a request that
@@ -297,7 +383,7 @@ async def _send_first_request(
 
 @router.post("/files/{file_id}/fail")
 async def fail_upload(file_id: uuid.UUID, session: SessionDep) -> dict:
-    file = await _finish(session, file_id, {"status": "failed"})
+    file = await _finish(session, file_id, {"status": "failed"}, "upload.failed")
     logger.info("upload failed", extra={"file_id": str(file.id)})
     return {"status": file.status}
 
@@ -381,8 +467,21 @@ async def report_scan(scan_id: uuid.UUID, body: ScanResult, session: SessionDep)
     file.scan_reason = body.reason
     file.scanned_at = datetime.now(UTC)
     file.findings = [ScanFinding(kind=f.kind, count=f.count) for f in body.findings]
-    await session.commit()
     verdict = scans.verdict(file)
+    await audit.record(
+        session,
+        "scan.result",
+        outcome=verdict,
+        actor_kind="scanner",
+        target_kind="file",
+        target_id=file.id,
+        details={
+            "scan_id": str(scan_id),
+            "findings": {f.kind: f.count for f in body.findings},
+            "reason": body.reason,
+        },
+    )
+    await session.commit()
     metrics.SCAN_RESULTS.labels(verdict).inc()
     logger.info(
         "scan result recorded",

@@ -36,7 +36,7 @@ from fastapi import Depends
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from vaultgate_api import metrics
+from vaultgate_api import audit, metrics
 from vaultgate_api.config import settings
 from vaultgate_api.models import File
 
@@ -209,6 +209,15 @@ async def resend_stuck_scans(
             file.scan_status = "unscannable"
             file.scan_reason = f"No scan result after {file.scan_attempts} attempts"
             file.scanned_at = now
+            await audit.record(
+                session,
+                "scan.abandoned",
+                outcome="unscannable",
+                actor_kind="system",
+                target_kind="file",
+                target_id=file.id,
+                details={"attempts": file.scan_attempts},
+            )
             metrics.SCANS_ABANDONED.inc()
             metrics.SCAN_RESULTS.labels("unscannable").inc()
             logger.warning("scan abandoned", extra={"file_id": str(file.id)})

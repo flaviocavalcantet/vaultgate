@@ -113,6 +113,9 @@ class Settings(BaseSettings):
     smtp_password: SecretStr | None = None
     smtp_from: str = "VaultGate <no-reply@vaultgate.local>"
 
+    # How often the head of the audit chain is logged (vaultgate_api.audit); 0 = off.
+    audit_anchor_interval_seconds: int = 300
+
     @field_validator("trusted_proxies", mode="before")
     @classmethod
     def split_networks(cls, value):

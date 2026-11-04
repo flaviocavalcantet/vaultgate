@@ -25,7 +25,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, CIDR
+from sqlalchemy.dialects.postgresql import ARRAY, CIDR, INET, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Deterministic constraint names keep Alembic migrations stable across databases.
@@ -321,3 +321,35 @@ class Policy(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+AUDIT_ACTOR_KINDS = ("user", "recipient", "gateway", "scanner", "system")
+
+
+class AuditEvent(Base):
+    """One security event (ADR 0007): who did what to which object, with what outcome.
+
+    Append-only: a trigger refuses UPDATE, DELETE and TRUNCATE for every role. Rows form
+    a hash chain: each one's `hash` is a SHA-256 over its own fields and the previous
+    row's hash (`prev_hash`), so a row changed or removed around the trigger breaks the
+    chain from there on (vaultgate_api.audit.verify). No foreign keys: the record must
+    outlive the users, files and shares it names.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (CheckConstraint(f"actor_kind IN {AUDIT_ACTOR_KINDS}", name="actor_kind"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    actor_kind: Mapped[str] = mapped_column(String(16))
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(index=True)
+    # Dotted name, e.g. share.created, access.denied (see vaultgate_api.audit).
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    outcome: Mapped[str] = mapped_column(String(16))
+    target_kind: Mapped[str | None] = mapped_column(String(16))
+    target_id: Mapped[uuid.UUID | None] = mapped_column(index=True)
+    client_ip: Mapped[str | None] = mapped_column(INET)
+    request_id: Mapped[str | None] = mapped_column(String(64))
+    details: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    prev_hash: Mapped[str] = mapped_column(String(64))
+    hash: Mapped[str] = mapped_column(String(64), unique=True)
