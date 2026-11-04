@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     share_code_attempts: int = 5
     share_code_sends_per_hour: int = 5
     share_code_resend_seconds: int = 60
+    # Codes one owner's shares may send in an hour, all shares together: the code email
+    # goes to addresses the owner chose, so it must not become a way to mail anyone.
+    share_codes_per_owner_per_hour: int = 50
     share_grant_ttl_seconds: int = 1800
 
     # Outgoing email (verification codes). Mailpit locally; unset means no email can be

@@ -354,7 +354,7 @@ The owner of a file shares it with one recipient, named by email address (M5):
 **External recipients** have no account. The link's token and a code sent to the address authorize them, on public routes:
 
 1. `GET /shares/access?token=...` tells what the link is: the kind of recipient, a hint of the address (`b***@example.com`), the expiry and the downloads left. Nothing about the file before the address is proven.
-2. `POST /shares/access/code` with `{"token"}` emails a 6-digit code to the address. It lasts 10 minutes (`VAULTGATE_SHARE_CODE_TTL_SECONDS`) and allows 5 tries (`VAULTGATE_SHARE_CODE_ATTEMPTS`). At most 5 codes per share an hour (`VAULTGATE_SHARE_CODE_SENDS_PER_HOUR`), 60 s apart (`VAULTGATE_SHARE_CODE_RESEND_SECONDS`); more get `429`.
+2. `POST /shares/access/code` with `{"token"}` emails a 6-digit code to the address. It lasts 10 minutes (`VAULTGATE_SHARE_CODE_TTL_SECONDS`) and allows 5 tries (`VAULTGATE_SHARE_CODE_ATTEMPTS`). At most 5 codes per share an hour (`VAULTGATE_SHARE_CODE_SENDS_PER_HOUR`), 60 s apart (`VAULTGATE_SHARE_CODE_RESEND_SECONDS`), and 50 an hour across one owner's shares (`VAULTGATE_SHARE_CODES_PER_OWNER_PER_HOUR`); more get `429`. The email is fixed text with only the code: nothing a user typed (file name, display name) goes into a message VaultGate sends to an address they chose.
 3. `POST /shares/access/verify` with `{"token", "code"}` returns a **grant**, shown once, that lasts 30 minutes (`VAULTGATE_SHARE_GRANT_TTL_SECONDS`). A code works once.
 4. `POST /shares/access/downloads` with `{"token", "grant"}` returns a single-use download intent for the gateway, as for an owner's download.
 

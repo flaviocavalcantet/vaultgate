@@ -27,7 +27,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from vaultgate_api import intents, metrics, scans
@@ -163,6 +163,20 @@ async def send_code(body: TokenIn, session: SessionDep, mailer: MailerDep) -> di
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many codes for this share; try later"
         )
+    owner_sends = await session.scalar(
+        select(func.coalesce(func.sum(ShareVerification.sends), 0))
+        .join(Share, Share.id == ShareVerification.share_id)
+        .where(
+            Share.created_by == share.created_by,
+            ShareVerification.window_started_at > now - timedelta(hours=1),
+        )
+    )
+    if owner_sends >= settings.share_codes_per_owner_per_hour:
+        await session.rollback()
+        logger.warning("share codes capped for an owner", extra={"share_id": share_id})
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many codes sent; try later"
+        )
     previous = (v.sends, v.window_started_at, v.last_sent_at)
     code = f"{secrets.randbelow(10**6):06d}"
     v.code_salt = secrets.token_hex(16)
@@ -172,20 +186,20 @@ async def send_code(body: TokenIn, session: SessionDep, mailer: MailerDep) -> di
     v.sends += 1
     v.last_sent_at = now
     code_hash = v.code_hash
-    owner = await session.get(User, share.created_by)
-    sender = owner.display_name or owner.username or "A VaultGate user"
-    to, file_name, hint = share.recipient_email, file.name, _hint(share.recipient_email)
+    to, hint = share.recipient_email, _hint(share.recipient_email)
     # Committed before the mail goes out: the share's lock must not wait on a slow mail
     # server, or downloads, revokes and checks of this share would wait with it.
     await session.commit()
     minutes = settings.share_code_ttl_seconds // 60
     try:
+        # Fixed text only: nothing a user typed (file name, display name) goes into a
+        # message sent from VaultGate to an address they chose.
         await mailer.send(
             to,
             f"Your VaultGate code: {code}",
-            f"{sender} shared {file_name} with you on VaultGate.\n\n"
-            f"Your code is {code}. It expires in {minutes} minutes.\n\n"
-            "If you did not expect this, ignore this message.\n",
+            "Someone used a VaultGate share link sent to this address and asked for a "
+            f"code to open it.\n\nYour code is {code}. It expires in {minutes} minutes.\n\n"
+            "If you did not ask for it, ignore this message: nothing is shared without it.\n",
         )
     except MailUnavailable:
         # Nothing was sent: the code goes, and the send does not count.

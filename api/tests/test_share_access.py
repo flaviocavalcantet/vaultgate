@@ -91,7 +91,9 @@ async def test_a_recipient_proves_the_address_and_downloads(
     assert sent.status_code == 202 and sent.json()["sent_to"] == "b***@example.com"
     [(to, subject, body)] = mailer.sent
     code = mailer.last_code()
-    assert to == "bob@example.com" and code in subject and "report.pdf" in body
+    assert to == "bob@example.com" and code in subject and code in body
+    # Nothing a user typed goes into the mail.
+    assert "report.pdf" not in body and "alice" not in body
     # Only a salted hash of the code is stored.
     row = await session.get(ShareVerification, share_id)
     assert row.code_hash and code not in (row.code_hash, row.code_salt)
@@ -337,3 +339,15 @@ async def test_a_file_gone_from_the_vault_is_not_served(
     file_id, _, token = await shared(recipients, provider, queue)
     await session.execute(update(File).where(File.id == file_id).values(status="failed"))
     assert (await public.get("/shares/access", params={"token": token})).status_code == 410
+
+
+async def test_codes_are_capped_per_owner(recipients, provider, queue, mailer, monkeypatch):
+    """Code emails go to addresses the owner chose: one owner can't send many."""
+    monkeypatch.setattr(settings, "share_codes_per_owner_per_hour", 2)
+    public, _, _ = recipients
+    tokens = [(await shared(recipients, provider, queue))[2] for _ in range(3)]
+    for token in tokens[:2]:
+        assert (await public.post("/shares/access/code", json={"token": token})).status_code == 202
+    capped = await public.post("/shares/access/code", json={"token": tokens[2]})
+    assert capped.status_code == 429
+    assert len(mailer.sent) == 2
