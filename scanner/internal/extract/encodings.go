@@ -228,6 +228,9 @@ func (x *run) rtf(r io.Reader) error {
 		}
 		switch c {
 		case '{':
+			if len(stack) > maxRTFDepth {
+				return unscannable("RTF groups nested deeper than %d", maxRTFDepth)
+			}
 			stack = append(stack, stack[len(stack)-1])
 			continue
 		case '}':
@@ -319,6 +322,10 @@ func (x *run) rtf(r io.Reader) error {
 		}
 	}
 }
+
+// maxRTFDepth bounds nested RTF groups; real documents stay far below it, and each
+// level costs memory.
+const maxRTFDepth = 1000
 
 func isLetter(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
 

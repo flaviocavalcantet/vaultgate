@@ -130,6 +130,17 @@ func TestRTFTextIsExtracted(t *testing.T) {
 	expect(t, "RTF", found, pii(card, cpf)...)
 }
 
+func TestDeeplyNestedRTFIsUnscannable(t *testing.T) {
+	deep := `{\rtf1 ` + strings.Repeat("{", maxRTFDepth+1) + "x" + strings.Repeat("}", maxRTFDepth+1) + "}"
+	assertUnscannable(t, "nested groups", extractor(), []byte(deep))
+	ok := `{\rtf1 ` + strings.Repeat("{", 50) + "Card 4111 1111 1111 1111" + strings.Repeat("}", 50) + "}"
+	found, _, err := scan(t, extractor(), []byte(ok))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, "50 levels", found, pii(card)...)
+}
+
 func TestRTFWithAnEmbeddedObjectIsUnscannable(t *testing.T) {
 	rtf := `{\rtf1 Hello {\object\objemb{\*\objdata 01050000020000000b0000}}}`
 	assertUnscannable(t, "RTF object", extractor(), []byte(rtf))
