@@ -257,3 +257,25 @@ func TestLargeRTFOrEmailEntriesAreUnscannable(t *testing.T) {
 	}
 	expect(t, "large text entry", found, pii(card, cpf)...)
 }
+
+// Padding before the telling fields does not hide an email: detection reads the whole
+// header block, and a block too long to read counts as an email.
+func TestPaddedEmailHeadersAreStillAnEmail(t *testing.T) {
+	body := "MIME-Version: 1.0\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n" +
+		b64Lines([]byte(text))
+	for name, pad := range map[string]int{"2 KiB": 2 << 10, "past the header window": emailHeadMax + 1} {
+		padded := strings.Repeat("X-Pad: "+strings.Repeat("a", 70)+"\r\n", pad/79+1) + body
+		found, report, err := scan(t, extractor(), []byte(padded))
+		if err != nil || report.Format != FormatEmail {
+			t.Fatalf("%s: %v, %s", name, err, report.Format)
+		}
+		if !strings.Contains(strings.Join(found, "|"), "br_cpf=529.982.247-25") {
+			t.Errorf("%s: found %q", name, found)
+		}
+	}
+	// Inside an archive, over the size limit: refused, not streamed as text.
+	small := extractor()
+	small.Limits.MaxDocumentBytes = 4096
+	padded := strings.Repeat("X-Pad: "+strings.Repeat("a", 70)+"\r\n", 30) + body + strings.Repeat("\r\n", 2000)
+	assertUnscannable(t, "padded large entry", small, zipOf(t, entry{name: "x.eml", data: []byte(padded)}))
+}

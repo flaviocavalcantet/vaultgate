@@ -361,18 +361,31 @@ func controlWord(in *bufio.Reader, first byte) (word string, param int, hasParam
 
 var headerLine = regexp.MustCompile(`^[!-9;-~]+:`)
 
-// isEmail says whether a file starts with an email's header: only header lines up to
-// the first blank line (or the end of what was read), and fields an email has.
-func isEmail(head []byte) bool {
-	fields := map[string]bool{}
+// emailHeadMax is how much of a file is read to tell whether it starts with an email
+// header. Mail clients accept any fields in any order, so the decision takes the whole
+// header block, not just its first lines.
+const emailHeadMax = 64 << 10
+
+// isEmail says whether a file (size bytes readable through r) starts with an email's
+// header: only header lines up to the first blank line, and fields an email has. A
+// header block that runs past emailHeadMax counts as an email, so its parts are
+// decoded rather than read as text: padding cannot push the telling fields out of view.
+func isEmail(r io.ReaderAt, size int64) bool {
+	head := make([]byte, min(size, emailHeadMax))
+	n, _ := r.ReadAt(head, 0)
+	head = head[:n]
+	cut := int64(n) < size // the last line may be cut
 	lines := strings.Split(strings.ReplaceAll(string(head), "\r\n", "\n"), "\n")
-	if len(head) == headBytes { // the last line may be cut
+	if cut {
 		lines = lines[:len(lines)-1]
 	}
+	fields := map[string]bool{}
+	blank := false
 header:
 	for _, line := range lines {
 		switch {
 		case line == "":
+			blank = true
 			break header
 		case line[0] == ' ' || line[0] == '\t':
 			if len(fields) == 0 {
@@ -384,7 +397,10 @@ header:
 			return false
 		}
 	}
-	if fields["mime-version"] || fields["content-type"] {
+	if !blank && cut && len(fields) > 0 {
+		return true
+	}
+	if fields["mime-version"] || fields["content-type"] || fields["content-transfer-encoding"] {
 		return true
 	}
 	return fields["from"] && (fields["to"] || fields["date"] || fields["subject"] || fields["received"] || fields["message-id"])

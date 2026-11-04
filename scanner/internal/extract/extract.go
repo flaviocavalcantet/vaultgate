@@ -176,7 +176,7 @@ func (x *run) document(r io.ReaderAt, size int64, depth int) (Format, error) {
 		}
 		return FormatRTF, x.separate()
 	}
-	if isEmail(head[:n]) {
+	if isEmail(r, size) {
 		return FormatEmail, x.email(r, size, depth)
 	}
 	text := newTextWriter(x.w)
@@ -301,7 +301,7 @@ func (x *run) entry(f *zip.File, container Format, depth int) error {
 	}
 	// Streamed text is decoded only as text: an RTF document or an email that large
 	// would be read without its escapes and encoded parts, so it is refused instead.
-	if head := data[:min(len(data), headBytes)]; isRTF(head) || isEmail(head) {
+	if isRTF(data[:min(len(data), headBytes)]) || isEmail(bytes.NewReader(data), int64(len(data))) {
 		return unscannable("archive entry %q is over the size limit and is an RTF document or an email", f.Name)
 	}
 	x.parts++
