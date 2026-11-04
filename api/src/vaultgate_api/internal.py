@@ -118,7 +118,8 @@ async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeRe
             raise HTTPException(status.HTTP_403_FORBIDDEN, detail=DENIED)
     file = await intents.file_for(session, intent)
     if intent.share_id is not None:
-        return await _consume_share_download(session, intent, file)
+        client_ip = str(body.client_ip) if body.client_ip else None
+        return await _consume_share_download(session, intent, file, client_ip)
     if body.kind == "upload":
         if file.status != "pending":
             await session.rollback()
@@ -150,13 +151,42 @@ async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeRe
     return response
 
 
-async def _consume_share_download(session, intent, file: File) -> ConsumeResponse:
+async def _consume_share_download(
+    session, intent, file: File, client_ip: str | None
+) -> ConsumeResponse:
     """A recipient's download through a share: the share must still be active and the
     file shareable (a revoke, an expiry or a rescan applies at once), and the download
-    is counted against the share. The owner's access policies are not checked: they
-    decided on sharing when the link was made, and the owner revokes links to end them.
+    is counted against the share.
+
+    An external recipient's intent is made out to the owner, whose access policies are
+    not checked: they decided on sharing when the link was made. An internal
+    recipient's intent is made out to the recipient, a VaultGate user like any other:
+    their own policies apply to the download, the owner must still be active, and their
+    verified email must still be the share's address.
     """
     share_id, file_id = intent.share_id, file.id  # for logs: a rollback expires both
+    share = await session.get(Share, share_id)
+    if share is not None and share.recipient_kind == "internal":
+        recipient = await session.get(User, intent.created_by)
+        owner = await session.get(User, share.created_by)
+        if (
+            owner is None
+            or not owner.is_active
+            or not recipient.email_verified
+            or (recipient.email or "").lower() != share.recipient_email
+        ):
+            await session.rollback()
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Share is no longer active")
+        decision = await authorize(
+            session,
+            action="download",
+            user=recipient,
+            client_ip=client_ip,
+            checked_by="gateway",
+        )
+        if not decision.allowed:
+            await session.rollback()
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail=DENIED)
     if file.status != "uploaded":
         await session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")

@@ -136,10 +136,10 @@ Notes:
 |---|---|
 | Start the stack | `docker compose up --build`, then waits until LocalStack, Keycloak, the API (`/readyz`), the gateway and Grafana answer (the scanner worker and Mailpit start with them) |
 | Terraform | the storage module creates the encrypted, versioned bucket, the KMS key and alias, and the multipart-cleanup rule in LocalStack; the scanning module creates the scan queue and its dead-letter queue |
-| API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, scan state (requests, results, verdicts, the resender) quarantine (downloads and shares refused until clean or released, the quarantine scope, releases by purpose, rescan, listing by verdict) share links (limits, states, revoking) and external recipients (codes, grants, limits, revoking, rescans), against a real database (`vaultgate_test`, created automatically) |
+| API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, scan state (requests, results, verdicts, the resender) quarantine (downloads and shares refused until clean or released, the quarantine scope, releases by purpose, rescan, listing by verdict) share links (limits, states, revoking) external recipients (codes, grants, limits, revoking, rescans) and internal recipients (verified email, their own policies), against a real database (`vaultgate_test`, created automatically) |
 | Access policy for local use | adds a policy that lets every signed-in user read, upload and download (`scripts/seed_policies.py`); access is denied by default |
 | Login | real Keycloak PKCE login for alice, bob and carol. Checks issuer, audience, lifetime and groups. The API accepts access tokens and refuses ID tokens, only carol sees `/admin/users`, and insecure flows are refused |
-| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean before it is downloaded, quarantines a text with a card number and CPFs (no download until carol releases it; a rescan ends the release), and reports an encrypted PDF unscannable; alice shares the clean file with an outside address: the recipient gets a code by email (Mailpit), verifies it and downloads through the gateway, and the revoke stops them; a file released for download only can't be shared |
+| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean before it is downloaded, quarantines a text with a card number and CPFs (no download until carol releases it; a rescan ends the release), and reports an encrypted PDF unscannable; alice shares the clean file with an outside address: the recipient gets a code by email (Mailpit), verifies it and downloads through the gateway, and the revoke stops them; bob, signed in, downloads a file shared with him while carol can't; a file released for download only can't be shared |
 | Observability | Prometheus config and alert rule tests, Loki and Alloy configs, Grafana dashboards, and every Prometheus scrape target up |
 
 ## Try it yourself
@@ -470,6 +470,22 @@ curl -s -X POST http://localhost:8000/shares/access/downloads -H "Content-Type: 
 # {"detail":"Share is revoked"}
 ```
 
+Share with a VaultGate user instead, and they sign in rather than use a code: bob's verified email is bob@example.com.
+
+```bash
+INTERNAL=$(curl -s -X POST http://localhost:8000/files/$FILE_ID/shares -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"recipient_email": "bob@example.com", "recipient_kind": "internal"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["share"]["id"])')
+BOB=$(python3 scripts/vaultgate_login.py --switch-user)   # log in as bob
+curl -s http://localhost:8000/shared-with-me -H "Authorization: Bearer $BOB" | python3 -m json.tool
+BOB_TOKEN=$(curl -s -X POST http://localhost:8000/shared-with-me/$INTERNAL/download -H "Authorization: Bearer $BOB" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+curl -s -H "Authorization: Bearer $BOB_TOKEN" http://localhost:8888/downloads/$FILE_ID; echo
+# hello vault
+```
+
+Carol (`carol@example.com`) sees nothing in her `/shared-with-me`, and bob stays under his own access policies: a deny policy for `/legal` downloads stops him too.
+
 A quarantined file can't be shared (`409`), and a shared file that a rescan quarantines stops downloading for its recipients at once; an admin's release for sharing (`"purpose": "share"`) lets it be shared anyway.
 
 The same in PowerShell, in the window of the PowerShell walkthrough after its step 2, with `$Auth` and `$Id`:
@@ -498,6 +514,8 @@ Invoke-RestMethod "http://localhost:8000/files/$Id/shares" -Headers $Auth | Form
 Invoke-RestMethod -Method Delete "http://localhost:8000/files/$Id/shares/$($Share.share.id)" -Headers $Auth
 try { Invoke-RestMethod -Method Post http://localhost:8000/shares/access/downloads -ContentType 'application/json' -Body (@{ token = $Link; grant = $Grant } | ConvertTo-Json) } catch { $_.Exception.Response.StatusCode }
 ```
+
+In PowerShell, the internal share is the same calls: `Invoke-RestMethod -Method Post "http://localhost:8000/files/$Id/shares"` with `recipient_kind = 'internal'` and `recipient_email = 'bob@example.com'`, then, logged in as bob, `Invoke-RestMethod http://localhost:8000/shared-with-me` and `Invoke-RestMethod -Method Post "http://localhost:8000/shared-with-me/<share id>/download"`.
 
 `vaultgate_api_share_codes_sent_total`, `vaultgate_api_share_verifications_total` and `vaultgate_api_share_downloads_total` count each step; in Loki, `{service="api"} |= "share"` shows them by share, never by address.
 

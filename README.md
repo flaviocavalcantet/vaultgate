@@ -346,7 +346,7 @@ To try the scanner and the scan state by hand, see [Try the PII scanner](docs/lo
 
 The owner of a file shares it with one recipient, named by email address (M5):
 
-- `POST /files/{id}/shares` with `{"recipient_email", "recipient_kind": "external" | "internal", "expires_in_days", "max_downloads"}` needs the `share` action and a file the scan allows to be shared. It returns the share and its link, whose token is shown only then; only the token's SHA-256 is stored. An **external** recipient proves the address with a code sent to it (below); an **internal** one will sign in, with a verified email equal to the address (next M5 step).
+- `POST /files/{id}/shares` with `{"recipient_email", "recipient_kind": "external" | "internal", "expires_in_days", "max_downloads"}` needs the `share` action and a file the scan allows to be shared. It returns the share and its link, whose token is shown only then; only the token's SHA-256 is stored. An **external** recipient proves the address with a code sent to it (below); an **internal** one signs in, with a verified email equal to the address (below). See [ADR 0006](docs/adr/0006-sharing.md).
 - Links last 7 days (`VAULTGATE_SHARE_DEFAULT_DAYS`, at most `VAULTGATE_SHARE_MAX_DAYS`, 30) and allow 5 downloads (`VAULTGATE_SHARE_DEFAULT_DOWNLOADS`, at most `VAULTGATE_SHARE_MAX_DOWNLOADS`, 100); the owner chooses within those bounds. A file has at most `VAULTGATE_MAX_ACTIVE_SHARES_PER_FILE` (50) usable shares at once.
 - `GET /files/{id}/shares` lists them with their state (`active`, `expired`, `used`, `revoked`); `DELETE /files/{id}/shares/{share_id}` revokes one at once. Revoking needs only ownership, so a user who may no longer share can still take links back.
 - The token travels in the link's query string (`.../shares/access?token=...`), which is never logged. Logs name the share, never the recipient's address.
@@ -359,6 +359,12 @@ The owner of a file shares it with one recipient, named by email address (M5):
 4. `POST /shares/access/downloads` with `{"token", "grant"}` returns a single-use download intent for the gateway, as for an owner's download.
 
 Codes and grants are stored as hashes. Every step re-checks that the share is active and that the scan lets the file be shared, and the gateway's consume checks again and counts the download against the share. A revoke, an expiry, the last download or a rescan into quarantine therefore applies at once, also to grants and intents already handed out; a deactivated owner ends their shares too. The owner's own access policies (networks, hours) do not govern the recipient: the owner decided when sharing, and revokes the link to end it.
+
+**Internal recipients** are VaultGate users. They sign in as for anything else; a share is theirs when its address is the verified email in their token (OIDC `email_verified`), so no code is needed and the link grants nothing by itself:
+
+- `GET /shared-with-me` lists the active shares addressed to the caller, with the file name, who shared it, the expiry, the downloads left and whether the file is `available` now (its scan allows sharing). It needs the caller's `read` action.
+- `POST /shared-with-me/{share_id}/download` returns a download intent for the gateway. It needs the caller's `download` action: unlike an outside recipient, a VaultGate user stays under their own access policies, checked again at the gateway with the address it sees.
+- The gateway also checks that the share is active, the owner active, the scan allows sharing and the recipient's verified email is still the share's address, then counts the download. Someone else's share, or one for an unverified address, is reported as not found.
 
 Email goes through SMTP: `VAULTGATE_SMTP_HOST`, `VAULTGATE_SMTP_PORT` (25), `VAULTGATE_SMTP_STARTTLS`, `VAULTGATE_SMTP_USERNAME` / `VAULTGATE_SMTP_PASSWORD`, `VAULTGATE_SMTP_FROM`. Without a host, codes can't be sent (`503`). In compose, [Mailpit](https://mailpit.axllent.org/) catches every message: http://localhost:8025.
 
@@ -400,14 +406,14 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Scan state in the API: status and findings per file, results endpoint, SQS events, re-sending stuck scans
   - [x] Scanner worker: SQS consumer, queue and dead-letter queue in Terraform, compose service, metrics
   - [x] Quarantine: downloads need a clean scan; admin release and rescan; end-to-end check ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md))
-- [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
+- [x] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
   - [x] Scanner reads more encodings: UTF-16 text (spreadsheet "Unicode text" exports), HTML/XML character references, RTF escapes, base64 email attachments
   - [x] Quarantine scope setting, `VAULTGATE_QUARANTINE_BLOCKS`: `download` (default; flagged files are neither downloaded nor shared) or `share` (the owner may download, nothing is shared); per kind later if needed
   - [x] Share links for owners: create (by email, external or internal recipient), list, revoke; the `share` policy action
   - [x] Releases scoped by purpose (download, share), each with its reason; a rescan still ends every release
   - [x] External recipients: a one-time code sent to the address (Mailpit locally), then a download through the gateway, counted against the share's limits
-  - [ ] Internal recipients: sign in; the token's verified email must be the share's address
-  - [ ] End-to-end check of both recipient flows; ADR 0006
+  - [x] Internal recipients: sign in; the token's verified email must be the share's address
+  - [x] End-to-end check of both recipient flows; [ADR 0006](docs/adr/0006-sharing.md)
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)

@@ -23,6 +23,7 @@ def principal(**overrides) -> Principal:
         "subject": "sub-alice",
         "username": "alice",
         "email": "alice@example.com",
+        "email_verified": True,
         "name": "Alice Finance",
         "groups": ("/finance",),
     }

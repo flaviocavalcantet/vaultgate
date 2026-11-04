@@ -61,6 +61,9 @@ class Principal:
     subject: str
     username: str | None
     email: str | None
+    # The provider vouches the user controls `email` (OIDC email_verified). Internal
+    # shares are matched on verified addresses only.
+    email_verified: bool
     name: str | None
     groups: tuple[str, ...]
 
@@ -235,6 +238,7 @@ def _principal(claims: dict[str, Any]) -> Principal:
         subject=claims["sub"],
         username=claims.get("preferred_username"),
         email=claims.get("email"),
+        email_verified=claims.get("email_verified") is True,
         name=claims.get("name"),
         groups=tuple(sorted(groups)),
     )

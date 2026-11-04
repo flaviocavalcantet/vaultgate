@@ -18,7 +18,9 @@ then, as alice:
    deny wins over the seeded allow policy. The `e2e:` policies are always removed;
 7. shares the file with an external address: the recipient gets a code by email
    (from Mailpit), verifies it, downloads the file through the gateway (counted against
-   the share), and loses access when alice revokes the link. Then it checks the other
+   the share), and loses access when alice revokes the link; shares it with bob as a
+   VaultGate user, who finds it under /shared-with-me and downloads it while carol
+   can't. Then it checks the other
    verdicts and quarantine: a text with a test card number and CPFs
    is quarantined with those counts and cannot be downloaded until carol releases it,
    a rescan puts it back in quarantine, and an encrypted PDF is unscannable with the
@@ -235,6 +237,7 @@ def run(args) -> None:
 
     # 7. Share links, PII scans by the worker, and quarantine.
     check_shares(args, file_id, sha256, alice)
+    check_internal_share(args.api, file_id, sha256, alice, bob, carol)
     check_scans(args, alice, carol)
 
 
@@ -340,6 +343,34 @@ def check_shares(args, file_id: str, sha256: str, alice: str) -> None:
     )
     assert status == 410, f"download after revoke: {status}"
     print("ok  shares: a revoked link stops working at once")
+
+
+def check_internal_share(
+    api: str, file_id: str, sha256: str, alice: str, bob: str, carol: str
+) -> None:
+    status, created = api_call(
+        api,
+        "POST",
+        f"/files/{file_id}/shares",
+        alice,
+        {"recipient_email": "bob@example.com", "recipient_kind": "internal"},
+    )
+    assert status == 201, f"internal share: {status}"
+    share_id = created["share"]["id"]
+    status, listed = api_call(api, "GET", "/shared-with-me", bob)
+    assert status == 200, f"shared-with-me: {status}"
+    [item] = [i for i in listed if i["share_id"] == share_id]
+    assert item["shared_by"] == "alice" and item["available"], item
+    status, intent = api_call(api, "POST", f"/shared-with-me/{share_id}/download", bob)
+    assert status == 201, f"internal share download intent: {status}"
+    status, _, got_sha256, _ = download(intent["url"], intent["token"])
+    assert (status, got_sha256) == (200, sha256), (status, got_sha256)
+    status, listed = api_call(api, "GET", "/shared-with-me", carol)
+    assert status == 200 and share_id not in {i["share_id"] for i in listed}, listed
+    status, _ = api_call(api, "POST", f"/shared-with-me/{share_id}/download", carol)
+    assert status == 404, f"carol downloaded bob's share: {status}"
+    assert api_call(api, "DELETE", f"/files/{file_id}/shares/{share_id}", alice)[0] == 204
+    print("ok  shares: bob, signed in with his verified email, downloads a file shared with him")
 
 
 def check_scans(args, alice: str, carol: str) -> None:

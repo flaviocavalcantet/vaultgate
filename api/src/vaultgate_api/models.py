@@ -61,6 +61,8 @@ class User(Base):
     # change, so identity is always (issuer, subject).
     username: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
+    # Whether the provider vouched for the email in the last token (email_verified).
+    email_verified: Mapped[bool] = mapped_column(default=False, server_default="false")
     display_name: Mapped[str | None] = mapped_column(String(255))
     # Local kill switch: an inactive user is refused even with a valid token.
     is_active: Mapped[bool] = mapped_column(default=True, server_default="true")
