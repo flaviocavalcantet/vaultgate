@@ -7,6 +7,7 @@
   (e.g. `feature/m1_identity/token_validation`, `feature/m1_5_observability/grafana_dashboards`).
   Work outside a milestone (developer tooling, CI) uses `feature/tooling/<branch_name>`.
 - One PR per branch. The owner reviews; merge with **squash** only after approval and green CI.
+- One PR open at a time: finish a scope (approved and merged) before opening the next.
 - Commits and PRs are authored as the repository owner. Do **not** add `Co-Authored-By`,
   `Claude-Session` or "Generated with Claude Code" lines to commit messages, PR descriptions
   or squash-merge messages (write the squash message explicitly).

@@ -2,8 +2,9 @@
 
 Access is denied by default (ADR 0004), so a fresh stack refuses every file request
 until a policy allows it. This logs in as carol, the local admin, and creates one
-policy that lets every signed-in user read, upload and download, unless a policy with
-that name exists already. Run it after `make up` (or `make vault-check` does).
+policy that lets every signed-in user read, upload, download and share. If a policy
+with that name exists already, it gets any action it lacks (an older stack's policy
+gains `share`). Run it after `make up` (or `make vault-check` does).
 
     python3 scripts/seed_policies.py [--keycloak URL] [--api URL]
 
@@ -23,7 +24,7 @@ POLICY = {
     "name": "local development: signed-in users",
     "description": "Seeded by scripts/seed_policies.py. Allows everything; local use only.",
     "effect": "allow",
-    "actions": ["read", "upload", "download"],
+    "actions": ["read", "upload", "download", "share"],
 }
 
 
@@ -56,8 +57,16 @@ def main(argv: list[str]) -> int:
     if status != 200:
         print(f"listing policies failed: {status}", file=sys.stderr)
         return 1
-    if any(p["name"] == POLICY["name"] for p in page["items"]):
+    existing = next((p for p in page["items"] if p["name"] == POLICY["name"]), None)
+    if existing and set(POLICY["actions"]) <= set(existing["actions"]):
         print(f"ok  policy already present: {POLICY['name']}")
+        return 0
+    if existing:
+        status, _ = call(api, "PUT", f"/admin/policies/{existing['id']}", carol, POLICY)
+        if status != 200:
+            print(f"updating the policy failed: {status}", file=sys.stderr)
+            return 1
+        print(f"ok  policy updated with every action: {POLICY['name']}")
         return 0
     status, _ = call(api, "POST", "/admin/policies", carol, POLICY)
     if status != 201:

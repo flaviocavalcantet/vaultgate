@@ -124,7 +124,7 @@ async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeRe
     elif file.status != "uploaded":
         await session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
-    elif reason := scans.check_download(file, checked_by="gateway"):
+    elif reason := scans.check(file, "download", checked_by="gateway"):
         # The verdict changed since the intent was issued (a rescan, other quarantine
         # kinds); the intent stays unspent.
         await session.rollback()

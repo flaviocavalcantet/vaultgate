@@ -1,9 +1,9 @@
 """Administration of scanned files: list files by verdict, release a quarantined or
-unscannable file for download, and scan a file again (ADR 0005).
+unscannable file for downloading or for sharing, and scan a file again (ADR 0005).
 
 Restricted to members of VAULTGATE_ADMIN_GROUPS, like the rest of /admin. A release
-needs a reason and records who gave it; it covers the current scan only, so a rescan
-puts the file back in quarantine until the new verdict.
+names its purpose, needs a reason and records who gave it; it covers the current scan
+only, so a rescan puts the file back in quarantine until the new verdict.
 """
 
 import logging
@@ -18,7 +18,7 @@ from sqlalchemy import ColumnElement, and_, exists, func, select
 from vaultgate_api import metrics, scans
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
-from vaultgate_api.models import File, ScanFinding, User
+from vaultgate_api.models import File, ScanFinding, ScanRelease, User
 from vaultgate_api.routers.admin import Limit, Offset, Page, require_admin
 from vaultgate_api.routers.files import FileOut
 
@@ -30,8 +30,8 @@ router = APIRouter(prefix="/admin/files", tags=["admin"], dependencies=[Depends(
 class AdminFileOut(FileOut):
     owner_id: uuid.UUID
     owner_username: str | None
-    # The admin who released the file, while the release stands.
-    released_by: uuid.UUID | None
+    # The admins who gave the releases that stand, by purpose.
+    released_by: dict[str, uuid.UUID | None]
 
     @classmethod
     def of_owned(cls, file: File, owner: User | None) -> "AdminFileOut":
@@ -39,7 +39,9 @@ class AdminFileOut(FileOut):
             **FileOut.of(file).model_dump(),
             owner_id=file.owner_id,
             owner_username=owner.username if owner else None,
-            released_by=file.released_by if scans.released(file) else None,
+            released_by={
+                r.purpose: r.released_by for r in file.releases if scans.released(file, r.purpose)
+            },
         )
 
 
@@ -94,8 +96,9 @@ async def get_scanned_file(file_id: uuid.UUID, session: SessionDep) -> AdminFile
 
 
 class ReleaseRequest(BaseModel):
-    # Why the file may be downloaded despite its verdict; kept with the release.
+    # Why the file may be downloaded, or shared, despite its verdict; kept with it.
     reason: str = Field(min_length=1, max_length=500)
+    purpose: scans.Purpose = "download"
 
 
 @router.post("/{file_id}/release")
@@ -105,8 +108,9 @@ async def release_file(
     admin: Annotated[User, Depends(require_admin)],
     session: SessionDep,
 ) -> AdminFileOut:
-    """Let the owner download a quarantined or unscannable file. A clean file needs no
-    release; a pending one must wait for its verdict."""
+    """Let the owner download a quarantined or unscannable file (purpose "download"),
+    or let it be shared ("share"). A clean file needs no release; a pending one must
+    wait for its verdict."""
     file, owner = await _file(session, file_id, lock=True)
     verdict = scans.verdict(file)
     if verdict not in ("quarantined", "unscannable"):
@@ -115,19 +119,29 @@ async def release_file(
             status.HTTP_409_CONFLICT,
             detail=f"Only quarantined or unscannable files are released; this one is {verdict}",
         )
-    if scans.released(file):
+    if scans.released(file, body.purpose):
         await session.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, detail="File is already released")
-    file.released_at = datetime.now(UTC)
-    file.released_by = admin.id
-    file.release_reason = body.reason
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, detail=f"File is already released for {body.purpose}"
+        )
+    # A release left from an older scan is replaced.
+    file.releases = [r for r in file.releases if r.purpose != body.purpose] + [
+        ScanRelease(
+            purpose=body.purpose,
+            scan_id=file.scan_id,
+            released_at=datetime.now(UTC),
+            released_by=admin.id,
+            reason=body.reason,
+        )
+    ]
     await session.commit()
-    metrics.RELEASES.inc()
+    metrics.RELEASES.labels(body.purpose).inc()
     logger.info(
         "file released from quarantine",
         extra={
             "file_id": str(file.id),
             "verdict": verdict,
+            "purpose": body.purpose,
             "admin_id": str(admin.id),
             "reason": body.reason,
         },
@@ -143,7 +157,7 @@ async def rescan_file(
     queue: scans.ScanQueueDep,
 ) -> AdminFileOut:
     """Scan the file again, for example after the scanner learned a format. Its findings
-    and any release are dropped; it waits for the new verdict like a new upload."""
+    and releases are dropped; it waits for the new verdict like a new upload."""
     file, owner = await _file(session, file_id, lock=True)
     if file.scan_status == "pending":
         await session.rollback()

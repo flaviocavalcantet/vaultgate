@@ -66,6 +66,7 @@ class FindingOut(BaseModel):
 
 
 class ReleaseOut(BaseModel):
+    purpose: scans.Purpose
     released_at: datetime
     reason: str
 
@@ -76,8 +77,8 @@ class ScanOut(BaseModel):
     # Why the file could not be scanned, when it could not.
     reason: str | None
     scanned_at: datetime | None
-    # Set when an admin released a quarantined or unscannable file for download.
-    release: ReleaseOut | None
+    # An admin's releases of a quarantined or unscannable verdict, by purpose.
+    releases: list[ReleaseOut]
 
 
 class FileOut(BaseModel):
@@ -92,24 +93,27 @@ class FileOut(BaseModel):
     uploaded_at: datetime | None
     # None until the upload completes.
     scan: ScanOut | None
-    # Whether POST /files/{id}/download would be allowed by the scan (access policies
-    # still apply): a clean verdict, or a release.
+    # Whether the scan allows downloading the file, and sharing it (access policies
+    # still apply): a clean verdict, a release, or the quarantine scope (ADR 0005).
     downloadable: bool
+    shareable: bool
 
     @classmethod
     def of(cls, file: File) -> "FileOut":
         verdict = scans.verdict(file)
         scan = None
         if verdict is not None:
-            release = None
-            if scans.released(file):
-                release = ReleaseOut(released_at=file.released_at, reason=file.release_reason)
+            releases = [
+                ReleaseOut(purpose=r.purpose, released_at=r.released_at, reason=r.reason)
+                for r in file.releases
+                if scans.released(file, r.purpose)
+            ]
             scan = ScanOut(
                 verdict=verdict,
                 findings=[FindingOut(kind=f.kind, count=f.count) for f in file.findings],
                 reason=file.scan_reason,
                 scanned_at=file.scanned_at,
-                release=release,
+                releases=releases,
             )
         return cls(
             id=file.id,
@@ -122,7 +126,8 @@ class FileOut(BaseModel):
             created_at=file.created_at,
             uploaded_at=file.uploaded_at,
             scan=scan,
-            downloadable=file.status == "uploaded" and scans.blocked(file) is None,
+            downloadable=file.status == "uploaded" and scans.blocked(file, "download") is None,
+            shareable=file.status == "uploaded" and scans.blocked(file, "share") is None,
         )
 
 
@@ -234,7 +239,7 @@ async def create_download(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
     if file.status != "uploaded":
         raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
-    if reason := scans.check_download(file, checked_by="api"):
+    if reason := scans.check(file, "download", checked_by="api"):
         raise HTTPException(status.HTTP_409_CONFLICT, detail=reason)
     token, expires_at = await intents.issue(
         session,
