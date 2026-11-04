@@ -37,7 +37,7 @@ from vaultgate_api.access import DENIED, authorize
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
 from vaultgate_api.logs import RequestContextMiddleware
-from vaultgate_api.models import File, ScanFinding, User
+from vaultgate_api.models import File, ScanFinding, Share, User
 
 logger = logging.getLogger(__name__)
 
@@ -105,17 +105,20 @@ async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeRe
         await session.rollback()
         logger.info("intent of an inactive user refused", extra={"file_id": str(body.file_id)})
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="User is deactivated")
-    decision = await authorize(
-        session,
-        action=body.kind,
-        user=user,
-        client_ip=str(body.client_ip) if body.client_ip else None,
-        checked_by="gateway",
-    )
-    if not decision.allowed:
-        await session.rollback()  # the intent stays unspent
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=DENIED)
+    if intent.share_id is None:
+        decision = await authorize(
+            session,
+            action=body.kind,
+            user=user,
+            client_ip=str(body.client_ip) if body.client_ip else None,
+            checked_by="gateway",
+        )
+        if not decision.allowed:
+            await session.rollback()  # the intent stays unspent
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail=DENIED)
     file = await intents.file_for(session, intent)
+    if intent.share_id is not None:
+        return await _consume_share_download(session, intent, file)
     if body.kind == "upload":
         if file.status != "pending":
             await session.rollback()
@@ -145,6 +148,55 @@ async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeRe
         response.wrapped_key = base64.b64encode(file.wrapped_key).decode()
         response.kms_key_id = file.kms_key_id
     return response
+
+
+async def _consume_share_download(session, intent, file: File) -> ConsumeResponse:
+    """A recipient's download through a share: the share must still be active and the
+    file shareable (a revoke, an expiry or a rescan applies at once), and the download
+    is counted against the share. The owner's access policies are not checked: they
+    decided on sharing when the link was made, and the owner revokes links to end them.
+    """
+    share_id, file_id = intent.share_id, file.id  # for logs: a rollback expires both
+    if file.status != "uploaded":
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
+    if reason := scans.check(file, "share", checked_by="gateway"):
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=reason)
+    now = datetime.now(UTC)
+    counted = await session.scalar(
+        update(Share)
+        .where(
+            Share.id == share_id,
+            Share.revoked_at.is_(None),
+            Share.expires_at > now,
+            Share.downloads < Share.max_downloads,
+        )
+        .values(downloads=Share.downloads + 1)
+        .returning(Share.id)
+    )
+    if counted is None:
+        await session.rollback()
+        logger.info("share download refused", extra={"share_id": str(share_id)})
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Share is no longer active")
+    await session.commit()
+    metrics.SHARE_DOWNLOADS.inc()
+    logger.info(
+        "share download started",
+        extra={"file_id": str(file_id), "share_id": str(share_id)},
+    )
+    return ConsumeResponse(
+        file_id=file.id,
+        owner_id=file.owner_id,
+        storage_key=file.storage_key,
+        declared_size=file.declared_size,
+        content_type=file.content_type,
+        name=file.name,
+        size=file.size,
+        sha256=file.sha256,
+        wrapped_key=base64.b64encode(file.wrapped_key).decode(),
+        kms_key_id=file.kms_key_id,
+    )
 
 
 class CompleteRequest(BaseModel):

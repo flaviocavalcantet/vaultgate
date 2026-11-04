@@ -34,7 +34,7 @@ auth-check:  ## Log in as every seed user through Keycloak and call the API with
 	python3 scripts/keycloak_smoke.py http://localhost:8080 --api http://localhost:8000
 
 vault-check: ## Upload and download a file through the real stack and check it is encrypted in S3 (needs Docker and Terraform)
-	docker compose up -d --build postgres localstack keycloak api gateway scanner
+	docker compose up -d --build postgres localstack keycloak mailpit api gateway scanner
 	for i in $$(seq 60); do curl -sf http://localhost:4566/_localstack/health >/dev/null && break; sleep 2; done
 	$(MAKE) tf-local
 	python3 scripts/seed_policies.py

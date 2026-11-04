@@ -16,13 +16,16 @@ then, as alice:
    that the gateway refuses an intent issued before the policy (and that the refused
    intent stays usable), that the gateway reports a known client address, and that
    deny wins over the seeded allow policy. The `e2e:` policies are always removed;
-7. shares the file with an email address and revokes the link, then checks the other
+7. shares the file with an external address: the recipient gets a code by email
+   (from Mailpit), verifies it, downloads the file through the gateway (counted against
+   the share), and loses access when alice revokes the link. Then it checks the other
    verdicts and quarantine: a text with a test card number and CPFs
    is quarantined with those counts and cannot be downloaded until carol releases it,
    a rescan puts it back in quarantine, and an encrypted PDF is unscannable with the
    reason.
 
     python3 scripts/vault_e2e.py [--keycloak URL] [--api URL] [--s3 URL] [--bucket NAME]
+                                 [--mailpit URL]
 
 Needs the bucket, KMS key and scan queue from `make tf-local`, the scanner worker, and the seeded allow policy from
 scripts/seed_policies.py (`make vault-check` does both). Standard library only, so it
@@ -231,7 +234,7 @@ def run(args) -> None:
         remove_e2e_policies(args.api, carol)
 
     # 7. Share links, PII scans by the worker, and quarantine.
-    check_shares(args.api, file_id, alice)
+    check_shares(args, file_id, sha256, alice)
     check_scans(args, alice, carol)
 
 
@@ -255,19 +258,88 @@ def scan_result(api: str, token: str, file_id: str, timeout: float = 120) -> dic
         time.sleep(1)
 
 
-def check_shares(api: str, file_id: str, alice: str) -> None:
+def mailpit_code(mailpit: str, to: str, after: set[str], timeout: float = 30) -> tuple[str, str]:
+    """The newest code Mailpit caught for an address, from a message not in `after`."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with urllib.request.urlopen(f"{mailpit}/api/v1/messages?limit=50") as response:
+            messages = json.load(response)["messages"]
+        for m in messages:  # newest first
+            if m["ID"] not in after and any(t["Address"] == to for t in m["To"]):
+                return m["ID"], m["Subject"].rsplit(" ", 1)[-1]
+        assert time.monotonic() < deadline, f"no email to {to} after {timeout:.0f}s"
+        time.sleep(0.5)
+
+
+def mailpit_ids(mailpit: str) -> set[str]:
+    with urllib.request.urlopen(f"{mailpit}/api/v1/messages?limit=50") as response:
+        return {m["ID"] for m in json.load(response)["messages"]}
+
+
+def public_call(api: str, method: str, path: str, body: dict | None = None):
+    """A call with no token: the share link's own token authorizes it."""
+    request = urllib.request.Request(
+        f"{api}{path}",
+        data=json.dumps(body).encode() if body is not None else None,
+        method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            raw = response.read()
+            return response.status, json.loads(raw) if raw else None
+    except urllib.error.HTTPError as error:
+        return error.code, None
+
+
+def check_shares(args, file_id: str, sha256: str, alice: str) -> None:
+    api, recipient = args.api, "bob.external@example.com"
     status, created = api_call(
-        api, "POST", f"/files/{file_id}/shares", alice, {"recipient_email": "Bob@Example.com"}
+        api, "POST", f"/files/{file_id}/shares", alice, {"recipient_email": recipient}
     )
     assert status == 201, f"share: {status}"
-    share = created["share"]
-    assert share["recipient_email"] == "bob@example.com" and share["state"] == "active", share
-    assert f"token={created['token']}" in created["url"], created["url"]
+    share, token = created["share"], created["token"]
+    assert share["recipient_email"] == recipient and share["state"] == "active", share
+    assert f"token={token}" in created["url"], created["url"]
+
+    # The recipient: no account; the link and a code sent to the address.
+    query = urllib.parse.urlencode({"token": token})
+    status, described = public_call(api, "GET", f"/shares/access?{query}")
+    assert status == 200 and described["recipient_hint"] == "b***@example.com", described
+    seen = mailpit_ids(args.mailpit)
+    status, _ = public_call(api, "POST", "/shares/access/code", {"token": token})
+    assert status == 202, f"code: {status}"
+    _, code = mailpit_code(args.mailpit, recipient, seen)
+    status, _ = public_call(
+        api,
+        "POST",
+        "/shares/access/verify",
+        {"token": token, "code": "000000" if code != "000000" else "111111"},
+    )
+    assert status == 403, f"wrong code: {status}"
+    status, verified = public_call(
+        api, "POST", "/shares/access/verify", {"token": token, "code": code}
+    )
+    assert status == 200, f"verify: {status}"
+    grant = verified["grant"]
+    status, intent = public_call(
+        api, "POST", "/shares/access/downloads", {"token": token, "grant": grant}
+    )
+    assert status == 201, f"share download intent: {status}"
+    status, _, got_sha256, _ = download(intent["url"], intent["token"])
+    assert (status, got_sha256) == (200, sha256), (status, got_sha256)
+    status, listed = api_call(api, "GET", f"/files/{file_id}/shares", alice)
+    [counted] = [s for s in listed if s["id"] == share["id"]]
+    assert counted["downloads"] == 1, counted
+    print("ok  shares: an external recipient proves the address by email code and downloads")
+
     path = f"/files/{file_id}/shares/{share['id']}"
     assert api_call(api, "DELETE", path, alice)[0] == 204, "revoke"
-    status, listed = api_call(api, "GET", f"/files/{file_id}/shares", alice)
-    assert status == 200 and {s["state"] for s in listed} == {"revoked"}, listed
-    print("ok  shares: alice shares a clean file and revokes the link")
+    status, _ = public_call(
+        api, "POST", "/shares/access/downloads", {"token": token, "grant": grant}
+    )
+    assert status == 410, f"download after revoke: {status}"
+    print("ok  shares: a revoked link stops working at once")
 
 
 def check_scans(args, alice: str, carol: str) -> None:
@@ -358,9 +430,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--api", default="http://localhost:8000")
     parser.add_argument("--s3", default="http://localhost:4566")
     parser.add_argument("--bucket", default="vaultgate-local-vault")
+    parser.add_argument("--mailpit", default="http://localhost:8025")
     parser.add_argument("--size-mib", type=int, default=20)
     args = parser.parse_args(argv)
-    for name in ("keycloak", "api", "s3"):
+    for name in ("keycloak", "api", "s3", "mailpit"):
         setattr(args, name, getattr(args, name).rstrip("/"))
     run(args)
     return 0

@@ -104,6 +104,9 @@ The API, gateway and scanner worker serve Prometheus metrics on a separate port,
 | `vaultgate_api_shares_blocked_total` | counter | `verdict`, `checked_by` | API |
 | `vaultgate_api_shares_created_total` | counter | `kind` | API |
 | `vaultgate_api_shares_revoked_total` | counter | | API |
+| `vaultgate_api_share_codes_sent_total` | counter | | API |
+| `vaultgate_api_share_verifications_total` | counter | `result` (`ok`, `wrong`, `expired`, `exhausted`) | API |
+| `vaultgate_api_share_downloads_total` | counter | | API |
 | `vaultgate_api_rescans_total` | counter | | API |
 | `vaultgate_scanner_jobs_total` | counter | `outcome` (`clean`, `quarantined`, `unscannable`, `stale`, `retry`, `invalid`) | scanner |
 | `vaultgate_scanner_job_duration_seconds` | histogram | | scanner |
@@ -341,12 +344,23 @@ To try the scanner and the scan state by hand, see [Try the PII scanner](docs/lo
 
 ### Sharing
 
-The owner of a file shares it with one recipient, named by email address (M5; the recipient's side is in progress):
+The owner of a file shares it with one recipient, named by email address (M5):
 
-- `POST /files/{id}/shares` with `{"recipient_email", "recipient_kind": "external" | "internal", "expires_in_days", "max_downloads"}` needs the `share` action and a file the scan allows to be shared. It returns the share and its link, whose token is shown only then; only the token's SHA-256 is stored. An **external** recipient will prove the address with a code sent to it; an **internal** one signs in, with a verified email equal to the address.
+- `POST /files/{id}/shares` with `{"recipient_email", "recipient_kind": "external" | "internal", "expires_in_days", "max_downloads"}` needs the `share` action and a file the scan allows to be shared. It returns the share and its link, whose token is shown only then; only the token's SHA-256 is stored. An **external** recipient proves the address with a code sent to it (below); an **internal** one will sign in, with a verified email equal to the address (next M5 step).
 - Links last 7 days (`VAULTGATE_SHARE_DEFAULT_DAYS`, at most `VAULTGATE_SHARE_MAX_DAYS`, 30) and allow 5 downloads (`VAULTGATE_SHARE_DEFAULT_DOWNLOADS`, at most `VAULTGATE_SHARE_MAX_DOWNLOADS`, 100); the owner chooses within those bounds. A file has at most `VAULTGATE_MAX_ACTIVE_SHARES_PER_FILE` (50) usable shares at once.
 - `GET /files/{id}/shares` lists them with their state (`active`, `expired`, `used`, `revoked`); `DELETE /files/{id}/shares/{share_id}` revokes one at once. Revoking needs only ownership, so a user who may no longer share can still take links back.
 - The token travels in the link's query string (`.../shares/access?token=...`), which is never logged. Logs name the share, never the recipient's address.
+
+**External recipients** have no account. The link's token and a code sent to the address authorize them, on public routes:
+
+1. `GET /shares/access?token=...` tells what the link is: the kind of recipient, a hint of the address (`b***@example.com`), the expiry and the downloads left. Nothing about the file before the address is proven.
+2. `POST /shares/access/code` with `{"token"}` emails a 6-digit code to the address. It lasts 10 minutes (`VAULTGATE_SHARE_CODE_TTL_SECONDS`) and allows 5 tries (`VAULTGATE_SHARE_CODE_ATTEMPTS`). At most 5 codes per share an hour (`VAULTGATE_SHARE_CODE_SENDS_PER_HOUR`), 60 s apart (`VAULTGATE_SHARE_CODE_RESEND_SECONDS`); more get `429`.
+3. `POST /shares/access/verify` with `{"token", "code"}` returns a **grant**, shown once, that lasts 30 minutes (`VAULTGATE_SHARE_GRANT_TTL_SECONDS`). A code works once.
+4. `POST /shares/access/downloads` with `{"token", "grant"}` returns a single-use download intent for the gateway, as for an owner's download.
+
+Codes and grants are stored as hashes. Every step re-checks that the share is active and that the scan lets the file be shared, and the gateway's consume checks again and counts the download against the share. A revoke, an expiry, the last download or a rescan into quarantine therefore applies at once, also to grants and intents already handed out; a deactivated owner ends their shares too. The owner's own access policies (networks, hours) do not govern the recipient: the owner decided when sharing, and revokes the link to end it.
+
+Email goes through SMTP: `VAULTGATE_SMTP_HOST`, `VAULTGATE_SMTP_PORT` (25), `VAULTGATE_SMTP_STARTTLS`, `VAULTGATE_SMTP_USERNAME` / `VAULTGATE_SMTP_PASSWORD`, `VAULTGATE_SMTP_FROM`. Without a host, codes can't be sent (`503`). In compose, [Mailpit](https://mailpit.axllent.org/) catches every message: http://localhost:8025.
 
 **Upgrading:** existing policies keep their actions, so sharing is denied until an admin adds `share` to a policy (`make seed-policies` updates the local one).
 
@@ -391,7 +405,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Quarantine scope setting, `VAULTGATE_QUARANTINE_BLOCKS`: `download` (default; flagged files are neither downloaded nor shared) or `share` (the owner may download, nothing is shared); per kind later if needed
   - [x] Share links for owners: create (by email, external or internal recipient), list, revoke; the `share` policy action
   - [x] Releases scoped by purpose (download, share), each with its reason; a rescan still ends every release
-  - [ ] External recipients: a one-time code sent to the address (Mailpit locally), then a download through the gateway, counted against the share's limits
+  - [x] External recipients: a one-time code sent to the address (Mailpit locally), then a download through the gateway, counted against the share's limits
   - [ ] Internal recipients: sign in; the token's verified email must be the share's address
   - [ ] End-to-end check of both recipient flows; ADR 0006
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
