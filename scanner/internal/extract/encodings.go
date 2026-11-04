@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/base64"
-	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -18,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/ianaindex"
 	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
 )
@@ -632,16 +632,18 @@ func transferDecode(encoding string, body []byte) ([]byte, error) {
 
 var wordDecoder = &mime.WordDecoder{CharsetReader: charsetReader}
 
-// charsetReader decodes the legacy charsets of encoded header words; others fail and
-// the header is scanned as written.
+// charsetReader decodes the charset an encoded header word names (any IANA charset Go
+// knows: ISO-8859-*, Windows-125*, GB2312, Shift_JIS, UTF-16...). An unknown one gives
+// the word's bytes as they are, already decoded from base64 or Q: digits are ASCII in
+// nearly every charset, so they are still seen. The header is never left encoded.
 func charsetReader(charset string, input io.Reader) (io.Reader, error) {
-	switch strings.ToLower(charset) {
-	case "iso-8859-1", "latin1", "windows-1252", "cp1252":
-		return charmap.Windows1252.NewDecoder().Reader(input), nil
-	case "iso-8859-15":
-		return charmap.ISO8859_15.NewDecoder().Reader(input), nil
+	if enc, err := ianaindex.MIME.Encoding(charset); err == nil && enc != nil {
+		return enc.NewDecoder().Reader(input), nil
 	}
-	return nil, errors.New("unsupported charset")
+	if enc, err := ianaindex.IANA.Encoding(charset); err == nil && enc != nil {
+		return enc.NewDecoder().Reader(input), nil
+	}
+	return input, nil
 }
 
 // headers writes header fields as text, with encoded words (=?utf-8?b?...?=) decoded.

@@ -325,3 +325,25 @@ func TestLongJSONLinesAreText(t *testing.T) {
 	}
 	expect(t, "large JSON lines entry", found, pii(cpf)...)
 }
+
+// Encoded header words are decoded whatever their charset; an unknown one still has its
+// base64 or Q undone, so ASCII digits show.
+func TestEncodedHeaderWordsInAnyCharset(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString
+	utf16le := encodeUTF16("CPF 529.982.247-25", false, false)
+	for charset, word := range map[string]string{
+		"iso-8859-2":   "=?iso-8859-2?B?" + b64([]byte("CPF 529.982.247-25")) + "?=",
+		"windows-1250": "=?windows-1250?Q?CPF_529.982.247-25?=",
+		"utf-16le":     "=?utf-16le?B?" + b64(utf16le) + "?=",
+		"unknown":      "=?x-made-up?B?" + b64([]byte("CPF 529.982.247-25")) + "?=",
+	} {
+		msg := "From: a@example.com\r\nTo: b@example.com\r\nSubject: " + word + "\r\n\r\nhello\r\n"
+		found, report, err := scan(t, extractor(), []byte(msg))
+		if err != nil || report.Format != FormatEmail {
+			t.Fatalf("%s: %v, %s", charset, err, report.Format)
+		}
+		if !strings.Contains(strings.Join(found, "|"), "br_cpf=529.982.247-25") {
+			t.Errorf("%s: found %q", charset, found)
+		}
+	}
+}
