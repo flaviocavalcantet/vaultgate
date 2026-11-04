@@ -163,6 +163,7 @@ async def send_code(body: TokenIn, session: SessionDep, mailer: MailerDep) -> di
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many codes for this share; try later"
         )
+    previous = (v.sends, v.window_started_at, v.last_sent_at)
     code = f"{secrets.randbelow(10**6):06d}"
     v.code_salt = secrets.token_hex(16)
     v.code_hash = _hash(code, v.code_salt)
@@ -170,27 +171,41 @@ async def send_code(body: TokenIn, session: SessionDep, mailer: MailerDep) -> di
     v.code_attempts = 0
     v.sends += 1
     v.last_sent_at = now
+    code_hash = v.code_hash
     owner = await session.get(User, share.created_by)
     sender = owner.display_name or owner.username or "A VaultGate user"
+    to, file_name, hint = share.recipient_email, file.name, _hint(share.recipient_email)
+    # Committed before the mail goes out: the share's lock must not wait on a slow mail
+    # server, or downloads, revokes and checks of this share would wait with it.
+    await session.commit()
     minutes = settings.share_code_ttl_seconds // 60
     try:
         await mailer.send(
-            share.recipient_email,
+            to,
             f"Your VaultGate code: {code}",
-            f"{sender} shared {file.name} with you on VaultGate.\n\n"
+            f"{sender} shared {file_name} with you on VaultGate.\n\n"
             f"Your code is {code}. It expires in {minutes} minutes.\n\n"
             "If you did not expect this, ignore this message.\n",
         )
     except MailUnavailable:
-        await session.rollback()
+        # Nothing was sent: the code goes, and the send does not count.
+        v = await session.scalar(
+            select(ShareVerification)
+            .where(ShareVerification.share_id == share.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if v is not None and v.code_hash == code_hash:  # not replaced since
+            v.code_hash = v.code_salt = v.code_expires_at = None
+            v.sends, v.window_started_at, v.last_sent_at = previous
+            await session.commit()
         logger.warning("share code not sent", extra={"share_id": share_id})
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, detail="The code could not be sent; try later"
         ) from None
-    await session.commit()
     metrics.SHARE_CODES_SENT.inc()
     logger.info("share code sent", extra={"share_id": share_id})
-    return {"sent_to": _hint(share.recipient_email), "expires_in": settings.share_code_ttl_seconds}
+    return {"sent_to": hint, "expires_in": settings.share_code_ttl_seconds}
 
 
 @router.post("/verify")

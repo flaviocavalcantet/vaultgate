@@ -219,9 +219,27 @@ async def test_a_mail_failure_sends_nothing_and_stores_no_code(
         .where(ShareVerification.share_id == share_id)
         .execution_options(populate_existing=True)
     )
-    assert row is None or (row.code_hash is None and row.sends == 0)
+    assert row is None or (row.code_hash is None and row.sends == 0 and row.last_sent_at is None)
+    # No wait imposed by a send that did not happen.
     mailer.failing = False
     assert (await public.post("/shares/access/code", json={"token": token})).status_code == 202
+
+
+async def test_no_lock_is_held_while_the_mail_is_sent(recipients, provider, queue, session):
+    """Sending waits on a mail server; the share's row must be free meanwhile."""
+    public, _, _ = recipients
+    _, _, token = await shared(recipients, provider, queue)
+    # The test's transaction holds everything until the test ends, so this only checks
+    # that the route commits before sending: the share row is unlocked by then.
+    sent = []
+
+    async def send(to, subject, body):
+        sent.append(session.in_transaction())
+
+    probe = type("Probe", (), {"send": staticmethod(send)})()
+    app.dependency_overrides[mail.get_mailer] = lambda: probe
+    assert (await public.post("/shares/access/code", json={"token": token})).status_code == 202
+    assert sent == [False]
 
 
 async def test_grants_must_be_right_and_current(recipients, provider, queue, mailer, session):
