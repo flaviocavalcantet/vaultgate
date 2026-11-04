@@ -227,3 +227,22 @@ func TestTextWithAColonIsNotAnEmail(t *testing.T) {
 		expect(t, s, found, pii(card, cpf)...)
 	}
 }
+
+// Large entries are streamed as text, which would skip RTF escapes and email
+// decoding: such an entry is refused instead.
+func TestLargeRTFOrEmailEntriesAreUnscannable(t *testing.T) {
+	small := extractor()
+	small.Limits.MaxDocumentBytes = 4096
+	padding := strings.Repeat("filler ", 1000)
+	bigEmail := "From: a@example.com\r\nTo: b@example.com\r\nContent-Transfer-Encoding: base64\r\n\r\n" +
+		b64Lines([]byte(padding+text))
+	bigRTF := `{\rtf1 ` + padding + `Card \'34111 1111 1111 1111}`
+	assertUnscannable(t, "large email entry", small, zipOf(t, entry{name: "big.eml", data: []byte(bigEmail)}))
+	assertUnscannable(t, "large RTF entry", small, zipOf(t, entry{name: "big.rtf", data: []byte(bigRTF)}))
+	// Large plain text is still streamed and scanned.
+	found, _, err := scan(t, small, zipOf(t, entry{name: "big.txt", data: []byte(padding + text)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, "large text entry", found, pii(card, cpf)...)
+}

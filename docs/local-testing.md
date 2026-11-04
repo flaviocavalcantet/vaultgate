@@ -311,7 +311,9 @@ Try your own files too: Word, Excel, PowerPoint, OpenDocument, PDF (attachments 
 ```bash
 printf 'CPF 529.982.247-25' | iconv -t UTF-16 > /tmp/utf16.txt && ./scanner /tmp/utf16.txt
 echo 'CPF 529&#46;982&#46;247-25' > /tmp/refs.html && ./scanner /tmp/refs.html
-``` A file the scanner can't read completely (encrypted, damaged, over a size or expansion limit) exits with status 3: it is never reported as clean. The kinds are `payment_card`, `br_cpf` and `email`.
+```
+
+A file the scanner can't read completely (encrypted, damaged, over a size or expansion limit) exits with status 3: it is never reported as clean. The kinds are `payment_card`, `br_cpf` and `email`.
 
 The same in PowerShell:
 

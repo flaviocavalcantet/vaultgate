@@ -299,6 +299,11 @@ func (x *run) entry(f *zip.File, container Format, depth int) error {
 		_, err = x.document(bytes.NewReader(data), int64(len(data)), depth+1)
 		return err
 	}
+	// Streamed text is decoded only as text: an RTF document or an email that large
+	// would be read without its escapes and encoded parts, so it is refused instead.
+	if head := data[:min(len(data), headBytes)]; isRTF(head) || isEmail(head) {
+		return unscannable("archive entry %q is over the size limit and is an RTF document or an email", f.Name)
+	}
 	x.parts++
 	text := newTextWriter(x.w)
 	sniff := &containerSniffer{w: text, name: f.Name}
