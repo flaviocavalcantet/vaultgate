@@ -368,6 +368,9 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Scanner worker: SQS consumer, queue and dead-letter queue in Terraform, compose service, metrics
   - [x] Quarantine: downloads need a clean scan; admin release and rescan; end-to-end check ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md))
 - [ ] **M5 — Sharing:** signed expiring links, download limits, recipient email verification
+  - [ ] Scanner reads more encodings: UTF-16 text (spreadsheet "Unicode text" exports), HTML/XML character references, RTF escapes, base64 email attachments
+  - [ ] Quarantine scope setting, `VAULTGATE_QUARANTINE_BLOCKS`: `download` (default; flagged files are neither downloaded nor shared) or `share` (the owner may download, nothing is shared); per kind later if needed
+  - [ ] Releases scoped by purpose (download, share), each with its reason; a rescan still ends every release
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
@@ -385,7 +388,8 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [ ] ADR: at-least-once delivery and idempotent effects; building the runtime compared with Temporal or DBOS
 - [ ] **M13 — Agent tools and governance:** the model proposes, VaultGate decides
   - [ ] MCP server with strict schemas; the user's identity comes from the job, never from the model
-  - [ ] Tools go through access policies and intents; quarantined files never reach the model; parsers run in the WebAssembly sandbox
+  - [ ] Tools go through access policies and intents; parsers run in the WebAssembly sandbox
+  - [ ] Agent reads count as sharing: pending, quarantined and unscannable content never reaches the model, whatever the quarantine scope; agents see only the verdict and the kinds and counts, and a release must name the agent purpose
   - [ ] Human approval as a job state, re-checked when the approved action runs
   - [ ] Security benchmark: prompt injection inside real documents, other users' files, malicious tool arguments
 - [ ] **M14 — Agent observability and cost:** builds on the M6 traces
