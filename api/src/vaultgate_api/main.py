@@ -24,6 +24,7 @@ from vaultgate_api.routers import (
     me,
     policies,
     share_access,
+    shared_with_me,
     shares,
 )
 
@@ -68,6 +69,7 @@ protected.include_router(admin_files.router)
 protected.include_router(policies.router)
 protected.include_router(files.router)
 protected.include_router(shares.router)
+protected.include_router(shared_with_me.router)
 app.include_router(protected)
 
 # Public: /healthz (liveness), /readyz (database reachable), /shares/access (share
@@ -76,7 +78,8 @@ app.include_router(protected)
 #            /admin/users, /admin/groups, /admin/policies, /admin/files (members
 #            of VAULTGATE_ADMIN_GROUPS only; never subject to access policies),
 #            /files (the caller's files; POST returns a single-use upload intent),
-#            /files/{id}/shares (share links for one of the caller's files).
+#            /files/{id}/shares (share links for one of the caller's files),
+#            /shared-with-me (internal shares addressed to the caller's verified email).
 # Internal (separate app and port, gateway only): see vaultgate_api.internal.
 # Planned routers (see README roadmap):
 #   files    - file metadata, upload intents, scan status

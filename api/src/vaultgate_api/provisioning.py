@@ -79,6 +79,7 @@ def _update_profile(user: User, principal: Principal, now: datetime) -> bool:
     for attr, value in (
         ("username", principal.username),
         ("email", principal.email),
+        ("email_verified", principal.email_verified),
         ("display_name", principal.name),
     ):
         if getattr(user, attr) != value:
