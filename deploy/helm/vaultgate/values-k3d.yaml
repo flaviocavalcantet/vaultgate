@@ -43,3 +43,12 @@ gateway:
 
 networkPolicy:
   enabled: true
+
+# Prometheus (kube-prometheus-stack) finds the services through ServiceMonitors, and
+# traces go to Alloy in the monitoring namespace (deploy/k3d/observability).
+metrics:
+  podAnnotations: false
+  serviceMonitor:
+    enabled: true
+tracing:
+  otlpEndpoint: http://alloy.monitoring:4318

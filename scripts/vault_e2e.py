@@ -312,7 +312,9 @@ def check_traces(args, file_id: str) -> None:
         found = get_json(
             f"{args.tempo}/api/search", {"q": query, "start": now - 3600, "end": now + 3600}
         )["traces"]
-        return found[0]["traceID"] if found else None
+        # Tempo's search drops leading zeros from trace IDs; log lines carry all 32 hex
+        # digits, and Loki matches them as text.
+        return found[0]["traceID"].rjust(32, "0") if found else None
 
     trace_id = eventually(upload_trace, what="the upload's trace in Tempo")
     spans = eventually(

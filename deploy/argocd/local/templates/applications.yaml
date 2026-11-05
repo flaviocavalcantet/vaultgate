@@ -1,5 +1,7 @@
-# The dependencies first (sync wave 0), then VaultGate (wave 1). The API waits for
-# PostgreSQL by restarting until its migrations run; the startup probe allows for it.
+# The dependencies and the Prometheus Operator first (sync wave 0), then the
+# observability that needs the operator's CRDs (wave 1), then VaultGate (wave 2), whose
+# ServiceMonitors need them too. A sync that runs before what it needs is ready fails
+# and is retried; the API waits for PostgreSQL by restarting until its migrations run.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -20,6 +22,7 @@ spec:
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     syncOptions: ["CreateNamespace=true"]
+    retry: { limit: 10, backoff: { duration: 15s, factor: 2, maxDuration: 5m } }
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -27,7 +30,7 @@ metadata:
   name: vaultgate
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "2"
   finalizers: [resources-finalizer.argocd.argoproj.io]
 spec:
   project: default
@@ -44,3 +47,59 @@ spec:
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     syncOptions: ["CreateNamespace=true"]
+    retry: { limit: 10, backoff: { duration: 15s, factor: 2, maxDuration: 5m } }
+---
+# Prometheus Operator, Prometheus, Alertmanager and Grafana (ADR 0010): the upstream
+# chart at a pinned version, with deploy/k3d/kube-prometheus-stack.yaml from this repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      targetRevision: {{ .Values.kubePrometheusStack }}
+      helm:
+        releaseName: kps
+        valueFiles: ["$values/deploy/k3d/kube-prometheus-stack.yaml"]
+    - repoURL: {{ .Values.repoURL }}
+      targetRevision: {{ .Values.revision }}
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    # The operator's CRDs are too large for client-side apply's annotation.
+    syncOptions: ["CreateNamespace=true", "ServerSideApply=true"]
+    retry: { limit: 10, backoff: { duration: 15s, factor: 2, maxDuration: 5m } }
+---
+# Loki, Tempo and Alloy, and VaultGate's alert rules, dashboards and data sources, from
+# the same files as compose (deploy/k3d/observability).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vaultgate-observability
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  source:
+    repoURL: {{ .Values.repoURL }}
+    targetRevision: {{ .Values.revision }}
+    path: deploy/k3d/observability
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: ["CreateNamespace=true"]
+    retry: { limit: 10, backoff: { duration: 15s, factor: 2, maxDuration: 5m } }

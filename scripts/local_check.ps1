@@ -469,7 +469,8 @@ function Test-Observability {
             'grafana/loki:3.3.2', '-config.file=/cfg/loki.yml', '-verify-config'),
         @('run', '--rm', '-v', "$repo/observability/tempo/tempo.yml:/cfg/tempo.yml:ro",
             'grafana/tempo:2.6.1', '-config.file=/cfg/tempo.yml', '-config.verify=true'),
-        @('run', '--rm', '-v', "$repo/observability/alloy:/cfg:ro", 'grafana/alloy:v1.5.1', 'fmt', '-t', '/cfg/config.alloy')
+        @('run', '--rm', '-v', "$repo/observability/alloy:/cfg:ro", 'grafana/alloy:v1.5.1', 'fmt', '-t', '/cfg/config.alloy'),
+        @('run', '--rm', '-v', "$repo/observability/alloy:/cfg:ro", 'grafana/alloy:v1.5.1', 'fmt', '-t', '/cfg/kubernetes.alloy')
     )
     $ok = $true
     foreach ($dockerArgs in $checks) { if (-not (Invoke-Docker $dockerArgs)) { $ok = $false } }

@@ -1,0 +1,64 @@
+# Single-binary Tempo, with the compose config: local storage, 7 days.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo
+data:
+  tempo.yml: |- {{- .Files.Get "files/tempo.yml" | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tempo
+  labels: { app.kubernetes.io/name: tempo }
+spec:
+  serviceName: tempo
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: tempo }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: tempo }
+      annotations:
+        checksum/config: {{ .Files.Get "files/tempo.yml" | sha256sum }}
+    spec:
+      securityContext: { runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true }
+      containers:
+        - name: tempo
+          image: {{ .Values.images.tempo }}
+          args: ["-config.file=/etc/tempo/tempo.yml"]
+          ports:
+            - { name: http, containerPort: 3200 }
+            - { name: otlp-grpc, containerPort: 4317 }
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/tempo, readOnly: true }
+            - { name: data, mountPath: /var/tempo }
+      volumes:
+        - name: config
+          configMap: { name: tempo }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 2Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  labels: { app.kubernetes.io/name: tempo }
+spec:
+  selector: { app.kubernetes.io/name: tempo }
+  ports:
+    - { name: http, port: 3200, targetPort: http }
+    # Alloy forwards here; the services never send to Tempo directly.
+    - { name: otlp-grpc, port: 4317, targetPort: otlp-grpc }

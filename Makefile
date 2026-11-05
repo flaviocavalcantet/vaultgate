@@ -25,6 +25,7 @@ obs-check:   ## Check Prometheus config and alert rules (with unit tests), Loki,
 	docker run --rm -v $(CURDIR)/observability/loki/loki.yml:/cfg/loki.yml:ro grafana/loki:3.3.2 -config.file=/cfg/loki.yml -verify-config
 	docker run --rm -v $(CURDIR)/observability/tempo/tempo.yml:/cfg/tempo.yml:ro grafana/tempo:2.6.1 -config.file=/cfg/tempo.yml -config.verify=true
 	docker run --rm -v $(CURDIR)/observability/alloy:/cfg:ro grafana/alloy:v1.5.1 fmt -t /cfg/config.alloy
+	docker run --rm -v $(CURDIR)/observability/alloy:/cfg:ro grafana/alloy:v1.5.1 fmt -t /cfg/kubernetes.alloy
 	python3 scripts/check_dashboards.py observability/grafana/dashboards
 
 token:       ## Log in through Keycloak in the browser and print an access token (TOKEN=$$(make -s token))

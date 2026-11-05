@@ -1,0 +1,5 @@
+apiVersion: v2
+name: vaultgate-observability
+description: "VaultGate's observability on the local cluster: Loki, Tempo and Alloy, the alert rules, dashboards and data sources (ADR 0010)"
+type: application
+version: 0.1.0

@@ -1,8 +1,9 @@
 # Alert rules for VaultGate. Evaluated by Prometheus; unit tests live next to this
 # file (vaultgate_test.yml) and run with `promtool test rules` in CI.
 #
-# No Alertmanager yet: firing alerts are visible in Prometheus (Alerts tab) and in
-# Grafana. Routing to on-call channels comes with the Kubernetes milestone (M7).
+# Under docker compose, firing alerts are visible in Prometheus (Alerts tab) and in
+# Grafana. On the local k3d cluster the same rules (a PrometheusRule, from this file)
+# go through Alertmanager, which mails them to Mailpit (deploy/k3d/kube-prometheus-stack.yaml).
 groups:
   - name: vaultgate.availability
     rules:
@@ -14,6 +15,19 @@ groups:
         annotations:
           summary: "{{ $labels.job }} metrics endpoint is down"
           description: "Prometheus has not scraped {{ $labels.instance }} for 2 minutes; the service is down or its metrics port is unreachable."
+
+      # A service with nothing left to scrape, which TargetDown cannot see: on Kubernetes,
+      # a Deployment scaled to zero or with no ready pod has no targets at all. Under
+      # compose the targets are a fixed list and never go missing.
+      - alert: VaultGateTargetMissing
+        expr: |
+          absent(up{job="api"}) or absent(up{job="gateway"}) or absent(up{job="scanner"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} has no metrics target"
+          description: "Prometheus has had no {{ $labels.job }} target to scrape for 5 minutes: no pod runs, or its ServiceMonitor or scrape config is gone."
 
       - alert: VaultGateObservabilityDown
         expr: up{job=~"loki|alloy"} == 0

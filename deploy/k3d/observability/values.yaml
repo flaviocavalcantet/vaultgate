@@ -1,0 +1,19 @@
+# The same images as docker compose; the configs are the compose ones too (files/
+# links to observability/), except Alloy's, which reads pod log files instead of the
+# Docker socket (observability/alloy/kubernetes.alloy).
+images:
+  loki: grafana/loki:3.3.2
+  tempo: grafana/tempo:2.6.1
+  alloy: grafana/alloy:v1.5.1
+
+# kube-prometheus-stack's release name (fullnameOverride), for the alias Service the
+# data sources expect (http://prometheus:9090) and the host ports below.
+kps: kps
+
+# Host access (deploy/k3d/cluster.yaml publishes these node ports on compose's ports).
+nodePorts:
+  grafana: 30300
+  prometheus: 30090
+  alertmanager: 30093
+  loki: 30310
+  tempo: 30320

@@ -1,0 +1,39 @@
+# VaultGate's alert rules, dashboards and data sources: the files compose uses, read
+# by the Prometheus Operator and Grafana's sidecars.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vaultgate
+spec: {{- .Files.Get "files/rules.yml" | fromYaml | toYaml | nindent 2 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vaultgate-datasources
+  labels:
+    grafana_datasource: "1"
+data:
+  datasources.yml: |- {{- .Files.Get "files/datasources.yml" | nindent 4 }}
+{{- range $path, $_ := .Files.Glob "files/dashboards/*.json" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vaultgate-dashboard-{{ base $path | trimSuffix ".json" }}
+  labels:
+    grafana_dashboard: "1"
+data:
+  {{ base $path }}: |- {{- $.Files.Get $path | nindent 4 }}
+{{- end }}
+---
+# The data sources expect Prometheus at http://prometheus:9090, as in compose.
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  selector:
+    app.kubernetes.io/name: prometheus
+    operator.prometheus.io/name: {{ .Values.kps }}-prometheus
+  ports:
+    - { name: http, port: 9090, targetPort: 9090 }

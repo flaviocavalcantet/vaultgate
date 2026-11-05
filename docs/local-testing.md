@@ -580,6 +580,10 @@ What `k3d-check` proves on top of the vault check:
 | Argo CD | the root application, the dependencies and VaultGate are all `Synced` and `Healthy`: the cluster runs what git says |
 | Autoscaler | the gateway's HorizontalPodAutoscaler reads CPU utilization from metrics-server, so it can scale |
 | Network policy | a pod that is neither the gateway nor the scanner reaches the API's public port but not its internal one (8001, which hands out storage keys and wrapped data keys) |
+| Prometheus | scrapes the API, gateway and scanner (through the chart's ServiceMonitors) and Loki, Tempo and Alloy, all up |
+| Grafana | has the VaultGate dashboards and the Prometheus, Loki and Tempo data sources, from the same files as compose |
+| Alertmanager | mailed its Watchdog heartbeat to Mailpit: rules, routing and SMTP all work |
+| Traces | the vault check's last step runs too: the upload's trace in Tempo, from the gateway to the scanner, and its log lines in Loki |
 
 Every walkthrough above works unchanged against the cluster, since the ports are the same. Argo CD syncs the branch you are on, which must be pushed; set `VAULTGATE_REVISION` to try another branch or a commit. After changing code, `make k3d-images` rebuilds and pushes the images and restarts the pods. To look around:
 
@@ -592,7 +596,7 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.pas
 make k3d-down      # delete the cluster
 ```
 
-The cluster has no metrics, logs or traces stack yet; it comes with the next M7 step. Until then `k3d-check` skips the trace check.
+Grafana (http://localhost:3000, admin / admin), Prometheus (9090) and Mailpit (8025) are where compose has them; Alertmanager is on http://localhost:9093. Alerts arrive in Mailpit: a minute after `k3d-up`, the Watchdog heartbeat is there, addressed to `heartbeat@vaultgate.local` (it always fires, so it shows rules, routing and SMTP work). VaultGate's own alerts go to `oncall@vaultgate.local`, with a second mail when they resolve.
 
 ## Troubleshooting
 
