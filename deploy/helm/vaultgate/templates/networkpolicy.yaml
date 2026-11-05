@@ -1,0 +1,46 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $api := dict "root" . "name" "api" }}
+# Ingress rules only: what may connect to each component. The API's internal port,
+# which hands out storage keys and wrapped data keys, accepts only the gateway and the
+# scanner. Public ports accept anyone (the ingress controller); metrics ports accept
+# any pod (Prometheus).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "vaultgate.fullname" $api }}
+  labels: {{- include "vaultgate.labels" $api | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "vaultgate.selector" $api | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { port: http }
+        - { port: metrics }
+    - ports:
+        - { port: internal }
+      from:
+        - podSelector:
+            matchLabels: {{- include "vaultgate.selector" (dict "root" . "name" "gateway") | nindent 14 }}
+        - podSelector:
+            matchLabels: {{- include "vaultgate.selector" (dict "root" . "name" "scanner") | nindent 14 }}
+{{- range $name := list "gateway" "scanner" }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "vaultgate.selector" $ctx | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        {{- if eq $name "gateway" }}
+        - { port: http }
+        {{- end }}
+        - { port: metrics }
+{{- end }}
+{{- end }}

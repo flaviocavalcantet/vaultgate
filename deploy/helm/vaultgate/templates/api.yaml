@@ -1,0 +1,90 @@
+{{- $ctx := dict "root" . "name" "api" }}
+{{- $api := .Values.api }}
+# The control plane. Migrations run as it starts, one replica at a time (they hold a
+# Postgres advisory lock).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  replicas: {{ $api.replicas }}
+  selector:
+    matchLabels: {{- include "vaultgate.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "vaultgate.labels" $ctx | nindent 8 }}
+      {{- with include "vaultgate.podAnnotations" $ctx | trim }}
+      annotations: {{- . | nindent 8 }}
+      {{- end }}
+    spec:
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      automountServiceAccountToken: false
+      containers:
+        - name: api
+          image: {{ include "vaultgate.image" $ctx }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{- include "vaultgate.commonEnv" . | nindent 12 }}
+            - name: VAULTGATE_PORT
+              value: {{ $api.port | quote }}
+            - name: VAULTGATE_INTERNAL_PORT
+              value: {{ $api.internalPort | quote }}
+            - name: VAULTGATE_PUBLIC_API_URL
+              value: {{ $api.publicUrl | quote }}
+            - name: VAULTGATE_GATEWAY_PUBLIC_URL
+              value: {{ $api.gatewayPublicUrl | quote }}
+            - name: VAULTGATE_OIDC_ISSUER
+              value: {{ $api.oidc.issuer | quote }}
+            - name: VAULTGATE_OIDC_AUDIENCE
+              value: {{ $api.oidc.audience | quote }}
+            {{- with $api.oidc.discoveryUrl }}
+            - name: VAULTGATE_OIDC_DISCOVERY_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.scanQueueUrl }}
+            - name: VAULTGATE_SCAN_QUEUE_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.trustedProxies }}
+            - name: VAULTGATE_TRUSTED_PROXIES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $api.smtp.host }}
+            - name: VAULTGATE_SMTP_HOST
+              value: {{ . | quote }}
+            - name: VAULTGATE_SMTP_PORT
+              value: {{ $api.smtp.port | quote }}
+            {{- end }}
+            {{- include "vaultgate.secretEnv" (dict "root" . "env" "VAULTGATE_DATABASE_URL" "key" "database-url") | nindent 12 }}
+            {{- include "vaultgate.secretEnv" (dict "root" . "env" "VAULTGATE_INTERNAL_TOKEN" "key" "internal-token") | nindent 12 }}
+            {{- include "vaultgate.secretEnv" (dict "root" . "env" "VAULTGATE_SCANNER_TOKEN" "key" "scanner-token") | nindent 12 }}
+            {{- include "vaultgate.extraEnv" $api.env | nindent 12 }}
+          ports:
+            - { name: http, containerPort: {{ $api.port }} }
+            - { name: internal, containerPort: {{ $api.internalPort }} }
+            - { name: metrics, containerPort: {{ .Values.metrics.port }} }
+          readinessProbe: { httpGet: { path: {{ $api.readinessPath }}, port: http } }
+          livenessProbe: { httpGet: { path: /healthz, port: http } }
+          # Room for the migrations on a first start.
+          startupProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 5, failureThreshold: 36 }
+          securityContext: {{- include "vaultgate.containerSecurityContext" . | nindent 12 }}
+          resources: {{- toYaml $api.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  selector: {{- include "vaultgate.selector" $ctx | nindent 4 }}
+  ports:
+    - { name: http, port: {{ $api.port }}, targetPort: http }
+    # For the gateway and the scanner only. Never expose this port through an Ingress.
+    - { name: internal, port: {{ $api.internalPort }}, targetPort: internal }
+    # In-cluster only. Never expose this port through an Ingress.
+    - { name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics }

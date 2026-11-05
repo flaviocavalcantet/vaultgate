@@ -1,7 +1,7 @@
 {{- if .Values.metrics.serviceMonitor.enabled }}
 # Scrape config for clusters running the Prometheus Operator (kube-prometheus-stack).
 # Requires the monitoring.coreos.com/v1 CRDs; leave disabled otherwise.
-{{- range $name := list "api" "gateway" }}
+{{- range $name := list "api" "gateway" "scanner" }}
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
@@ -18,7 +18,7 @@ spec:
   # work unchanged in the cluster.
   jobLabel: app.kubernetes.io/name
   selector:
-    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/part-of: vaultgate }
+    matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/instance: {{ $.Release.Name }} }
   endpoints:
     - port: metrics
       path: /metrics

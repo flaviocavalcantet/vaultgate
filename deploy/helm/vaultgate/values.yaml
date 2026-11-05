@@ -1,13 +1,67 @@
+# VaultGate on Kubernetes: the API, the streaming gateway and the PII scanner worker.
+# Dependencies (PostgreSQL, S3, KMS, SQS, an OIDC provider, SMTP) are not part of this
+# chart; point the settings below at them. deploy/k3d holds the values for the local
+# cluster, where they run in-cluster too.
+
 image:
+  # Images are named <registry>/vaultgate-<api|gateway|scanner>:<tag>.
   registry: ghcr.io/flaviocavalcantet
   tag: "0.1.0"
   pullPolicy: IfNotPresent
 
+# Settings shared by the services that use them.
+aws:
+  region: ap-northeast-1
+  # LocalStack, for local clusters; empty in AWS.
+  endpointUrl: ""
+storage:
+  bucket: vaultgate-local-vault
+  kmsKeyId: alias/vaultgate-local
+scanQueueUrl: ""
+# Reverse proxies (the ingress controller) whose X-Forwarded-For is believed,
+# comma-separated networks. Proxy addresses only, never client networks.
+trustedProxies: ""
+
+# Credentials, read from one Secret with the keys:
+#   database-url           PostgreSQL URL for the API (postgresql+asyncpg://...)
+#   internal-token         the gateway's secret for the API's internal routes
+#   scanner-token          the scanner's secret for its internal routes
+#   aws-access-key-id      optional: leave out to use the pod's identity (IRSA)
+#   aws-secret-access-key  optional, likewise
+secrets:
+  name: vaultgate
+  # Create that Secret from the values below. For local clusters only: elsewhere it is
+  # created out of band (External Secrets, Sealed Secrets, Vault), so no credential
+  # lives in git.
+  create: false
+  databaseUrl: ""
+  internalToken: ""
+  scannerToken: ""
+  awsAccessKeyId: ""
+  awsSecretAccessKey: ""
+
 api:
   replicas: 2
   port: 8000
+  # The gateway's and the scanner's port; reachable from those pods only when
+  # networkPolicy.enabled.
+  internalPort: 8001
   # /readyz also checks the database, so a pod without one receives no traffic.
   readinessPath: /readyz
+  # Where clients reach the API and the gateway; links and intents carry these.
+  publicUrl: http://localhost:8000
+  gatewayPublicUrl: http://localhost:8888
+  oidc:
+    # Must equal the tokens' iss claim.
+    issuer: http://localhost:8080/realms/vaultgate
+    # Where the API fetches discovery and keys, when not at the issuer's address.
+    discoveryUrl: ""
+    audience: vaultgate-api
+  smtp:
+    host: ""
+    port: 25
+  # Any other VAULTGATE_* setting (see the README), as NAME: value.
+  env: {}
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { memory: 256Mi }
@@ -16,10 +70,49 @@ gateway:
   replicas: 2
   port: 8888
   readinessPath: /healthz
+  env: {}
   resources:
-    requests: { cpu: 100m, memory: 128Mi }
+    # The CPU request is what the autoscaler's utilization is measured against.
+    requests: { cpu: 200m, memory: 128Mi }
     # Memory stays flat regardless of upload size; that is the point of streaming.
     limits: { memory: 256Mi }
+  # Horizontal Pod Autoscaler on CPU, which tracks the encryption work (ADR 0003).
+  # While enabled, the autoscaler owns the replica count (replicas above is ignored).
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+scanner:
+  replicas: 1
+  # Files scanned at once per pod; each holds a PDF engine of up to 512 MiB.
+  concurrency: 2
+  env: {}
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1536Mi }
+
+# Optional Ingress for the API and the gateway (e.g. Traefik in k3d).
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  apiHost: api.vaultgate.localhost
+  gatewayHost: gateway.vaultgate.localhost
+  # TLS for those hosts, as Ingress spec.tls: [{ secretName: ..., hosts: [...] }].
+  # Anywhere but a local cluster, bearer tokens and files must not travel in plain HTTP:
+  # set it (cert-manager issues the certificate from it, with its annotation above).
+  tls: []
+
+# NetworkPolicies: the API's internal port only from the gateway and scanner pods; the
+# public ports and the metrics port stay open. Needs a CNI that enforces them (k3s does).
+networkPolicy:
+  enabled: false
+
+# Voluntary disruptions (node drains, upgrades) take down one API or gateway pod at a time.
+podDisruptionBudget:
+  enabled: true
 
 # Traces (ADR 0008): an OTLP/HTTP endpoint, such as an in-cluster Alloy or OpenTelemetry
 # Collector (http://alloy.monitoring:4318). Empty, the services record no spans.
@@ -29,6 +122,7 @@ tracing:
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 10001
+  runAsGroup: 10001
   seccompProfile: { type: RuntimeDefault }
 
 # Prometheus metrics, served on a separate port that is never routed publicly.

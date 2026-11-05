@@ -1,0 +1,34 @@
+{{- if .Values.ingress.enabled }}
+{{- $ing := .Values.ingress }}
+# The public ports only: the API's internal port and every metrics port stay in-cluster.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/part-of: vaultgate
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  {{- with $ing.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $ing.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with $ing.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ $ing.apiHost }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: {{ .Release.Name }}-api, port: { name: http } } }
+    - host: {{ $ing.gatewayHost }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: {{ .Release.Name }}-gateway, port: { name: http } } }
+{{- end }}

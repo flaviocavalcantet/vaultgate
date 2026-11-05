@@ -1,0 +1,65 @@
+{{- $ctx := dict "root" . "name" "scanner" }}
+{{- $sc := .Values.scanner }}
+# The PII scanner worker: takes scan requests from SQS, reads and decrypts each file in
+# memory, reports kinds and counts to the API's internal port. It serves no traffic,
+# only /metrics and /healthz.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  replicas: {{ $sc.replicas }}
+  selector:
+    matchLabels: {{- include "vaultgate.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "vaultgate.labels" $ctx | nindent 8 }}
+      {{- with include "vaultgate.podAnnotations" $ctx | trim }}
+      annotations: {{- . | nindent 8 }}
+      {{- end }}
+    spec:
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      automountServiceAccountToken: false
+      # Scans in progress finish before the worker exits (it stops receiving on SIGTERM).
+      terminationGracePeriodSeconds: 660
+      containers:
+        - name: scanner
+          image: {{ include "vaultgate.image" $ctx }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/worker"]
+          env:
+            {{- include "vaultgate.commonEnv" . | nindent 12 }}
+            # Without it the worker exits at once and says so in its log.
+            {{- with .Values.scanQueueUrl }}
+            - name: VAULTGATE_SCAN_QUEUE_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: VAULTGATE_API_INTERNAL_URL
+              value: "http://{{ .Release.Name }}-api:{{ .Values.api.internalPort }}"
+            - name: VAULTGATE_BUCKET
+              value: {{ .Values.storage.bucket | quote }}
+            - name: VAULTGATE_SCANNER_CONCURRENCY
+              value: {{ $sc.concurrency | quote }}
+            {{- include "vaultgate.secretEnv" (dict "root" . "env" "VAULTGATE_SCANNER_TOKEN" "key" "scanner-token") | nindent 12 }}
+            {{- include "vaultgate.extraEnv" $sc.env | nindent 12 }}
+          ports:
+            - { name: metrics, containerPort: {{ .Values.metrics.port }} }
+          livenessProbe: { httpGet: { path: /healthz, port: metrics } }
+          securityContext: {{- include "vaultgate.containerSecurityContext" . | nindent 12 }}
+          resources: {{- toYaml $sc.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  selector: {{- include "vaultgate.selector" $ctx | nindent 4 }}
+  ports:
+    # In-cluster only, for Prometheus.
+    - { name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics }
