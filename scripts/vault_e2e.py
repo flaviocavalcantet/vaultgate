@@ -25,10 +25,13 @@ then, as alice:
    its hash chain verifies: a text with a test card number and CPFs
    is quarantined with those counts and cannot be downloaded until carol releases it,
    a rescan puts it back in quarantine, and an encrypted PDF is unscannable with the
-   reason.
+   reason;
+8. finds the upload's trace in Tempo and checks that it runs from the gateway through
+   the API and the scan queue to the scanner worker, and that Loki holds log lines
+   from all three services under its trace_id.
 
     python3 scripts/vault_e2e.py [--keycloak URL] [--api URL] [--s3 URL] [--bucket NAME]
-                                 [--mailpit URL]
+                                 [--mailpit URL] [--tempo URL] [--loki URL]
 
 Needs the bucket, KMS key and scan queue from `make tf-local`, the scanner worker, and the seeded allow policy from
 scripts/seed_policies.py (`make vault-check` does both). Standard library only, so it
@@ -241,6 +244,96 @@ def run(args) -> None:
     check_internal_share(args.api, file_id, sha256, alice, bob, carol)
     check_scans(args, alice, carol)
     check_audit(args.api, file_id, carol)
+
+    # 8. Traces, linked to the logs.
+    check_traces(args, file_id)
+
+
+# The upload's trace, hop by hop (ADR 0008).
+UPLOAD_TRACE = {
+    ("gateway", "PUT /uploads/{upload_id}"),
+    ("gateway", "api consume upload"),
+    ("api", "POST /internal/intents/consume"),
+    ("gateway", "api complete"),
+    ("api", "POST /internal/files/{file_id}/complete"),
+    ("api", "scan request send"),
+    ("scanner", "scan"),
+    ("api", "GET /internal/scans/{scan_id}"),
+    ("api", "POST /internal/scans/{scan_id}/result"),
+}
+
+
+def get_json(url: str, params: dict | None = None):
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    with urllib.request.urlopen(url, timeout=30) as response:
+        return json.loads(response.read())
+
+
+def eventually(check, timeout: float = 90, what: str = ""):
+    """Retry check() until it returns something truthy: spans and log lines reach
+    Tempo and Loki in batches, seconds after the fact."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if result := check():
+                return result
+        except (OSError, ValueError, KeyError):
+            pass
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {what}")
+        time.sleep(3)
+
+
+def trace_spans(tempo: str, trace_id: str) -> set[tuple[str, str]]:
+    found = set()
+    for batch in get_json(f"{tempo}/api/v2/traces/{trace_id}")["trace"]["resourceSpans"]:
+        attributes = {a["key"]: a["value"] for a in batch["resource"]["attributes"]}
+        service = attributes["service.name"]["stringValue"]
+        for scope in batch["scopeSpans"]:
+            found |= {(service, span["name"]) for span in scope["spans"]}
+    return found
+
+
+def check_traces(args, file_id: str) -> None:
+    now = int(time.time())
+    # The upload that succeeded: step 5 also sent a PUT for this file (its spent token,
+    # refused), which is a trace of its own that never reaches the scanner.
+    query = (
+        f'{{ resource.service.name = "gateway" && name = "PUT /uploads/{{upload_id}}" '
+        f'&& span.vaultgate.file_id = "{file_id}" && span.http.response.status_code = 201 }}'
+    )
+
+    def upload_trace() -> str | None:
+        found = get_json(
+            f"{args.tempo}/api/search", {"q": query, "start": now - 3600, "end": now + 3600}
+        )["traces"]
+        return found[0]["traceID"] if found else None
+
+    trace_id = eventually(upload_trace, what="the upload's trace in Tempo")
+    spans = eventually(
+        lambda: (s := trace_spans(args.tempo, trace_id)) >= UPLOAD_TRACE and s,
+        what=f"every hop of trace {trace_id}",
+    )
+    services = sorted({service for service, _ in spans})
+    print(f"ok  trace {trace_id}: gateway -> API -> queue -> scanner ({len(spans)} span names)")
+    assert services == ["api", "gateway", "scanner"], services
+
+    def logged_services() -> set[str]:
+        result = get_json(
+            f"{args.loki}/loki/api/v1/query_range",
+            {
+                "query": f'{{service=~"api|gateway|scanner"}} | trace_id = "{trace_id}"',
+                "start": (now - 3600) * 10**9,
+                "end": (now + 3600) * 10**9,
+                "limit": 1000,
+            },
+        )["data"]["result"]
+        found = {stream["stream"]["service"] for stream in result}
+        return found if found >= {"api", "gateway", "scanner"} else set()
+
+    eventually(logged_services, what=f"log lines of all three services for trace {trace_id}")
+    print("ok  Loki has log lines from the gateway, API and scanner under the trace's ID")
 
 
 def check_audit(api: str, file_id: str, carol: str) -> None:
@@ -485,9 +578,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--s3", default="http://localhost:4566")
     parser.add_argument("--bucket", default="vaultgate-local-vault")
     parser.add_argument("--mailpit", default="http://localhost:8025")
+    parser.add_argument("--tempo", default="http://localhost:3200")
+    parser.add_argument("--loki", default="http://localhost:3100")
     parser.add_argument("--size-mib", type=int, default=20)
     args = parser.parse_args(argv)
-    for name in ("keycloak", "api", "s3", "mailpit"):
+    for name in ("keycloak", "api", "s3", "mailpit", "tempo", "loki"):
         setattr(args, name, getattr(args, name).rstrip("/"))
     run(args)
     return 0

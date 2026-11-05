@@ -4,12 +4,18 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/flaviocavalcantet/vaultgate/scanner/internal/tracing"
 )
 
 // Delivery is one received message.
 type Delivery struct {
 	Body   string
 	Handle string // receipt handle, for deleting it or extending its visibility
+	// Trace is the sender's trace context (traceparent, tracestate), if it sent one.
+	Trace map[string]string
 }
 
 // Queue is where scan requests come from.
@@ -108,7 +114,7 @@ func (l *Loop) process(ctx context.Context, d Delivery) {
 			}
 		}
 	}()
-	outcome := l.Worker.Handle(ctx, d.Body)
+	outcome := l.Worker.Handle(tracing.Propagator.Extract(ctx, propagation.MapCarrier(d.Trace)), d.Body)
 	close(stop)
 	heartbeat.Wait()
 	if !outcome.Done() {

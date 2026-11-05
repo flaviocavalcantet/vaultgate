@@ -25,13 +25,19 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/detect"
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/extract"
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/scan"
+	"github.com/flaviocavalcantet/vaultgate/scanner/internal/tracing"
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/vge1"
 )
 
@@ -107,26 +113,51 @@ type Worker struct {
 	Extractor *extract.Extractor
 	Logger    *slog.Logger
 	Metrics   *Metrics
+	// Tracer records each scan as a span (internal/tracing); nil records nothing.
+	Tracer trace.Tracer
 }
 
 const maxReason = 500
 
-// Handle processes one message body.
+func (w *Worker) tracer() trace.Tracer {
+	if w.Tracer == nil {
+		return noop.NewTracerProvider().Tracer(tracing.Name)
+	}
+	return w.Tracer
+}
+
+// Handle processes one message body. ctx carries the trace context of the request
+// that sent the message, if any: the scan's span continues that trace.
 func (w *Worker) Handle(ctx context.Context, body string) Outcome {
 	start := time.Now()
 	w.Metrics.inProgress.Inc()
 	defer w.Metrics.inProgress.Dec()
+	ctx, span := w.tracer().Start(ctx, "scan", trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(attribute.String("messaging.system", "aws_sqs")))
+	defer span.End()
 	var req Request
 	if err := json.Unmarshal([]byte(body), &req); err != nil || req.ScanID == uuid.Nil {
-		w.Logger.Error("not a scan request", "error", err)
+		w.Logger.Error("not a scan request", append([]any{"error", err}, tracing.LogAttrs(span)...)...)
 		w.Metrics.jobs.WithLabelValues(string(Invalid)).Inc()
+		endScan(span, Invalid)
 		return Invalid
 	}
-	log := w.Logger.With("file_id", req.FileID, "scan_id", req.ScanID)
+	span.SetAttributes(attribute.String("vaultgate.file_id", req.FileID.String()), attribute.String("vaultgate.scan_id", req.ScanID.String()))
+	log := w.Logger.With("file_id", req.FileID, "scan_id", req.ScanID).With(tracing.LogAttrs(span)...)
 	outcome := w.handle(ctx, req, log)
 	w.Metrics.jobs.WithLabelValues(string(outcome)).Inc()
 	w.Metrics.duration.Observe(time.Since(start).Seconds())
+	endScan(span, outcome)
 	return outcome
+}
+
+// endScan records the outcome; one that leaves the message in the queue is an error
+// (the verdicts, unscannable included, are results).
+func endScan(span trace.Span, o Outcome) {
+	span.SetAttributes(attribute.String("vaultgate.outcome", string(o)))
+	if !o.Done() {
+		span.SetStatus(codes.Error, "")
+	}
 }
 
 func (w *Worker) handle(ctx context.Context, req Request, log *slog.Logger) Outcome {
@@ -169,12 +200,19 @@ func (w *Worker) handle(ctx context.Context, req Request, log *slog.Logger) Outc
 // scan reads the object and returns the result to report, or an error when the scan
 // did not finish for a reason that is not about the file (to be retried).
 func (w *Worker) scan(ctx context.Context, job Job, log *slog.Logger) (Result, error) {
-	key, err := w.Keys.Unwrap(ctx, job.FileID, job.WrappedKey, job.KMSKeyID)
+	key, err := step(w, ctx, "unwrap key", func(ctx context.Context) ([]byte, error) {
+		return w.Keys.Unwrap(ctx, job.FileID, job.WrappedKey, job.KMSKeyID)
+	})
 	if err != nil {
 		return Result{}, err
 	}
 	defer clear(key)
-	src, size, err := w.Objects.Open(ctx, job.StorageKey)
+	var size int64
+	src, err := step(w, ctx, "open object", func(ctx context.Context) (io.ReaderAt, error) {
+		src, n, err := w.Objects.Open(ctx, job.StorageKey)
+		size = n
+		return src, err
+	})
 	if err != nil {
 		return Result{}, err
 	}
@@ -194,7 +232,17 @@ func (w *Worker) scan(ctx context.Context, job Job, log *slog.Logger) (Result, e
 	// keeps the real one, which decides.
 	rec := &recorder{r: plain}
 	found := map[detect.Kind]int{}
+	// One span for the whole read: each range request would be a span of its own,
+	// thousands for a large file. Their number is an attribute instead.
+	_, read := w.tracer().Start(ctx, "read and detect")
 	report, n, err := scan.Document(w.Extractor, rec, plain.Size(), func(f detect.Finding) { found[f.Kind]++ })
+	read.SetAttributes(
+		attribute.String("vaultgate.format", string(report.Format)),
+		attribute.Int("vaultgate.parts", report.Parts),
+		attribute.Int64("vaultgate.text_bytes", n),
+		attribute.Int64("vaultgate.reads", rec.reads.Load()),
+	)
+	read.End()
 	w.Metrics.textBytes.Add(float64(n))
 	if readErr := rec.Err(); readErr != nil {
 		if errors.Is(readErr, vge1.ErrNotAuthentic) {
@@ -237,14 +285,27 @@ func counts(fs []Finding) map[detect.Kind]int {
 	return out
 }
 
-// recorder keeps the first read error other than EOF.
+// step runs one part of a scan in a span of its own.
+func step[T any](w *Worker, ctx context.Context, name string, fn func(context.Context) (T, error)) (T, error) {
+	ctx, span := w.tracer().Start(ctx, name)
+	defer span.End()
+	v, err := fn(ctx)
+	if err != nil {
+		span.SetStatus(codes.Error, "")
+	}
+	return v, err
+}
+
+// recorder keeps the first read error other than EOF, and counts reads.
 type recorder struct {
-	r   io.ReaderAt
-	mu  sync.Mutex
-	err error
+	r     io.ReaderAt
+	mu    sync.Mutex
+	err   error
+	reads atomic.Int64
 }
 
 func (c *recorder) ReadAt(p []byte, off int64) (int, error) {
+	c.reads.Add(1)
 	n, err := c.r.ReadAt(p, off)
 	if err != nil && err != io.EOF {
 		c.mu.Lock()

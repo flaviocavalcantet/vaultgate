@@ -1,9 +1,10 @@
 // Grafana Alloy: collects the JSON logs every VaultGate container writes to
-// stdout/stderr and ships them to Loki.
+// stdout/stderr and ships them to Loki, and receives the services' traces over OTLP
+// and forwards them to Tempo (ADR 0008).
 //
 // Labels stay low-cardinality (service, level, stream). Per-request values such as
-// request_id travel as structured metadata: searchable, but they never create new
-// streams in Loki.
+// request_id and trace_id travel as structured metadata: searchable, but they never
+// create new streams in Loki.
 
 discovery.docker "containers" {
 	host = "unix:///var/run/docker.sock"
@@ -45,6 +46,7 @@ loki.process "json" {
 			service    = "service",
 			level      = "level",
 			request_id = "request_id",
+			trace_id   = "trace_id",
 			ts         = "ts",
 		}
 	}
@@ -61,6 +63,7 @@ loki.process "json" {
 	stage.structured_metadata {
 		values = {
 			request_id = "",
+			trace_id   = "",
 		}
 	}
 
@@ -76,5 +79,36 @@ loki.process "json" {
 loki.write "local" {
 	endpoint {
 		url = "http://loki:3100/loki/api/v1/push"
+	}
+}
+
+// --- Traces ------------------------------------------------------------------
+// The API, gateway and scanner export OTLP/HTTP here (OTEL_EXPORTER_OTLP_ENDPOINT=
+// http://alloy:4318). Only HTTP is opened: it is what all three use.
+
+otelcol.receiver.otlp "services" {
+	http {
+		endpoint = "0.0.0.0:4318"
+	}
+
+	output {
+		traces = [otelcol.processor.batch.traces.input]
+	}
+}
+
+otelcol.processor.batch "traces" {
+	output {
+		traces = [otelcol.exporter.otlp.tempo.input]
+	}
+}
+
+otelcol.exporter.otlp "tempo" {
+	client {
+		endpoint = "tempo:4317"
+
+		// Inside the compose network only.
+		tls {
+			insecure = true
+		}
 	}
 }

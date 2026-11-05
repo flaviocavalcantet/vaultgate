@@ -33,10 +33,11 @@ from typing import Annotated, Literal, Protocol
 import boto3
 from botocore.config import Config
 from fastapi import Depends
+from opentelemetry.trace import SpanKind
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from vaultgate_api import audit, metrics
+from vaultgate_api import audit, metrics, tracing
 from vaultgate_api.config import settings
 from vaultgate_api.models import File
 
@@ -137,7 +138,23 @@ class SqsScanQueue:
 
     async def send(self, file_id: uuid.UUID, scan_id: uuid.UUID) -> None:
         body = json.dumps({"file_id": str(file_id), "scan_id": str(scan_id)})
-        await asyncio.to_thread(self.client.send_message, QueueUrl=self.url, MessageBody=body)
+        # The scan continues this trace in the scanner; a resend starts its own.
+        with tracing.tracer.start_as_current_span(
+            "scan request send",
+            kind=SpanKind.PRODUCER,
+            attributes={
+                "messaging.system": "aws_sqs",
+                "messaging.operation.type": "send",
+                "vaultgate.file_id": str(file_id),
+                "vaultgate.scan_id": str(scan_id),
+            },
+        ):
+            await asyncio.to_thread(
+                self.client.send_message,
+                QueueUrl=self.url,
+                MessageBody=body,
+                MessageAttributes=tracing.sqs_trace_attributes(),
+            )
 
 
 class NoScanQueue:

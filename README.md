@@ -73,6 +73,7 @@ All services log one JSON object per line (stdout for the API and gateway, stder
 ```
 
 - **Request IDs:** every HTTP response carries `X-Request-ID`. A caller-supplied ID is reused if it is 1–64 characters of `[A-Za-z0-9._-]`, otherwise a new one is generated. Pass the same ID from API to gateway to scanner to follow one action across services.
+- **Trace IDs:** a line written inside a traced request or scan also carries `trace_id` and `span_id`, which follow the work across services and the scan queue (see [Traces](#traces)).
 - **What is never logged:** query strings (they will carry share-link signatures), tokens, file contents, and PII values (the scanner logs counts per kind, never matches).
 - **Settings:** `VAULTGATE_LOG_LEVEL` (default `INFO`) and `VAULTGATE_LOG_FORMAT` (`json` by default, `text` for reading in a terminal).
 
@@ -126,7 +127,33 @@ Locally, [Grafana Alloy](https://grafana.com/docs/alloy/) reads the stdout/stder
 {service="api", level="error"}                       # API errors
 {service=~"api|gateway"} | request_id="<id>"         # one request across services
 {service="gateway"} | json | status >= 500           # gateway 5xx with parsed fields
+{service=~".+"} | trace_id="<id>"                    # everything one trace logged
 ```
+
+### Traces
+
+The API, gateway and scanner worker export OpenTelemetry traces over OTLP/HTTP to Alloy, which forwards them to [Grafana Tempo](https://grafana.com/docs/tempo/) ([ADR 0008](docs/adr/0008-tracing.md)). One upload is one trace:
+
+```text
+gateway  PUT /uploads/{upload_id}                     vaultgate.file_id, bytes_in, status
+├─ gateway  api consume upload
+│  └─ api  POST /internal/intents/consume             (and its database queries)
+├─ gateway  KMS.GenerateDataKey, S3.UploadPart ...
+└─ gateway  api complete
+   └─ api  POST /internal/files/{file_id}/complete
+      └─ api  scan request send                       trace context in the SQS message
+         └─ scanner  scan                              vaultgate.outcome
+            ├─ scanner  api scan job → api  GET /internal/scans/{scan_id}
+            ├─ scanner  unwrap key, open object, read and detect (format, parts, reads)
+            └─ scanner  api scan result → api  POST /internal/scans/{scan_id}/result
+```
+
+- **On or off:** tracing is on when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (compose sets `http://alloy:4318`; the Helm chart takes `tracing.otlpEndpoint`), and `OTEL_SDK_DISABLED=true` turns it off.
+- **Where traces start:** at a request, a scan request sent, or a scan received. Background loops' queries are not traced, and probes (`/healthz`, `/readyz`) are not either.
+- **Trust:** the public API and the gateway ignore a client's `traceparent` and start a new trace; the API's internal port continues the gateway's and the scanner's.
+- **What spans never carry:** query strings, tokens, headers, personal data, file contents, SQL parameter values (database spans have the statement only), or error text (dropped before export, as it can quote the value refused).
+
+In Grafana → Explore → Tempo, search by service and span name, or with TraceQL, e.g. `{ span.vaultgate.file_id = "<file id>" }`. A span links to its logs in Loki, and a log line's `trace_id` links back to the trace.
 
 ### Dashboards and alerts
 
@@ -188,7 +215,7 @@ VAULTGATE_TEST_DATABASE_URL=postgresql+asyncpg://vaultgate:vaultgate@localhost:5
 - API docs: http://localhost:8000/docs (readiness: http://localhost:8000/readyz)
 - Gateway health: http://localhost:8888/healthz
 - Keycloak admin: http://localhost:8080 (admin / admin), realm `vaultgate`
-- Grafana: http://localhost:3000 (admin / admin), with Prometheus and Loki already set up and the VaultGate dashboards in the **VaultGate** folder
+- Grafana: http://localhost:3000 (admin / admin), with Prometheus, Loki and Tempo already set up and the VaultGate dashboards in the **VaultGate** folder
 - Prometheus: http://localhost:9090 (Status → Targets shows every scraped service)
 - Alloy pipeline UI: http://localhost:12345
 
@@ -427,9 +454,9 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] External recipients: a one-time code sent to the address (Mailpit locally), then a download through the gateway, counted against the share's limits
   - [x] Internal recipients: sign in; the token's verified email must be the share's address
   - [x] End-to-end check of both recipient flows; [ADR 0006](docs/adr/0006-sharing.md)
-- [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
+- [x] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
   - [x] Audit log: security events in an append-only, hash-chained table; admin listing and chain verification; the chain's head logged as an anchor ([ADR 0007](docs/adr/0007-audit-log.md))
-  - [ ] Traces: OpenTelemetry in the API, gateway and scanner worker, through Alloy to Grafana Tempo, linked to the logs
+  - [x] Traces: OpenTelemetry in the API, gateway and scanner worker, through Alloy to Grafana Tempo, linked to the logs both ways; the e2e check follows an upload to its scan ([ADR 0008](docs/adr/0008-tracing.md))
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
 - [ ] **M9 — PKI and key management:** establish a certificate authority, store private keys securely, and distribute keys and certificates securely (scope to be defined)

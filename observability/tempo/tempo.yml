@@ -1,0 +1,37 @@
+# Grafana Tempo, single binary, for the local stack: stores the traces Alloy forwards
+# (ADR 0008) on a local volume and answers Grafana's queries on :3200.
+stream_over_http_enabled: true
+
+# No anonymous usage reports to Grafana Labs (Grafana and Alloy have theirs off too).
+usage_report:
+  reporting_enabled: false
+
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    # Only Alloy sends here; the services send to Alloy (OTLP/HTTP on 4318).
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+ingester:
+  # Cut blocks often: a local stack has little traffic, and recent traces should be
+  # searchable without waiting.
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    # Same retention as Prometheus metrics locally.
+    block_retention: 168h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks

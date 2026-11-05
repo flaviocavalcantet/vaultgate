@@ -17,6 +17,7 @@ from vaultgate_api.config import settings
 from vaultgate_api.db import get_sessionmaker
 from vaultgate_api.logs import configure_logging
 from vaultgate_api.scans import get_scan_queue, run_resender
+from vaultgate_api.tracing import configure_tracing
 from vaultgate_api.uploads import run_sweeper
 
 
@@ -54,6 +55,7 @@ async def serve() -> None:
 
 def main() -> None:
     configure_logging(settings.log_level, settings.log_format)
+    configure_tracing()
     start_http_server(settings.metrics_port)
     asyncio.run(serve())
 

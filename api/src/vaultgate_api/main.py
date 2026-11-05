@@ -28,6 +28,7 @@ from vaultgate_api.routers import (
     shared_with_me,
     shares,
 )
+from vaultgate_api.tracing import FASTAPI_TELEMETRY, TracingMiddleware
 
 # Routes that answer without a token. Everything else is mounted on `protected`,
 # so a new router is authenticated unless it is deliberately added here.
@@ -48,14 +49,19 @@ app = FastAPI(
     version="0.1.0",
     description="Identity, access policies, file metadata, share links and audit log.",
     lifespan=lifespan,
+    telemetry=FASTAPI_TELEMETRY,
 )
 
 BUILD_INFO.info({"service": "api", "version": app.version})
 
 # Starlette runs the last-added middleware first: the client address is resolved
-# before anything reads it, and the request ID is assigned before metrics and handlers.
+# before anything reads it, the request's span is open before the access log line is
+# written (so the line carries its trace ID), and the request ID is assigned before
+# metrics and handlers.
 app.add_middleware(MetricsMiddleware)
 app.add_middleware(RequestContextMiddleware)
+# Public: a client's own trace context is ignored (vaultgate_api.tracing).
+app.add_middleware(TracingMiddleware, trust_incoming=False)
 app.add_middleware(ClientAddressMiddleware, trusted=settings.trusted_proxies)
 app.include_router(health.router)
 # Share recipients have no token: the link's own token and an emailed code authorize

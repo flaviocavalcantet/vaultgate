@@ -29,6 +29,10 @@ spec:
           env:
             - name: VAULTGATE_METRICS_PORT
               value: {{ $.Values.metrics.port | quote }}
+            {{- with $.Values.tracing.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
           ports:
             - { name: http, containerPort: {{ $svc.port }} }
             - { name: metrics, containerPort: {{ $.Values.metrics.port }} }

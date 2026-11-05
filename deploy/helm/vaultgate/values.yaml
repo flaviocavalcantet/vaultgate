@@ -21,6 +21,11 @@ gateway:
     # Memory stays flat regardless of upload size; that is the point of streaming.
     limits: { memory: 256Mi }
 
+# Traces (ADR 0008): an OTLP/HTTP endpoint, such as an in-cluster Alloy or OpenTelemetry
+# Collector (http://alloy.monitoring:4318). Empty, the services record no spans.
+tracing:
+  otlpEndpoint: ""
+
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 10001
