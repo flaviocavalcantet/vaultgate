@@ -28,9 +28,10 @@ Three levels were weighed:
   (created, codes sent, verifications, downloads, revoked), policy changes (with the
   policy as it stood), first sign-ins, and the refusals of something real: denied by
   policy, intents of deactivated users, downloads or shares refused by the scan, failed
-  code checks (bounded by the code's tries and send limits). Refusals anyone can cause
-  without naming anything real (an unknown intent token, a wrong grant on a share link)
-  go to the logs and metrics only: each audit row is permanent, so they would let
+  checks of a code that was sent (bounded by the code's tries and send limits).
+  Refusals anyone can repeat without limit (an unknown intent token, a wrong grant on
+  a share link, a code check when no code is outstanding) go to the logs and metrics
+  only: each audit row is permanent, so they would let
   anyone grow the log, and every write takes the chain's lock.
 - **Shape:** who (a user, an outside recipient, the gateway, the scanner, the system),
   the action, the outcome, the target, the client address, the request ID (as in the

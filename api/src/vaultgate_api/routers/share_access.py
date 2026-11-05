@@ -260,7 +260,12 @@ async def verify_code(body: VerifyIn, session: SessionDep) -> GrantOut:
         return HTTPException(status.HTTP_403_FORBIDDEN, detail=detail)
 
     if v.code_hash is None:
-        raise await refuse("exhausted", "No code to check; ask for a new one")
+        # Not audited: with no code outstanding nothing changes, and the link's holder
+        # could repeat this forever. Only checks of a code sent (bounded) are audited.
+        await session.rollback()
+        metrics.SHARE_VERIFICATIONS.labels("exhausted").inc()
+        logger.info("share code refused", extra={"share_id": share_id, "result": "no code"})
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No code to check; ask for a new one")
     if v.code_expires_at <= now:
         v.code_hash = v.code_salt = None
         raise await refuse("expired", "The code has expired; ask for a new one")
@@ -297,7 +302,8 @@ async def create_share_download(body: DownloadIn, session: SessionDep) -> Transf
         or not hmac.compare_digest(_hash(body.grant), v.grant_hash)
     ):
         # Not audited: a wrong grant proves nothing about who sent it, and anyone with
-        # the link could send many. Failed code checks, which are bounded, are audited.
+        # the link could send many. Checks of a code that was sent (bounded by the sends
+        # and tries) are audited.
         logger.info("share grant refused", extra={"share_id": str(share.id)})
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Grant not valid; verify again")
     _shareable(file)

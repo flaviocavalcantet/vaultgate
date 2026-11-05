@@ -205,3 +205,16 @@ async def test_an_outside_recipient_leaves_a_trail(recipients, provider, queue, 
     downloaded = (await events(session, action="share.downloaded"))[0]
     assert downloaded.details == {"share_id": share_id, "recipient_email": "bob@example.com"}
     assert (await audit.verify(session)).ok
+
+
+async def test_checks_with_no_code_outstanding_leave_no_rows(recipients, provider, queue, session):  # noqa: F811
+    """Only checks of a code that was sent are audited: they are bounded by the sends and
+    tries, while 'no code' could be repeated forever by anyone holding the link."""
+    public, _, _ = recipients
+    _, _, token = await shared(recipients, provider, queue)
+    for _ in range(10):
+        refused = await public.post(
+            "/shares/access/verify", json={"token": token, "code": "123456"}
+        )
+        assert refused.status_code == 403
+    assert await events(session, action="share.verification_failed") == []
