@@ -100,6 +100,10 @@ ingress:
   annotations: {}
   apiHost: api.vaultgate.localhost
   gatewayHost: gateway.vaultgate.localhost
+  # TLS for those hosts, as Ingress spec.tls: [{ secretName: ..., hosts: [...] }].
+  # Anywhere but a local cluster, bearer tokens and files must not travel in plain HTTP:
+  # set it (cert-manager issues the certificate from it, with its annotation above).
+  tls: []
 
 # NetworkPolicies: the API's internal port only from the gateway and scanner pods; the
 # public ports and the metrics port stay open. Needs a CNI that enforces them (k3s does).
