@@ -1,0 +1,68 @@
+{{- $ctx := dict "root" . "name" "gateway" }}
+{{- $gw := .Values.gateway }}
+# The data plane: streams uploads and downloads, encrypting and decrypting on the fly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  {{- if not $gw.autoscaling.enabled }}
+  replicas: {{ $gw.replicas }}
+  {{- end }}
+  selector:
+    matchLabels: {{- include "vaultgate.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "vaultgate.labels" $ctx | nindent 8 }}
+      {{- with include "vaultgate.podAnnotations" $ctx | trim }}
+      annotations: {{- . | nindent 8 }}
+      {{- end }}
+    spec:
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      automountServiceAccountToken: false
+      # Transfers in progress get time to finish when a pod is scaled down.
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: gateway
+          image: {{ include "vaultgate.image" $ctx }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{- include "vaultgate.commonEnv" . | nindent 12 }}
+            - name: VAULTGATE_GATEWAY_PORT
+              value: {{ $gw.port | quote }}
+            - name: VAULTGATE_API_INTERNAL_URL
+              value: "http://{{ .Release.Name }}-api:{{ .Values.api.internalPort }}"
+            - name: VAULTGATE_BUCKET
+              value: {{ .Values.storage.bucket | quote }}
+            - name: VAULTGATE_KMS_KEY_ID
+              value: {{ .Values.storage.kmsKeyId | quote }}
+            {{- with .Values.trustedProxies }}
+            - name: VAULTGATE_TRUSTED_PROXIES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- include "vaultgate.secretEnv" (dict "root" . "env" "VAULTGATE_INTERNAL_TOKEN" "key" "internal-token") | nindent 12 }}
+            {{- include "vaultgate.extraEnv" $gw.env | nindent 12 }}
+          ports:
+            - { name: http, containerPort: {{ $gw.port }} }
+            - { name: metrics, containerPort: {{ .Values.metrics.port }} }
+          readinessProbe: { httpGet: { path: {{ $gw.readinessPath }}, port: http } }
+          livenessProbe: { httpGet: { path: /healthz, port: http } }
+          securityContext: {{- include "vaultgate.containerSecurityContext" . | nindent 12 }}
+          resources: {{- toYaml $gw.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  selector: {{- include "vaultgate.selector" $ctx | nindent 4 }}
+  ports:
+    - { name: http, port: {{ $gw.port }}, targetPort: http }
+    # In-cluster only. Never expose this port through an Ingress.
+    - { name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics }

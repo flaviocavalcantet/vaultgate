@@ -172,7 +172,7 @@ Prometheus evaluates the rules in `observability/prometheus/rules/vaultgate.yml`
 | `VaultGateGatewayMemoryHigh` | gateway resident memory above 200 MiB (limit 256 MiB) for 5 min | warning |
 | `VaultGateObservabilityDown` | Loki or Alloy down for 5 min | warning |
 
-In Kubernetes, the Helm chart exposes the metrics port on each Service (never through an Ingress) and adds `prometheus.io/*` pod annotations. With the Prometheus Operator, set `metrics.serviceMonitor.enabled=true` (and `metrics.podAnnotations=false`); the ServiceMonitors keep `job="api"`/`job="gateway"`, so the same dashboards and rules work in the cluster.
+In Kubernetes, the Helm chart exposes the metrics port on each Service (never through an Ingress) and adds `prometheus.io/*` pod annotations. With the Prometheus Operator, set `metrics.serviceMonitor.enabled=true` (and `metrics.podAnnotations=false`); the ServiceMonitors keep `job="api"`, `job="gateway"` and `job="scanner"`, so the same dashboards and rules work in the cluster.
 
 ## Repository layout
 
@@ -181,7 +181,7 @@ api/            FastAPI control plane
 gateway/        Tornado streaming gateway
 scanner/        Go PII scanner
 deploy/
-  helm/         Helm chart for both Python services
+  helm/         Helm chart for the API, gateway and scanner worker
   argocd/       ArgoCD Application (GitOps)
 infra/
   terraform/
@@ -410,6 +410,18 @@ Security events are recorded in `audit_events` ([ADR 0007](docs/adr/0007-audit-l
 
 **Upgrading:** the log starts empty; events from before this version are not reconstructed.
 
+### Deploying to Kubernetes
+
+`deploy/helm/vaultgate` deploys the API, the gateway and the scanner worker. PostgreSQL, S3, KMS, SQS, the OIDC provider and SMTP are not part of the chart: its values point at them (`aws.*`, `storage.*`, `scanQueueUrl`, `api.oidc.*`, `api.smtp.*`; any other setting goes in `api.env`, `gateway.env` or `scanner.env` as `VAULTGATE_*: value`).
+
+- **Credentials** come from one Secret (`secrets.name`) with the keys `database-url`, `internal-token`, `scanner-token` and, unless the pods have an AWS identity of their own, `aws-access-key-id` and `aws-secret-access-key`. Create it out of band (External Secrets, Sealed Secrets, Vault). `secrets.create=true` makes the chart create it from values, for local clusters only.
+- **Ingress** (`ingress.enabled`): the API's and the gateway's public ports, on `ingress.apiHost` and `ingress.gatewayHost`. Set `api.publicUrl` and `api.gatewayPublicUrl` to those addresses, since links and intents carry them, and `trustedProxies` to the ingress controller's pod range. The API's internal port and the metrics ports stay in-cluster.
+- **Autoscaling** (`gateway.autoscaling.enabled`): a HorizontalPodAutoscaler scales the gateway on CPU (70% of its request, 2 to 6 pods), which follows the bytes it encrypts and decrypts. It scales down one pod a minute after five quiet minutes, and a stopping pod gets two minutes to finish its transfers.
+- **Network policies** (`networkPolicy.enabled`): only the gateway and the scanner may reach the API's internal port, which hands out storage keys and wrapped data keys. The public and metrics ports stay open.
+- **Hardening, always on:** non-root, read-only root filesystem, no capabilities, no service account token, and a disruption budget of one pod at a time for the API and the gateway.
+
+`deploy/helm/vaultgate/ci/local-cluster-values.yaml` turns everything on, as the local cluster will; CI lints the chart and checks the rendered manifests against the Kubernetes schemas with both value sets.
+
 ### Client addresses behind a proxy
 
 Access policies can restrict by network (M3), so the API and the gateway must know the real client address. They take it from `X-Forwarded-For` only when the request comes from a proxy listed in `VAULTGATE_TRUSTED_PROXIES`, a comma-separated list of networks (for example the ingress controller's pod range). The header is read from the right, skipping trusted hops; the first other address is the client. With the list empty (the default, and what compose uses), the header is ignored and the TCP peer is the client. List proxy addresses only: a client inside a trusted range can claim any address. If a trusted proxy passes on something that isn't an address, the client counts as unknown rather than as the proxy. Logs record the resolved address as `client_ip`.
@@ -458,6 +470,9 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Audit log: security events in an append-only, hash-chained table; admin listing and chain verification; the chain's head logged as an anchor ([ADR 0007](docs/adr/0007-audit-log.md))
   - [x] Traces: OpenTelemetry in the API, gateway and scanner worker, through Alloy to Grafana Tempo, linked to the logs both ways; the e2e check follows an upload to its scan ([ADR 0008](docs/adr/0008-tracing.md))
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
+  - [x] Helm chart for all three services: configuration and credentials, optional ingress, CPU autoscaling of the gateway, network policies, disruption budgets, schema checks in CI
+  - [ ] Local k3d cluster: the dependencies in-cluster, images from a local registry, ArgoCD syncing this repo, the end-to-end check against it in CI
+  - [ ] Cluster observability through ArgoCD: Prometheus Operator, Grafana, Loki, Tempo and Alloy with the repo's dashboards and rules, Alertmanager routing
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
 - [ ] **M9 — PKI and key management:** establish a certificate authority, store private keys securely, and distribute keys and certificates securely (scope to be defined)
 - [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined)
@@ -485,6 +500,9 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [ ] Load scenarios for agent jobs with a mocked model; a small real-model benchmark with a fixed budget
   - [ ] Failure scenarios: slow or unavailable model, redelivery, worker crash, budget exhaustion
   - [ ] Published report with measured results and known limits, threat model for agents, demo recording, case study
+- [ ] **M16 — Delivery and scaling:** builds on M7 and the M8 load tests
+  - [ ] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them, replacing the local registry
+  - [ ] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests
 
 ## License
 

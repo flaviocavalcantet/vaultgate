@@ -1,0 +1,29 @@
+{{- with .Values.gateway.autoscaling }}
+{{- if .enabled }}
+{{- $ctx := dict "root" $ "name" "gateway" }}
+# The gateway scales with CPU, which follows the bytes it encrypts and decrypts.
+# Scaling on transfers in progress (KEDA) is on the roadmap.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "vaultgate.fullname" $ctx }}
+  minReplicas: {{ .minReplicas }}
+  maxReplicas: {{ .maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: {{ .targetCPUUtilizationPercentage }} }
+  behavior:
+    # Uploads are long: scale down slowly, so a pod is not removed between bursts.
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies: [{ type: Pods, value: 1, periodSeconds: 60 }]
+{{- end }}
+{{- end }}
