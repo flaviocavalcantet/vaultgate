@@ -297,9 +297,11 @@ def trace_spans(tempo: str, trace_id: str) -> set[tuple[str, str]]:
 
 def check_traces(args, file_id: str) -> None:
     now = int(time.time())
+    # The upload that succeeded: step 5 also sent a PUT for this file (its spent token,
+    # refused), which is a trace of its own that never reaches the scanner.
     query = (
         f'{{ resource.service.name = "gateway" && name = "PUT /uploads/{{upload_id}}" '
-        f'&& span.vaultgate.file_id = "{file_id}" }}'
+        f'&& span.vaultgate.file_id = "{file_id}" && span.http.response.status_code = 201 }}'
     )
 
     def upload_trace() -> str | None:
