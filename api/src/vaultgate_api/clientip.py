@@ -18,6 +18,7 @@ address, which may sit inside an allowed range.
 
 import ipaddress
 from collections.abc import Iterable, Sequence
+from contextvars import ContextVar
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -81,6 +82,11 @@ def resolve(
     return str(address)
 
 
+# The resolved client address of the request being handled, for code that has no
+# Request at hand (the audit log). None outside a request or when unknown.
+client_ip_var: ContextVar[str | None] = ContextVar("client_ip", default=None)
+
+
 class ClientAddressMiddleware:
     """Replace the ASGI client with the resolved address, once, for everything after it.
 
@@ -99,4 +105,10 @@ class ClientAddressMiddleware:
             ]
             address = resolve(peer[0] if peer else None, forwarded, self.trusted)
             scope = dict(scope, client=(address, 0) if address else None)
+            token = client_ip_var.set(address)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                client_ip_var.reset(token)
+            return
         await self.app(scope, receive, send)

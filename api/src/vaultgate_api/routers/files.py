@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 
-from vaultgate_api import intents, scans
+from vaultgate_api import audit, intents, scans
 from vaultgate_api.access import DownloaderDep, ReaderDep, UploaderDep
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
@@ -191,6 +191,14 @@ async def create_file(body: FileCreate, user: UploaderDep, session: SessionDep) 
         user_id=user.id,
         ttl=timedelta(seconds=settings.upload_intent_ttl_seconds),
     )
+    await audit.record(
+        session,
+        "file.registered",
+        actor_id=user.id,
+        target_kind="file",
+        target_id=file.id,
+        details={"name": file.name, "declared_size": file.declared_size},
+    )
     await session.commit()
     await session.refresh(file)
     url = f"{settings.gateway_public_url.rstrip('/')}/uploads/{file.id}"
@@ -240,6 +248,14 @@ async def create_download(
     if file.status != "uploaded":
         raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
     if reason := scans.check(file, "download", checked_by="api"):
+        await audit.record_refusal(
+            session,
+            "download.refused",
+            actor_id=user.id,
+            target_kind="file",
+            target_id=file.id,
+            details={"reason": reason},
+        )
         raise HTTPException(status.HTTP_409_CONFLICT, detail=reason)
     token, expires_at = await intents.issue(
         session,
@@ -247,6 +263,9 @@ async def create_download(
         kind="download",
         user_id=user.id,
         ttl=timedelta(seconds=settings.download_intent_ttl_seconds),
+    )
+    await audit.record(
+        session, "download.issued", actor_id=user.id, target_kind="file", target_id=file.id
     )
     await session.commit()
     url = f"{settings.gateway_public_url.rstrip('/')}/downloads/{file.id}"

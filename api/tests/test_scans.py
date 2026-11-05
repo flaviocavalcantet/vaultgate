@@ -14,7 +14,7 @@ from tests.test_files import as_user, uploaded
 from vaultgate_api import scans
 from vaultgate_api.config import Settings, settings
 from vaultgate_api.internal import internal_app
-from vaultgate_api.models import File
+from vaultgate_api.models import AuditEvent, File
 
 
 async def scanned_upload(public, internal, provider, queue) -> tuple[str, str]:
@@ -293,6 +293,14 @@ async def test_resender_gives_up_after_the_last_attempt(
     scan = (await file_of(public, provider, file_id))["scan"]
     assert scan["verdict"] == "unscannable"
     assert scan["reason"] == f"No scan result after {settings.scan_max_attempts} attempts"
+    [event] = (
+        await session.scalars(
+            select(AuditEvent).where(
+                AuditEvent.action == "scan.abandoned", AuditEvent.target_id == uuid.UUID(file_id)
+            )
+        )
+    ).all()
+    assert event.actor_kind == "system" and event.outcome == "unscannable"
     # A result arriving afterwards does not make the file clean.
     assert (await report(scanner_client, scan_id)).status_code == 409
 

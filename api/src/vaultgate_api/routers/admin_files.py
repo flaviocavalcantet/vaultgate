@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import ColumnElement, and_, exists, func, select
 
-from vaultgate_api import metrics, scans
+from vaultgate_api import audit, metrics, scans
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
 from vaultgate_api.models import File, ScanFinding, ScanRelease, User
@@ -134,6 +134,14 @@ async def release_file(
             reason=body.reason,
         )
     ]
+    await audit.record(
+        session,
+        "quarantine.released",
+        actor_id=admin.id,
+        target_kind="file",
+        target_id=file.id,
+        details={"verdict": verdict, "purpose": body.purpose, "reason": body.reason},
+    )
     await session.commit()
     metrics.RELEASES.labels(body.purpose).inc()
     logger.info(
@@ -163,6 +171,14 @@ async def rescan_file(
         await session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, detail="File is already waiting for a scan")
     previous = scans.verdict(file)
+    await audit.record(
+        session,
+        "scan.rescan_requested",
+        actor_id=admin.id,
+        target_kind="file",
+        target_id=file.id,
+        details={"previous_verdict": previous},
+    )
     await scans.rescan(session, file, queue)
     logger.info(
         "file sent for a new scan",

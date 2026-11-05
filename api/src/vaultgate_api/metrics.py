@@ -132,3 +132,8 @@ SHARE_DOWNLOADS = Counter(
     "vaultgate_api_share_downloads_total",
     "Downloads through share links, counted when the gateway starts them",
 )
+AUDIT_EVENTS = Counter(
+    "vaultgate_api_audit_events_total",
+    "Events added to the audit log, by outcome",
+    ["outcome"],
+)

@@ -19,6 +19,7 @@ from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
 from vaultgate_api.routers import (
     admin,
     admin_files,
+    audit,
     files,
     health,
     me,
@@ -66,6 +67,7 @@ protected = APIRouter(dependencies=[Depends(get_principal)])
 protected.include_router(me.router)
 protected.include_router(admin.router)
 protected.include_router(admin_files.router)
+protected.include_router(audit.router)
 protected.include_router(policies.router)
 protected.include_router(files.router)
 protected.include_router(shares.router)
@@ -75,7 +77,7 @@ app.include_router(protected)
 # Public: /healthz (liveness), /readyz (database reachable), /shares/access (share
 #         recipients, authorized by the link's token and an emailed code).
 # Protected: /me (caller's user record, provisioned from the access token),
-#            /admin/users, /admin/groups, /admin/policies, /admin/files (members
+#            /admin/users, /admin/groups, /admin/policies, /admin/files, /admin/audit (members
 #            of VAULTGATE_ADMIN_GROUPS only; never subject to access policies),
 #            /files (the caller's files; POST returns a single-use upload intent),
 #            /files/{id}/shares (share links for one of the caller's files),

@@ -136,7 +136,7 @@ Notes:
 |---|---|
 | Start the stack | `docker compose up --build`, then waits until LocalStack, Keycloak, the API (`/readyz`), the gateway and Grafana answer (the scanner worker and Mailpit start with them) |
 | Terraform | the storage module creates the encrypted, versioned bucket, the KMS key and alias, and the multipart-cleanup rule in LocalStack; the scanning module creates the scan queue and its dead-letter queue |
-| API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, scan state (requests, results, verdicts, the resender) quarantine (downloads and shares refused until clean or released, the quarantine scope, releases by purpose, rescan, listing by verdict) share links (limits, states, revoking) external recipients (codes, grants, limits, revoking, rescans) and internal recipients (verified email, their own policies), against a real database (`vaultgate_test`, created automatically) |
+| API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, scan state (requests, results, verdicts, the resender) quarantine (downloads and shares refused until clean or released, the quarantine scope, releases by purpose, rescan, listing by verdict) share links (limits, states, revoking) external recipients (codes, grants, limits, revoking, rescans), internal recipients (verified email, their own policies) and the audit log (events, refusals, append-only trigger, tamper detection), against a real database (`vaultgate_test`, created automatically) |
 | Access policy for local use | adds a policy that lets every signed-in user read, upload and download (`scripts/seed_policies.py`); access is denied by default |
 | Login | real Keycloak PKCE login for alice, bob and carol. Checks issuer, audience, lifetime and groups. The API accepts access tokens and refuses ID tokens, only carol sees `/admin/users`, and insecure flows are refused |
 | Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean before it is downloaded, quarantines a text with a card number and CPFs (no download until carol releases it; a rescan ends the release), and reports an encrypted PDF unscannable; alice shares the clean file with an outside address: the recipient gets a code by email (Mailpit), verifies it and downloads through the gateway, and the revoke stops them; bob, signed in, downloads a file shared with him while carol can't; a file released for download only can't be shared |
@@ -518,6 +518,30 @@ try { Invoke-RestMethod -Method Post http://localhost:8000/shares/access/downloa
 In PowerShell, the internal share is the same calls: `Invoke-RestMethod -Method Post "http://localhost:8000/files/$Id/shares"` with `recipient_kind = 'internal'` and `recipient_email = 'bob@example.com'`, then, logged in as bob, `Invoke-RestMethod http://localhost:8000/shared-with-me` and `Invoke-RestMethod -Method Post "http://localhost:8000/shared-with-me/<share id>/download"`.
 
 `vaultgate_api_share_codes_sent_total`, `vaultgate_api_share_verifications_total` and `vaultgate_api_share_downloads_total` count each step; in Loki, `{service="api"} |= "share"` shows them by share, never by address.
+
+### Try the audit log
+
+Everything the walkthroughs above did is in the audit log ([ADR 0007](adr/0007-audit-log.md)). As carol (admin):
+
+```bash
+ADMIN=$(python3 scripts/vaultgate_login.py --switch-user)   # log in as carol
+curl -s "http://localhost:8000/admin/audit?limit=20" -H "Authorization: Bearer $ADMIN" | python3 -m json.tool
+curl -s "http://localhost:8000/admin/audit?action=share.&target_id=$FILE_ID" -H "Authorization: Bearer $ADMIN" | python3 -m json.tool
+curl -s -X POST http://localhost:8000/admin/audit/verify -H "Authorization: Bearer $ADMIN"; echo
+# {"ok":true,"events":42,"head_id":42,"head_hash":"...","first_broken_id":null,"reason":null}
+```
+
+Then see what tampering looks like. Changing a row needs the trigger switched off, and the chain shows it:
+
+```bash
+docker compose exec postgres psql -U vaultgate -c "UPDATE audit_events SET outcome = 'ok' WHERE id = 3"
+# ERROR:  audit_events is append-only (UPDATE refused)
+docker compose exec postgres psql -U vaultgate -c "ALTER TABLE audit_events DISABLE TRIGGER USER; UPDATE audit_events SET outcome = 'tampered' WHERE id = 3; ALTER TABLE audit_events ENABLE TRIGGER USER"
+curl -s -X POST http://localhost:8000/admin/audit/verify -H "Authorization: Bearer $ADMIN"; echo
+# {"ok":false,"events":2,...,"first_broken_id":3,"reason":"its fields do not match its hash (it was changed)"}
+```
+
+The chain stays broken from then on; `scripts/local_check.sh down` starts over with an empty database. In PowerShell, the same calls are `Invoke-RestMethod "http://localhost:8000/admin/audit?limit=20" -Headers $AsCarol` and `Invoke-RestMethod -Method Post http://localhost:8000/admin/audit/verify -Headers $AsCarol`.
 
 ## Troubleshooting
 

@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
-from vaultgate_api import intents, metrics, scans
+from vaultgate_api import audit, intents, metrics, scans
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
 from vaultgate_api.mail import MailerDep, MailUnavailable
@@ -187,6 +187,8 @@ async def send_code(body: TokenIn, session: SessionDep, mailer: MailerDep) -> di
     v.last_sent_at = now
     code_hash = v.code_hash
     to, hint = share.recipient_email, _hint(share.recipient_email)
+    audit_target = {"target_kind": "file", "target_id": share.file_id}
+    audit_details = {"share_id": share_id, "recipient_email": to}
     # Committed before the mail goes out: the share's lock must not wait on a slow mail
     # server, or downloads, revokes and checks of this share would wait with it.
     await session.commit()
@@ -217,6 +219,10 @@ async def send_code(body: TokenIn, session: SessionDep, mailer: MailerDep) -> di
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, detail="The code could not be sent; try later"
         ) from None
+    await audit.record(
+        session, "share.code_sent", actor_kind="recipient", details=audit_details, **audit_target
+    )
+    await session.commit()
     metrics.SHARE_CODES_SENT.inc()
     logger.info("share code sent", extra={"share_id": share_id})
     return {"sent_to": hint, "expires_in": settings.share_code_ttl_seconds}
@@ -232,31 +238,49 @@ async def verify_code(body: VerifyIn, session: SessionDep) -> GrantOut:
     v = await _verification(session, share)
     now = datetime.now(UTC)
 
-    def refuse(result: str, detail: str) -> HTTPException:
+    audit_fields = {
+        "actor_kind": "recipient",
+        "target_kind": "file",
+        "target_id": share.file_id,
+    }
+    audit_details = {"share_id": share_id, "recipient_email": share.recipient_email}
+
+    async def refuse(result: str, detail: str) -> HTTPException:
+        """Record the failed check with whatever the attempt changed, and commit."""
+        await audit.record(
+            session,
+            "share.verification_failed",
+            outcome="denied",
+            details=audit_details | {"result": result},
+            **audit_fields,
+        )
+        await session.commit()
         metrics.SHARE_VERIFICATIONS.labels(result).inc()
         logger.info("share code refused", extra={"share_id": share_id, "result": result})
         return HTTPException(status.HTTP_403_FORBIDDEN, detail=detail)
 
     if v.code_hash is None:
+        # Not audited: with no code outstanding nothing changes, and the link's holder
+        # could repeat this forever. Only checks of a code sent (bounded) are audited.
         await session.rollback()
-        raise refuse("exhausted", "No code to check; ask for a new one")
+        metrics.SHARE_VERIFICATIONS.labels("exhausted").inc()
+        logger.info("share code refused", extra={"share_id": share_id, "result": "no code"})
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No code to check; ask for a new one")
     if v.code_expires_at <= now:
         v.code_hash = v.code_salt = None
-        await session.commit()
-        raise refuse("expired", "The code has expired; ask for a new one")
+        raise await refuse("expired", "The code has expired; ask for a new one")
     if not hmac.compare_digest(_hash(body.code, v.code_salt), v.code_hash):
         v.code_attempts += 1
         left = settings.share_code_attempts - v.code_attempts
         if left <= 0:
             v.code_hash = v.code_salt = None  # one code, a few tries
-        await session.commit()
-        if left <= 0:
-            raise refuse("exhausted", "Too many wrong codes; ask for a new one")
-        raise refuse("wrong", f"Wrong code; {left} tries left")
+            raise await refuse("exhausted", "Too many wrong codes; ask for a new one")
+        raise await refuse("wrong", f"Wrong code; {left} tries left")
     grant = secrets.token_urlsafe(32)
     v.code_hash = v.code_salt = None  # single use
     v.grant_hash = _hash(grant)
     v.grant_expires_at = now + timedelta(seconds=settings.share_grant_ttl_seconds)
+    await audit.record(session, "share.verified", details=audit_details, **audit_fields)
     await session.commit()
     metrics.SHARE_VERIFICATIONS.labels("ok").inc()
     logger.info("share recipient verified", extra={"share_id": share_id})
@@ -277,6 +301,10 @@ async def create_share_download(body: DownloadIn, session: SessionDep) -> Transf
         or v.grant_expires_at <= now
         or not hmac.compare_digest(_hash(body.grant), v.grant_hash)
     ):
+        # Not audited: a wrong grant proves nothing about who sent it, and anyone with
+        # the link could send many. Checks of a code that was sent (bounded by the sends
+        # and tries) are audited.
+        logger.info("share grant refused", extra={"share_id": str(share.id)})
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Grant not valid; verify again")
     _shareable(file)
     token, expires_at = await intents.issue(
@@ -286,6 +314,14 @@ async def create_share_download(body: DownloadIn, session: SessionDep) -> Transf
         user_id=share.created_by,
         ttl=timedelta(seconds=settings.download_intent_ttl_seconds),
         share_id=share.id,
+    )
+    await audit.record(
+        session,
+        "share.download_issued",
+        actor_kind="recipient",
+        target_kind="file",
+        target_id=share.file_id,
+        details={"share_id": str(share.id), "recipient_email": share.recipient_email},
     )
     await session.commit()
     url = f"{settings.gateway_public_url.rstrip('/')}/downloads/{file.id}"

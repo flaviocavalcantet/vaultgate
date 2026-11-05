@@ -21,6 +21,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vaultgate_api import audit
 from vaultgate_api.auth import Principal, PrincipalDep
 from vaultgate_api.db import SessionDep
 from vaultgate_api.models import Group, User, user_groups
@@ -56,6 +57,15 @@ async def provision(
         if user is None:  # inserted or found by a concurrent request; must exist now
             raise RuntimeError("user row missing after insert")
         logger.info("user provisioned", extra={"user_id": str(user.id)})
+        await audit.record(
+            session,
+            "user.created",
+            actor_id=user.id,
+            target_kind="user",
+            target_id=user.id,
+            details={"issuer": principal.issuer, "username": principal.username},
+        )
+        await session.commit()
 
     changed = _update_profile(user, principal, now)
     if {g.name for g in user.groups} != set(principal.groups):

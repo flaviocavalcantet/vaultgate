@@ -62,7 +62,7 @@ The scanner reads text out of PDFs, Word, Excel, PowerPoint, OpenDocument and RT
 - **Encryption:** each file gets its own data key from KMS (wrapped key stored, bound to the file through the KMS encryption context) and is encrypted by the gateway as a stream of AES-256-GCM chunks that also detects reordering and truncation ([ADR 0003](docs/adr/0003-vault-object-encryption.md)). S3 server-side encryption and a public access block on top.
 - **PII handling:** every upload is scanned, and only a clean file (or one an admin released) can be downloaded ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md)). The worker decrypts files in memory only, and reports finding kinds and counts; matched values are never logged or stored.
 - **Containers:** non-root user, read-only root filesystem, all Linux capabilities dropped.
-- **Audit:** append-only table; the application role has `INSERT` but no `UPDATE` or `DELETE`.
+- **Audit:** every security event (uploads, downloads, shares, policy changes, quarantine decisions, refusals) goes to an append-only, hash-chained table: a trigger refuses changes and deletions for every role, and admins can verify the chain ([ADR 0007](docs/adr/0007-audit-log.md)).
 
 ## Observability
 
@@ -107,6 +107,7 @@ The API, gateway and scanner worker serve Prometheus metrics on a separate port,
 | `vaultgate_api_share_codes_sent_total` | counter | | API |
 | `vaultgate_api_share_verifications_total` | counter | `result` (`ok`, `wrong`, `expired`, `exhausted`) | API |
 | `vaultgate_api_share_downloads_total` | counter | | API |
+| `vaultgate_api_audit_events_total` | counter | `outcome` | API |
 | `vaultgate_api_rescans_total` | counter | | API |
 | `vaultgate_scanner_jobs_total` | counter | `outcome` (`clean`, `quarantined`, `unscannable`, `stale`, `retry`, `invalid`) | scanner |
 | `vaultgate_scanner_job_duration_seconds` | histogram | | scanner |
@@ -370,6 +371,18 @@ Email goes through SMTP: `VAULTGATE_SMTP_HOST`, `VAULTGATE_SMTP_PORT` (25), `VAU
 
 **Upgrading:** existing policies keep their actions, so sharing is denied until an admin adds `share` to a policy (`make seed-policies` updates the local one).
 
+### Audit log
+
+Security events are recorded in `audit_events` ([ADR 0007](docs/adr/0007-audit-log.md)): who (a user, an outside recipient, the gateway, the scanner, the system), did what (`file.registered`, `upload.started`, `upload.completed`, `scan.result`, `download.issued`, `download.started`, `share.created`, `share.code_sent`, `share.verified`, `share.downloaded`, `share.revoked`, `quarantine.released`, `scan.rescan_requested`, `policy.created`, `user.created`, ...), to what, with which outcome, from which address and in which request (`request_id`, as in the access logs). Refusals are recorded too (`access.denied`, `intent.refused`, `download.refused`, `share.verification_failed`, `share.download_refused`, ...), although the attempt itself is rolled back. Refusals anyone could repeat without limit are not: a forged or unknown intent token, a wrong grant on a share link, or a code check when no code is outstanding go to the logs and metrics only, so they can't grow the permanent log.
+
+- An event is written in the same transaction as the action it records: both are stored or neither.
+- The table is append-only: a trigger refuses `UPDATE`, `DELETE` and `TRUNCATE` for every role, the table's owner included.
+- Each event stores a SHA-256 over its fields and the previous event's hash. `POST /admin/audit/verify` walks the chain and reports the first event that was changed, or whose predecessor was removed. Every `VAULTGATE_AUDIT_ANCHOR_INTERVAL_SECONDS` (5 min) the API logs the head of the chain (`audit head` in Loki), so even the newest events can't be rewritten without disagreeing with the logs.
+- `GET /admin/audit` lists events, newest first, filtered by `action` (exact, or a prefix such as `share.`), `actor_id`, `target_id`, `outcome`, `since` and `until`. Admins only.
+- No file content and no PII the scanner found is ever recorded, only kinds and counts. Recipients' addresses are, with the shares they belong to: the log has to answer who received a file.
+
+**Upgrading:** the log starts empty; events from before this version are not reconstructed.
+
 ### Client addresses behind a proxy
 
 Access policies can restrict by network (M3), so the API and the gateway must know the real client address. They take it from `X-Forwarded-For` only when the request comes from a proxy listed in `VAULTGATE_TRUSTED_PROXIES`, a comma-separated list of networks (for example the ingress controller's pod range). The header is read from the right, skipping trusted hops; the first other address is the client. With the list empty (the default, and what compose uses), the header is ignored and the TCP peer is the client. List proxy addresses only: a client inside a trusted range can claim any address. If a trusted proxy passes on something that isn't an address, the client counts as unknown rather than as the proxy. Logs record the resolved address as `client_ip`.
@@ -415,6 +428,8 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Internal recipients: sign in; the token's verified email must be the share's address
   - [x] End-to-end check of both recipient flows; [ADR 0006](docs/adr/0006-sharing.md)
 - [ ] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
+  - [x] Audit log: security events in an append-only, hash-chained table; admin listing and chain verification; the chain's head logged as an anchor ([ADR 0007](docs/adr/0007-audit-log.md))
+  - [ ] Traces: OpenTelemetry in the API, gateway and scanner worker, through Alloy to Grafana Tempo, linked to the logs
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
 - [ ] **M9 — PKI and key management:** establish a certificate authority, store private keys securely, and distribute keys and certificates securely (scope to be defined)

@@ -12,6 +12,7 @@ import asyncio
 import uvicorn
 from prometheus_client import start_http_server
 
+from vaultgate_api.audit import run_anchor
 from vaultgate_api.config import settings
 from vaultgate_api.db import get_sessionmaker
 from vaultgate_api.logs import configure_logging
@@ -40,6 +41,8 @@ async def serve() -> None:
     tasks = [public.serve(), internal.serve()]
     if settings.upload_sweep_interval_seconds > 0:
         tasks.append(run_sweeper(get_sessionmaker(), settings.upload_sweep_interval_seconds))
+    if settings.audit_anchor_interval_seconds > 0:
+        tasks.append(run_anchor(get_sessionmaker(), settings.audit_anchor_interval_seconds))
     if settings.scan_resend_interval_seconds > 0:
         tasks.append(
             run_resender(

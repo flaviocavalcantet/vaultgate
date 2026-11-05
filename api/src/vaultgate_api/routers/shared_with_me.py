@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from vaultgate_api import intents, scans
+from vaultgate_api import audit, intents, scans
 from vaultgate_api.access import DownloaderDep, ReaderDep
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
@@ -115,6 +115,14 @@ async def create_shared_download(
         user_id=user.id,
         ttl=timedelta(seconds=settings.download_intent_ttl_seconds),
         share_id=share.id,
+    )
+    await audit.record(
+        session,
+        "share.download_issued",
+        actor_id=user.id,
+        target_kind="file",
+        target_id=file.id,
+        details={"share_id": str(share.id), "recipient_email": share.recipient_email},
     )
     await session.commit()
     url = f"{settings.gateway_public_url.rstrip('/')}/downloads/{file.id}"

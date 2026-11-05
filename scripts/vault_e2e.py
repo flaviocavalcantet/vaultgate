@@ -21,7 +21,8 @@ then, as alice:
    the share), and loses access when alice revokes the link; shares it with bob as a
    VaultGate user, who finds it under /shared-with-me and downloads it while carol
    can't. Then it checks the other
-   verdicts and quarantine: a text with a test card number and CPFs
+   verdicts and quarantine, and finally that the audit log holds the file's history and
+   its hash chain verifies: a text with a test card number and CPFs
    is quarantined with those counts and cannot be downloaded until carol releases it,
    a rescan puts it back in quarantine, and an encrypted PDF is unscannable with the
    reason.
@@ -235,10 +236,32 @@ def run(args) -> None:
     finally:
         remove_e2e_policies(args.api, carol)
 
-    # 7. Share links, PII scans by the worker, and quarantine.
+    # 7. Share links, PII scans by the worker, quarantine, and the audit log.
     check_shares(args, file_id, sha256, alice)
     check_internal_share(args.api, file_id, sha256, alice, bob, carol)
     check_scans(args, alice, carol)
+    check_audit(args.api, file_id, carol)
+
+
+def check_audit(api: str, file_id: str, carol: str) -> None:
+    status, page = api_call(api, "GET", f"/admin/audit?target_id={file_id}&limit=100", carol)
+    assert status == 200, f"audit: {status}"
+    actions = {e["action"] for e in page["items"]}
+    expected = {
+        "file.registered",
+        "upload.completed",
+        "scan.result",
+        "download.started",
+        "share.created",
+        "share.downloaded",
+        "share.revoked",
+    }
+    assert expected <= actions, sorted(expected - actions)
+    status, verified = api_call(api, "POST", "/admin/audit/verify", carol)
+    assert status == 200 and verified["ok"], verified
+    print(
+        f"ok  audit: the file's history is recorded and the chain of {verified['events']} events verifies"
+    )
 
 
 def upload_bytes(api: str, token: str, name: str, data: bytes) -> str:

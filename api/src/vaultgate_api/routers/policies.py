@@ -30,7 +30,7 @@ from pydantic import (
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from vaultgate_api import policies
+from vaultgate_api import audit, policies
 from vaultgate_api.db import SessionDep
 from vaultgate_api.models import POLICY_ACTIONS, Policy, User
 from vaultgate_api.routers.admin import Limit, Offset, Page, require_admin
@@ -177,8 +177,17 @@ async def _get(session, policy_id: uuid.UUID) -> Policy:
     return policy
 
 
-async def _save(session, policy: Policy) -> None:
+async def _save(session, policy: Policy, admin: User, change: str) -> None:
     try:
+        await session.flush()  # a duplicate name fails here
+        await audit.record(
+            session,
+            f"policy.{change}",
+            actor_id=admin.id,
+            target_kind="policy",
+            target_id=policy.id,
+            details=_snapshot(policy),
+        )
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -186,6 +195,23 @@ async def _save(session, policy: Policy) -> None:
             status.HTTP_409_CONFLICT, detail="A policy with this name already exists"
         ) from None
     await session.refresh(policy)
+
+
+def _snapshot(policy: Policy) -> dict:
+    """The policy as it stands, for the audit log."""
+    return {
+        "name": policy.name,
+        "effect": policy.effect,
+        "actions": list(policy.actions),
+        "groups": list(policy.groups or []),
+        "networks": [str(n) for n in policy.networks or []],
+        "excluded_networks": [str(n) for n in policy.excluded_networks or []],
+        "days": list(policy.days or []),
+        "start_time": policy.start_time.isoformat() if policy.start_time else None,
+        "end_time": policy.end_time.isoformat() if policy.end_time else None,
+        "timezone": policy.timezone,
+        "enabled": policy.enabled,
+    }
 
 
 def _log(change: str, policy: Policy, admin: User) -> None:
@@ -215,7 +241,7 @@ async def create_policy(body: PolicyIn, admin: AdminDep, session: SessionDep) ->
     policy = Policy()
     _apply(policy, body)
     session.add(policy)
-    await _save(session, policy)
+    await _save(session, policy, admin, "created")
     _log("created", policy, admin)
     return PolicyOut.of(policy)
 
@@ -255,7 +281,7 @@ async def replace_policy(
 ) -> PolicyOut:
     policy = await _get(session, policy_id)
     _apply(policy, body)
-    await _save(session, policy)
+    await _save(session, policy, admin, "replaced")
     _log("replaced", policy, admin)
     return PolicyOut.of(policy)
 
@@ -263,6 +289,14 @@ async def replace_policy(
 @router.delete("/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_policy(policy_id: uuid.UUID, admin: AdminDep, session: SessionDep) -> Response:
     policy = await _get(session, policy_id)
+    await audit.record(
+        session,
+        "policy.deleted",
+        actor_id=admin.id,
+        target_kind="policy",
+        target_id=policy.id,
+        details=_snapshot(policy),
+    )
     await session.delete(policy)
     await session.commit()
     _log("deleted", policy, admin)

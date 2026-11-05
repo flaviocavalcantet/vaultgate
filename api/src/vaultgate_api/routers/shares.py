@@ -24,7 +24,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 
-from vaultgate_api import metrics, scans
+from vaultgate_api import audit, metrics, scans
 from vaultgate_api.access import ReaderDep, SharerDep
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
@@ -164,6 +164,21 @@ async def create_share(
         max_downloads=downloads,
     )
     session.add(share)
+    await session.flush()
+    await audit.record(
+        session,
+        "share.created",
+        actor_id=user.id,
+        target_kind="file",
+        target_id=file.id,
+        details={
+            "share_id": str(share.id),
+            "recipient_email": share.recipient_email,
+            "recipient_kind": share.recipient_kind,
+            "expires_at": share.expires_at.isoformat(),
+            "max_downloads": share.max_downloads,
+        },
+    )
     await session.commit()
     await session.refresh(share)
     metrics.SHARES_CREATED.labels(body.recipient_kind).inc()
@@ -201,6 +216,14 @@ async def revoke_share(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Share not found")
     if share.revoked_at is None:
         share.revoked_at = datetime.now(UTC)
+        await audit.record(
+            session,
+            "share.revoked",
+            actor_id=user.id,
+            target_kind="file",
+            target_id=file_id,
+            details={"share_id": str(share.id), "recipient_email": share.recipient_email},
+        )
         await session.commit()
         metrics.SHARES_REVOKED.inc()
         logger.info("share revoked", extra={"file_id": str(file_id), "share_id": str(share.id)})
