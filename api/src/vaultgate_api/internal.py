@@ -109,17 +109,11 @@ async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeRe
             session, token=body.token, kind=body.kind, file_id=body.file_id
         )
     except intents.IntentRejected:
+        # Not audited: an unknown token names nothing, and anyone can send one, so each
+        # would add a permanent row. The access log and the gateway's metrics count them.
+        await session.rollback()
         logger.info("intent rejected", extra={"file_id": str(body.file_id), "kind": body.kind})
-        raise await _refuse(
-            session,
-            status.HTTP_403_FORBIDDEN,
-            "Intent not valid",
-            "intent.rejected",
-            client_ip=client_ip,
-            actor_kind="gateway",
-            details={"kind": body.kind},
-            **target,
-        ) from None
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Intent not valid") from None
     user = await session.get(User, intent.created_by)
     user_id, share_id = intent.created_by, intent.share_id
     if user is None or not user.is_active:

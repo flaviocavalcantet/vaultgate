@@ -52,12 +52,10 @@ async def test_an_upload_and_download_leave_a_trail(sharing, provider, queue, se
 async def test_refusals_are_kept_although_the_attempt_rolls_back(sharing, provider, queue, session):  # noqa: F811
     public, internal, _ = sharing
     file_id, _ = await with_verdict(sharing, provider, queue)
-    # A forged token at the gateway.
+    # A forged token names nothing real: logged, not audited (anyone can send one).
     rejected = await consume_download(internal, file_id, "forged")
     assert rejected.status_code == 403
-    [event] = await events(session, action="intent.rejected")
-    assert event.outcome == "denied" and event.actor_kind == "gateway"
-    assert str(event.target_id) == file_id
+    assert await events(session, action="intent.rejected") == []
 
     # A policy refusal at the API.
     session.add(Policy(name="no downloads", effect="deny", actions=["download"]))

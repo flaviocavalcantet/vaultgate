@@ -290,25 +290,15 @@ async def create_share_download(body: DownloadIn, session: SessionDep) -> Transf
     _external(share)
     v = await session.get(ShareVerification, share.id)
     now = datetime.now(UTC)
-    audit_fields = {
-        "actor_kind": "recipient",
-        "target_kind": "file",
-        "target_id": share.file_id,
-    }
-    audit_details = {"share_id": str(share.id), "recipient_email": share.recipient_email}
     if (
         v is None
         or v.grant_hash is None
         or v.grant_expires_at <= now
         or not hmac.compare_digest(_hash(body.grant), v.grant_hash)
     ):
-        await session.rollback()
-        await audit.record_refusal(
-            session,
-            "share.download_refused",
-            details=audit_details | {"reason": "grant not valid"},
-            **audit_fields,
-        )
+        # Not audited: a wrong grant proves nothing about who sent it, and anyone with
+        # the link could send many. Failed code checks, which are bounded, are audited.
+        logger.info("share grant refused", extra={"share_id": str(share.id)})
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Grant not valid; verify again")
     _shareable(file)
     token, expires_at = await intents.issue(
@@ -319,7 +309,14 @@ async def create_share_download(body: DownloadIn, session: SessionDep) -> Transf
         ttl=timedelta(seconds=settings.download_intent_ttl_seconds),
         share_id=share.id,
     )
-    await audit.record(session, "share.download_issued", details=audit_details, **audit_fields)
+    await audit.record(
+        session,
+        "share.download_issued",
+        actor_kind="recipient",
+        target_kind="file",
+        target_id=share.file_id,
+        details={"share_id": str(share.id), "recipient_email": share.recipient_email},
+    )
     await session.commit()
     url = f"{settings.gateway_public_url.rstrip('/')}/downloads/{file.id}"
     return TransferOut(url=url, token=token, expires_at=expires_at)
