@@ -255,6 +255,14 @@ def main(argv: list[str]) -> int:
         (charts_dir / f"{name}.svg").write_text(line_chart(title, scaled, unit, start, ceiling))
 
     sizes = {"256 KiB": 0.25, "4 MiB": 4, "32 MiB": 32, "128 MiB": 128}
+    downloaded = [
+        label
+        for label in sizes
+        if any(
+            r["Name"] == f"GET /downloads/{{id}} {label}" and int(r["Request Count"]) for r in rows
+        )
+    ]
+    largest = downloaded[-1] if downloaded else "none"
     moved = sum(
         int(r["Request Count"]) * mib
         for r in rows
@@ -292,11 +300,22 @@ def main(argv: list[str]) -> int:
         ),
         (
             f"- **Gateway memory peaked at {peaks['gateway-memory']:.0f} MiB per pod** (limit "
-            "256 MiB), whatever the transfer sizes."
+            f"256 MiB, threshold {check.MEMORY_CEILING / MiB:.0f} MiB): "
+            + (
+                f"under the threshold, with uploads of up to {largest} in flight."
+                if peaks["gateway-memory"] <= check.MEMORY_CEILING / MiB
+                else "ABOVE the threshold."
+            )
         ),
         (
-            f"- **The gateway ran on up to {peaks['gateway-replicas']:.0f} pods**, its CPU "
-            f"autoscaler reacting to the load (peak {peaks['gateway-cpu']:.2f} cores in one pod)."
+            f"- **The gateway ran on up to {peaks['gateway-replicas']:.0f} "
+            f"pod{'s' if peaks['gateway-replicas'] > 1 else ''}** (autoscaler: "
+            f"1 to 3), with a peak of {peaks['gateway-cpu']:.2f} cores in one pod: "
+            + (
+                "the autoscaler added pods during the run."
+                if peaks["gateway-replicas"] > 1
+                else "the autoscaler did not scale out at this load."
+            )
         ),
         f"- **Up to {peaks['scanner']:.0f} scans ran at once** in the one scanner pod.",
         "",
