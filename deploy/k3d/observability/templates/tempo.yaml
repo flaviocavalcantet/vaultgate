@@ -33,6 +33,9 @@ spec:
           readinessProbe:
             httpGet: { path: /ready, port: http }
             periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { memory: 1Gi }
