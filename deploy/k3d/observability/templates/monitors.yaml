@@ -1,0 +1,15 @@
+# Prometheus scrapes Loki, Tempo and Alloy, with job="loki", "tempo" and "alloy" as in
+# compose, so the VaultGateObservabilityDown rule works unchanged.
+{{- range $name, $port := dict "loki" "http" "tempo" "http" "alloy" "http" }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $name }}
+spec:
+  jobLabel: app.kubernetes.io/name
+  selector:
+    matchLabels: { app.kubernetes.io/name: {{ $name }} }
+  endpoints:
+    - { port: {{ $port }}, path: /metrics, interval: 15s }
+{{- end }}

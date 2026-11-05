@@ -120,7 +120,7 @@ jobs:
           kubectl get applications -n argocd -o wide || true
           kubectl get pods,hpa,networkpolicy -A -o wide || true
           kubectl -n argocd get applications -o yaml | grep -A20 "conditions:\|operationState:" || true
-          for ns in vaultgate vaultgate-deps; do kubectl -n $ns logs --all-containers --prefix --tail=200 --max-log-requests=20 -l app.kubernetes.io/name || true; done
+          for ns in vaultgate vaultgate-deps monitoring; do kubectl -n $ns logs --all-containers --prefix --tail=200 --max-log-requests=30 -l app.kubernetes.io/name || true; done
 
   helm:
     runs-on: ubuntu-latest
@@ -130,6 +130,7 @@ jobs:
       - run: helm lint deploy/helm/vaultgate
       - run: helm lint deploy/helm/vaultgate -f deploy/helm/vaultgate/values-k3d.yaml
       - run: helm lint deploy/argocd/local
+      - run: helm lint deploy/k3d/observability
       # The rendered manifests against the Kubernetes API schemas (and the Prometheus
       # Operator's and Argo CD's, for their resources): defaults, the k3d values, every
       # option on, and the k3d app of apps. The image and the CRD schema catalog are
@@ -141,7 +142,8 @@ jobs:
         run: |
           everything="--set ingress.enabled=true --set metrics.serviceMonitor.enabled=true --set tracing.otlpEndpoint=http://alloy:4318"
           for chart in "deploy/helm/vaultgate" "deploy/helm/vaultgate -f deploy/helm/vaultgate/values-k3d.yaml" \
-            "deploy/helm/vaultgate -f deploy/helm/vaultgate/values-k3d.yaml $everything" "deploy/argocd/local"; do
+            "deploy/helm/vaultgate -f deploy/helm/vaultgate/values-k3d.yaml $everything" "deploy/argocd/local" \
+            "deploy/k3d/observability"; do
             helm template vaultgate $chart |
               docker run -i --rm "$KUBECONFORM" -strict -summary \
                 -kubernetes-version 1.31.0 -schema-location default \

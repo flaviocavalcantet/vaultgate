@@ -162,7 +162,7 @@ Grafana loads the dashboards in `observability/grafana/dashboards/` on startup (
 - **VaultGate / Service overview:** up/down, request rate, 5xx ratio and latency per service and route, plus recent error logs from Loki.
 - **VaultGate / Gateway uploads:** upload throughput, concurrency, size and duration, and gateway memory, which should stay flat however large the uploads are.
 
-Prometheus evaluates the rules in `observability/prometheus/rules/vaultgate.yml`; `make obs-check` runs their unit tests. Firing alerts show in Prometheus → Alerts (Alertmanager routing arrives with M7).
+Prometheus evaluates the rules in `observability/prometheus/rules/vaultgate.yml`; `make obs-check` runs their unit tests. Under compose, firing alerts show in Prometheus → Alerts. On the local Kubernetes cluster, Alertmanager routes them by email to Mailpit (see [Local Kubernetes](#local-kubernetes-k3d-and-argo-cd)).
 
 | Alert | Fires when | Severity |
 |---|---|---|
@@ -183,7 +183,7 @@ scanner/        Go PII scanner
 deploy/
   helm/         Helm chart for the API, gateway and scanner worker
   argocd/       Argo CD applications: an example for a real cluster, the local app of apps
-  k3d/          Local cluster: k3d config, Argo CD install, in-cluster dependencies
+  k3d/          Local cluster: k3d config, Argo CD install, in-cluster dependencies and observability
 infra/
   terraform/
     modules/    Reusable modules (storage: S3 + KMS)
@@ -431,13 +431,22 @@ CI lints the chart and checks the rendered manifests against the Kubernetes sche
 2. The API, gateway and scanner images are built from your working tree and pushed there.
 3. Argo CD is installed (`deploy/k3d/argocd`), and a root application hands it this repo at `VAULTGATE_REVISION` (default: the current branch, which must be pushed). From then on Argo CD syncs everything from git:
    - the dependencies (`deploy/k3d/deps`: PostgreSQL, LocalStack, Keycloak, Mailpit) into `vaultgate-deps`;
-   - then the chart with `values-k3d.yaml` into `vaultgate`.
+   - the observability ([ADR 0010](docs/adr/0010-cluster-observability.md)) into `monitoring`:
+     - kube-prometheus-stack, the upstream chart at a pinned version, with `deploy/k3d/kube-prometheus-stack.yaml`: the Prometheus Operator, Prometheus, Alertmanager and Grafana;
+     - `deploy/k3d/observability`: Loki, Tempo and Alloy, and VaultGate's alert rules, dashboards and data sources, all from the files compose uses;
+   - then the chart with `values-k3d.yaml` into `vaultgate`, with ServiceMonitors and traces to Alloy.
 4. Terraform creates the bucket, key and queues in the cluster's LocalStack, and the local access policy is seeded.
 
-Everything answers where compose does: the API on http://localhost:8000, the gateway on 8888, Keycloak on 8080, LocalStack on 4566 and Mailpit on 8025. Then:
+Everything answers where compose does:
+
+- the API on http://localhost:8000, the gateway on 8888, Keycloak on 8080, LocalStack on 4566 and Mailpit on 8025;
+- Grafana on 3000 (admin / admin), Prometheus on 9090, Loki on 3100 and Tempo on 3200;
+- and, new on the cluster, Alertmanager on 9093.
+
+Alertmanager routes every alert by email to Mailpit: `oncall@vaultgate.local` for the alerts, `heartbeat@vaultgate.local` for Watchdog, which always fires and so shows the whole path works. Then:
 
 ```bash
-make k3d-check     # vault e2e against the cluster; Argo CD synced, autoscaler reading CPU, internal port closed to other pods
+make k3d-check     # vault e2e against the cluster, traces included; Argo CD synced, autoscaler, network policy, scrape targets, dashboards, Alertmanager mail
 make k3d-images    # after a code change: rebuild, push, restart the pods
 make k3d-down      # delete the cluster
 kubectl -n argocd port-forward svc/argocd-server 8081:80   # Argo CD UI on http://localhost:8081, user admin, password below
@@ -494,10 +503,10 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
 - [x] **M6 — Audit and tracing:** append-only audit log, OpenTelemetry traces across all three services
   - [x] Audit log: security events in an append-only, hash-chained table; admin listing and chain verification; the chain's head logged as an anchor ([ADR 0007](docs/adr/0007-audit-log.md))
   - [x] Traces: OpenTelemetry in the API, gateway and scanner worker, through Alloy to Grafana Tempo, linked to the logs both ways; the e2e check follows an upload to its scan ([ADR 0008](docs/adr/0008-tracing.md))
-- [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
+- [x] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
   - [x] Helm chart for all three services: configuration and credentials, optional ingress, CPU autoscaling of the gateway, network policies, disruption budgets, schema checks in CI
   - [x] Local k3d cluster: the dependencies in-cluster, images from a local registry, Argo CD syncing this repo, the end-to-end check against it in CI ([ADR 0009](docs/adr/0009-local-kubernetes.md))
-  - [ ] Cluster observability through ArgoCD: Prometheus Operator, Grafana, Loki, Tempo and Alloy with the repo's dashboards and rules, Alertmanager routing
+  - [x] Cluster observability through Argo CD: Prometheus Operator, Grafana, Loki, Tempo and Alloy with the repo's dashboards and rules, Alertmanager routing to email ([ADR 0010](docs/adr/0010-cluster-observability.md))
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
 - [ ] **M9 — PKI and key management:** establish a certificate authority, store private keys securely, and distribute keys and certificates securely (scope to be defined)
 - [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined)

@@ -1,0 +1,21 @@
+# The UIs and APIs on the host, on compose's ports (deploy/k3d/cluster.yaml): each a
+# NodePort Service with that one port.
+{{- $kps := .Values.kps }}
+{{- $ports := .Values.nodePorts }}
+{{- range $name, $spec := dict
+  "grafana" (dict "port" 80 "target" 3000 "selector" (dict "app.kubernetes.io/name" "grafana" "app.kubernetes.io/instance" $kps))
+  "prometheus" (dict "port" 9090 "target" 9090 "selector" (dict "app.kubernetes.io/name" "prometheus" "operator.prometheus.io/name" (printf "%s-prometheus" $kps)))
+  "alertmanager" (dict "port" 9093 "target" 9093 "selector" (dict "app.kubernetes.io/name" "alertmanager" "alertmanager" (printf "%s-alertmanager" $kps)))
+  "loki" (dict "port" 3100 "target" 3100 "selector" (dict "app.kubernetes.io/name" "loki"))
+  "tempo" (dict "port" 3200 "target" 3200 "selector" (dict "app.kubernetes.io/name" "tempo")) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-host
+spec:
+  type: NodePort
+  selector: {{- toYaml $spec.selector | nindent 4 }}
+  ports:
+    - { name: http, port: {{ $spec.port }}, targetPort: {{ $spec.target }}, nodePort: {{ index $ports $name }} }
+{{- end }}

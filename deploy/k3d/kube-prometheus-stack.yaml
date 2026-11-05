@@ -1,0 +1,96 @@
+# kube-prometheus-stack on the local cluster (ADR 0010): the Prometheus Operator,
+# Prometheus, Alertmanager, Grafana, kube-state-metrics and node-exporter. VaultGate's
+# own pieces (alert rules, dashboards, the Loki and Tempo data sources, Loki, Tempo and
+# Alloy) come from deploy/k3d/observability, from the same files as docker compose.
+fullnameOverride: kps
+
+# k3s runs the control plane in one process: these have no endpoints to scrape, and
+# their rules would only ever fire as "target down".
+kubeEtcd: { enabled: false }
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeProxy: { enabled: false }
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeProxy: false
+
+prometheus:
+  prometheusSpec:
+    # Every ServiceMonitor and PrometheusRule in the cluster, not only this release's:
+    # the VaultGate chart's and deploy/k3d/observability's.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    retention: 7d
+    resources:
+      requests: { cpu: 100m, memory: 512Mi }
+      limits: { memory: 1536Mi }
+
+alertmanager:
+  # Alerts go by email to Mailpit (vaultgate-deps), which catches them: open
+  # http://localhost:8025. Watchdog, which always fires, proves the whole path
+  # (Prometheus, Alertmanager, SMTP) works; `make k3d-check` looks for it.
+  config:
+    global:
+      resolve_timeout: 5m
+      smtp_smarthost: mailpit.vaultgate-deps:1025
+      smtp_from: alertmanager@vaultgate.local
+      smtp_require_tls: false
+    route:
+      receiver: oncall
+      group_by: [alertname, job]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - receiver: heartbeat
+          matchers: ['alertname = "Watchdog"']
+          group_wait: 10s
+          repeat_interval: 12h
+        # The inhibition rule's own marker alert, and nothing else to tell anyone.
+        - receiver: "null"
+          matchers: ['alertname = "InfoInhibitor"']
+    inhibit_rules:
+      - source_matchers: ['severity = "critical"']
+        target_matchers: ['severity = "warning"']
+        equal: [alertname, job]
+    receivers:
+      - name: "null"
+      - name: oncall
+        email_configs:
+          - to: oncall@vaultgate.local
+            send_resolved: true
+      - name: heartbeat
+        email_configs:
+          - to: heartbeat@vaultgate.local
+    templates: []
+
+grafana:
+  adminUser: admin
+  adminPassword: admin
+  # The data sources come from observability/grafana/provisioning, as with compose
+  # (Prometheus, Loki and Tempo with fixed UIDs, and the links between logs and traces).
+  sidecar:
+    datasources:
+      defaultDatasourceEnabled: false
+  grafana.ini:
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+  # Kubernetes dashboards, next to VaultGate's.
+  defaultDashboardsEnabled: true
+
+# Opt-out of the operator's admission webhook certificates job keeps startup simple
+# on a throwaway cluster.
+prometheusOperator:
+  admissionWebhooks:
+    enabled: false
+  tls:
+    enabled: false

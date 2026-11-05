@@ -1,5 +1,6 @@
-# Single-process Loki for local development: filesystem storage, no auth,
-# 7 days of retention. Production runs Loki against S3 (see M7).
+# Single-process Loki for local development (docker compose, and the local k3d cluster
+# through deploy/k3d/observability): filesystem storage, no auth, 7 days of retention.
+# A real deployment runs Loki against object storage.
 auth_enabled: false
 
 server:

@@ -7,9 +7,11 @@
 #                          then create the buckets, key and queues (Terraform) and seed the
 #                          local access policy
 #   scripts/k3d.sh images  rebuild and push the images, and restart the pods to pull them
-#   scripts/k3d.sh check   the vault end-to-end check against the cluster, plus cluster
-#                          checks: Argo CD in sync, the gateway's autoscaler reading CPU,
-#                          and the network policy closing the API's internal port
+#   scripts/k3d.sh check   the vault end-to-end check against the cluster (traces in
+#                          Tempo and logs in Loki included), plus cluster checks: Argo CD
+#                          in sync, the gateway's autoscaler reading CPU, the network
+#                          policy closing the API's internal port, Prometheus scraping
+#                          every service, Grafana's dashboards, and Alertmanager's mail
 #   scripts/k3d.sh down    delete the cluster (and its registry)
 #
 # Argo CD deploys what is in git, not the working tree: it syncs VAULTGATE_REVISION
@@ -18,7 +20,8 @@
 # registry (localhost:5050).
 #
 # Needs Docker, k3d, kubectl, Python 3 and Terraform. The host ports are those of docker
-# compose (8000, 8888, 8080, 4566, 8025): stop compose first (`make down`).
+# compose (8000, 8888, 8080, 4566, 8025, 3000, 9090, 3100, 3200; and 9093 for
+# Alertmanager): stop compose first (`make down`).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -86,14 +89,15 @@ up() {
     kubectl apply -f -
 
   log "waiting for Argo CD to sync the dependencies and VaultGate"
-  wait_for 900 "vaultgate-deps to be synced and healthy" app_ready vaultgate-deps
-  wait_for 900 "vaultgate to be synced and healthy" app_ready vaultgate
+  for app in vaultgate-deps kube-prometheus-stack vaultgate-observability vaultgate; do
+    wait_for 900 "$app to be synced and healthy" app_ready "$app"
+  done
 
   log "Terraform against the in-cluster LocalStack"
   wait_for 120 "LocalStack" curl -sf http://localhost:4566/_localstack/health
   make tf-local
   python3 scripts/seed_policies.py
-  log "ready: API http://localhost:8000, gateway http://localhost:8888, Keycloak http://localhost:8080, Mailpit http://localhost:8025"
+  log "ready: API http://localhost:8000, gateway http://localhost:8888, Keycloak http://localhost:8080, Mailpit http://localhost:8025, Grafana http://localhost:3000 (admin/admin), Prometheus http://localhost:9090, Alertmanager http://localhost:9093"
 }
 
 restart() {
@@ -103,7 +107,7 @@ restart() {
 
 check_cluster() {
   log "Argo CD: every application synced and healthy"
-  for app in vaultgate-local vaultgate-deps vaultgate; do
+  for app in vaultgate-local vaultgate-deps kube-prometheus-stack vaultgate-observability vaultgate; do
     app_ready "$app" || {
       kubectl -n argocd get application "$app" -o yaml >&2
       return 1
@@ -130,11 +134,22 @@ check_cluster() {
   echo "ok  another pod reaches the public port, not the internal one"
 }
 
+check_observability() {
+  log "Prometheus scrapes every service"
+  wait_for 300 "every target to be up" python3 scripts/k3d_checks.py targets
+  python3 scripts/k3d_checks.py targets
+  log "Grafana has VaultGate's dashboards and data sources"
+  python3 scripts/k3d_checks.py grafana
+  log "Alertmanager sends mail (Watchdog, to Mailpit)"
+  wait_for 300 "Alertmanager's heartbeat mail" python3 scripts/k3d_checks.py alertmanager
+  python3 scripts/k3d_checks.py alertmanager
+}
+
 check() {
   check_cluster
+  check_observability
   log "vault end to end, against the cluster"
-  # Traces and logs come with the cluster's observability stack (next M7 step).
-  python3 scripts/vault_e2e.py --skip-traces
+  python3 scripts/vault_e2e.py
 }
 
 case ${1:-} in

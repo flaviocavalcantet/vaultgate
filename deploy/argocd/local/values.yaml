@@ -2,3 +2,5 @@
 # revision every application below syncs, so a branch can be tried before it is merged.
 repoURL: https://github.com/flaviocavalcantet/vaultgate
 revision: main
+# The upstream chart's version (ADR 0010); bump it on purpose.
+kubePrometheusStack: 92.21.1

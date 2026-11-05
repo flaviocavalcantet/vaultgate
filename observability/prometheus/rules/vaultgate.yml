@@ -1,8 +1,9 @@
 # Alert rules for VaultGate. Evaluated by Prometheus; unit tests live next to this
 # file (vaultgate_test.yml) and run with `promtool test rules` in CI.
 #
-# No Alertmanager yet: firing alerts are visible in Prometheus (Alerts tab) and in
-# Grafana. Routing to on-call channels comes with the Kubernetes milestone (M7).
+# Under docker compose, firing alerts are visible in Prometheus (Alerts tab) and in
+# Grafana. On the local k3d cluster the same rules (a PrometheusRule, from this file)
+# go through Alertmanager, which mails them to Mailpit (deploy/k3d/kube-prometheus-stack.yaml).
 groups:
   - name: vaultgate.availability
     rules:
