@@ -72,13 +72,25 @@ def next_username() -> str:
     return f"load-{n:03d}"
 
 
-def body(size: int):
-    """`size` bytes of random data, streamed in 1 MiB pieces (constant memory here too)."""
-    sent = 0
-    while sent < size:
-        piece = CHUNK[: min(MiB, size - sent)]
-        sent += len(piece)
-        yield piece
+class RandomBody:
+    """`size` bytes of random data, read in pieces of at most 1 MiB (constant memory here
+    too). A file-like object with a length, not a generator: requests sends a generator
+    with Transfer-Encoding: chunked, and a request with that and Content-Length is
+    refused (the gateway takes a fixed length only)."""
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+        self.sent = 0
+
+    def __len__(self) -> int:
+        return self.size
+
+    def read(self, n: int = -1) -> bytes:
+        left = self.size - self.sent
+        n = left if n is None or n < 0 else min(n, left)
+        piece = CHUNK[: min(n, MiB)]
+        self.sent += len(piece)
+        return piece
 
 
 def text_document(size: int) -> bytes:
@@ -155,7 +167,7 @@ class VaultUser(HttpUser):
                     context={},
                 )
                 return verdict
-            time.sleep(1)
+            time.sleep(0.25)
         events.request.fire(
             request_type="SCAN",
             name=f"upload → verdict {label}",
@@ -198,7 +210,7 @@ class Transfers(VaultUser):
     @task
     def upload_scan_download(self) -> None:
         size = random.choices([s for s, _ in SIZES], weights=[w for _, w in SIZES])[0]
-        file_id = self.upload(f"load-{size_label(size)}.bin", size, body(size))
+        file_id = self.upload(f"load-{size_label(size)}.bin", size, RandomBody(size))
         if file_id and self.wait_for_verdict(file_id, size_label(size)) == "clean":
             self.download(file_id, size)
 
@@ -212,7 +224,9 @@ class ControlPlane(VaultUser):
     def on_start(self) -> None:
         super().on_start()
         # One small clean file of its own, to read and to issue download intents for.
-        self.file_id = self.upload("control-plane.bin", 64 * 1024, body(64 * 1024), "control plane")
+        self.file_id = self.upload(
+            "control-plane.bin", 64 * 1024, RandomBody(64 * 1024), "control plane"
+        )
         if self.file_id:
             self.wait_for_verdict(self.file_id, "control plane")
 
