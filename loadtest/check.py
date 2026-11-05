@@ -7,7 +7,8 @@ minutes. The run fails when:
 
 - any request failed (Locust counts timeouts, wrong status codes, short downloads and
   scans with no verdict as failures);
-- the scenario did not do its work: no upload, download, scan verdict or API read;
+- a scenario did not do its work: Transfers no download, ControlPlane none of its API
+  calls, Documents no document verdict (each checked by names only it produces);
 - a gateway pod's resident memory came within 10% of its 256 MiB limit: streaming must
   keep it flat whatever the transfer sizes;
 - a VaultGate pod restarted during the run (out of memory, failed probes).
@@ -24,7 +25,22 @@ import urllib.request
 
 GATEWAY_LIMIT = 256 * 1024 * 1024
 MEMORY_CEILING = 0.9 * GATEWAY_LIMIT
-REQUIRED = ("PUT /uploads/", "GET /downloads/", "upload → verdict", "GET /files")
+# What each scenario must have done, by request names only it produces: exact names, or
+# a prefix (ending in a space) for the ones labelled by size or document type.
+REQUIRED = {
+    "Transfers": ["GET /downloads/{id} "],
+    "ControlPlane": [
+        "GET /me",
+        "GET /files",
+        "GET /files/{id}",
+        "POST /files/{id}/download (intent only)",
+    ],
+    "Documents": ["upload → verdict document "],
+}
+
+
+def matches(name: str, wanted: str) -> bool:
+    return name.startswith(wanted) if wanted.endswith(" ") else name == wanted
 
 
 def query(prometheus: str, promql: str) -> float | None:
@@ -48,10 +64,11 @@ def main(argv: list[str]) -> int:
     failures, requests = int(total["Failure Count"]), int(total["Request Count"])
     if failures:
         problems.append(f"{failures} of {requests} requests failed")
-    for needed in REQUIRED:
-        done = sum(int(r["Request Count"]) for r in rows if needed in r["Name"])
-        if not done:
-            problems.append(f"no {needed!r} request was made")
+    for scenario, names in REQUIRED.items():
+        for wanted in names:
+            done = sum(int(r["Request Count"]) for r in rows if matches(r["Name"], wanted))
+            if not done:
+                problems.append(f"{scenario}: no {wanted.strip()!r} request was made")
 
     try:
         memory = query(

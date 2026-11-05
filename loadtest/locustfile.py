@@ -115,8 +115,9 @@ class VaultUser(HttpUser):
 
     # --- steps shared by the scenarios ---------------------------------------------
 
-    def upload(self, name: str, size: int, data) -> str | None:
-        """Register a file and stream it to the gateway; returns its ID."""
+    def upload(self, name: str, size: int, data, label: str | None = None) -> str | None:
+        """Register a file and stream it to the gateway; returns its ID. `label` names the
+        upload in the results (the size by default)."""
         created = self.client.post(
             "/files", json={"name": name, "size": size}, headers=self.auth, name="POST /files"
         )
@@ -127,7 +128,7 @@ class VaultUser(HttpUser):
             intent["url"],
             data=data,
             headers={"Authorization": f"Bearer {intent['token']}", "Content-Length": str(size)},
-            name=f"PUT /uploads/{{id}} {size_label(size)}",
+            name=f"PUT /uploads/{{id}} {label or size_label(size)}",
             catch_response=True,
         ) as response:
             if response.status_code != 201:
@@ -211,9 +212,9 @@ class ControlPlane(VaultUser):
     def on_start(self) -> None:
         super().on_start()
         # One small clean file of its own, to read and to issue download intents for.
-        self.file_id = self.upload("control-plane.bin", 64 * 1024, body(64 * 1024))
+        self.file_id = self.upload("control-plane.bin", 64 * 1024, body(64 * 1024), "control plane")
         if self.file_id:
-            self.wait_for_verdict(self.file_id, "64 KiB")
+            self.wait_for_verdict(self.file_id, "control plane")
 
     @task(3)
     def me(self) -> None:
@@ -248,13 +249,14 @@ class Documents(VaultUser):
     def office_or_pdf(self) -> None:
         path = random.choice(DOCUMENTS)
         data = path.read_bytes()
-        file_id = self.upload(path.name, len(data), data)
+        label = f"document {path.suffix.lstrip('.')}"
+        file_id = self.upload(path.name, len(data), data, label)
         if file_id:
-            self.wait_for_verdict(file_id, path.suffix.lstrip("."))
+            self.wait_for_verdict(file_id, label)
 
     @task(1)
     def large_text(self) -> None:
         data = text_document(8 * MiB)
-        file_id = self.upload("notes.txt", len(data), data)
+        file_id = self.upload("notes.txt", len(data), data, "document text 8 MiB")
         if file_id:
-            self.wait_for_verdict(file_id, "text 8 MiB")
+            self.wait_for_verdict(file_id, "document text 8 MiB")
