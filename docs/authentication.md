@@ -64,6 +64,19 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/me
 
 The seed users and their passwords are in the README (local development only).
 
+## Load test users (local only)
+
+The local realm has a second login client for the load tests (M8, `loadtest/`):
+`vaultgate-load`. It allows the password grant, so Locust can log many users in
+without a browser. The users are `load-001` to `load-050` in the `/load` group,
+defined in `infra/keycloak/vaultgate-users-0.json` (from `loadtest/make_users.py`).
+
+- **Same tokens:** their tokens have the same issuer and audience as the web client's,
+  so the API validates them the same way.
+- **The web client is unchanged:** `vaultgate-web` stays PKCE-only.
+- **Local only:** the client and the users exist only in this local realm, imported by
+  compose and the k3d cluster. A real deployment's identity provider has neither.
+
 ## Testing
 
 `make auth-check` (CI job `auth-e2e`) exercises the whole path with real containers:

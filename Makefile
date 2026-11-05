@@ -1,4 +1,4 @@
-.PHONY: up down test lint migrate tf-local obs-check auth-check vault-check token seed-policies k3d-up k3d-images k3d-check k3d-down
+.PHONY: up down test lint migrate tf-local obs-check auth-check vault-check token seed-policies k3d-up k3d-images k3d-check k3d-down load-test load-smoke
 
 up:          ## Start the local stack (services, dependencies and Prometheus/Loki/Tempo/Alloy/Grafana)
 	docker compose up --build -d
@@ -59,3 +59,19 @@ k3d-check:   ## The vault end-to-end check against the cluster, plus Argo CD, au
 
 k3d-down:    ## Delete the local cluster
 	scripts/k3d.sh down
+
+# Load tests (M8, loadtest/): against the local cluster (`make k3d-up`), as the load users
+# in the /load group. Needs `pip install -r loadtest/requirements.txt`. Locust's own exit
+# code is ignored: loadtest/check.py decides, with Prometheus's view of the same minutes.
+LOAD_RESULTS ?= loadtest/results
+LOCUST = locust -f loadtest/locustfile.py --headless --host http://localhost:8000 --exit-code-on-error 0
+
+load-test:   ## Full load run against the local cluster: 30 users for 10 minutes; results in loadtest/results/
+	mkdir -p $(LOAD_RESULTS)
+	$(LOCUST) -u 30 -r 1 -t 10m --csv $(LOAD_RESULTS)/full --html $(LOAD_RESULTS)/full.html
+	python3 loadtest/check.py $(LOAD_RESULTS)/full --window 12m
+
+load-smoke:  ## Short load run with pass/fail thresholds (CI): 6 users for 90 s, uploads up to 32 MiB
+	mkdir -p $(LOAD_RESULTS)
+	VAULTGATE_LOAD_MAX_MIB=32 $(LOCUST) -u 6 -r 2 -t 90s --csv $(LOAD_RESULTS)/smoke
+	python3 loadtest/check.py $(LOAD_RESULTS)/smoke --window 3m

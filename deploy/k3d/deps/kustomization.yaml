@@ -15,6 +15,8 @@ configMapGenerator:
   - name: keycloak-realm
     files:
       - ../../../infra/keycloak/vaultgate-realm.json
+      # The load test's users (M8), imported next to the realm.
+      - ../../../infra/keycloak/vaultgate-users-0.json
 labels:
   - pairs:
       app.kubernetes.io/part-of: vaultgate-deps

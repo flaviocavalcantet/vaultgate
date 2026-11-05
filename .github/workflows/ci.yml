@@ -115,6 +115,13 @@ jobs:
           sudo install -m 0755 /tmp/k3d /usr/local/bin/k3d
       - run: make k3d-up
       - run: make k3d-check
+      # A short load run with thresholds (M8): no failed request, gateway memory flat,
+      # no pod restarts (loadtest/check.py).
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r loadtest/requirements.txt
+      - run: make load-smoke
       - if: failure()
         run: |
           kubectl get applications -n argocd -o wide || true
