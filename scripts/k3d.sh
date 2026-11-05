@@ -62,6 +62,9 @@ up() {
     k3d cluster create --config deploy/k3d/cluster.yaml
   fi
   images
+  # The node pulls one image itself, so a registry problem fails here with its reason,
+  # not as pods stuck in ImagePullBackOff behind a long wait.
+  docker exec "k3d-$CLUSTER-server-0" crictl pull "vaultgate-registry.localhost:5000/vaultgate-api:dev"
 
   log "Argo CD"
   kubectl apply --server-side --force-conflicts -k deploy/k3d/argocd

@@ -3,7 +3,9 @@
 # The host reaches the same ports as with docker compose, so the scripts and the
 # walkthroughs work unchanged: each is a NodePort of one Service, published on the
 # server node (loopback only). Images are built locally and pushed to the cluster's own
-# registry (localhost:5050 from the host, k3d-vaultgate-registry.localhost:5000 inside).
+# registry: localhost:5050 from the host, vaultgate-registry.localhost:5000 from the
+# nodes (k3d names a registry created here exactly as written, without the k3d- prefix
+# it adds on the command line).
 apiVersion: k3d.io/v1alpha5
 kind: Simple
 metadata:

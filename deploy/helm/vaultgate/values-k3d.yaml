@@ -3,7 +3,8 @@
 # ports as docker compose (8000 for the API, 8888 for the gateway). Development values
 # only: the credentials below are the compose stack's local ones.
 image:
-  registry: k3d-vaultgate-registry.localhost:5000
+  # The cluster's registry, as its nodes reach it (deploy/k3d/cluster.yaml).
+  registry: vaultgate-registry.localhost:5000
   tag: dev
   # Rebuilt images keep the tag: a restarted pod pulls the new one.
   pullPolicy: Always
