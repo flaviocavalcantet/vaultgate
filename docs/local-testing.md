@@ -139,8 +139,8 @@ Notes:
 | API tests with PostgreSQL | users, groups, files, intents, the upload sweep, the internal API, scan state (requests, results, verdicts, the resender) quarantine (downloads and shares refused until clean or released, the quarantine scope, releases by purpose, rescan, listing by verdict) share links (limits, states, revoking) external recipients (codes, grants, limits, revoking, rescans), internal recipients (verified email, their own policies) and the audit log (events, refusals, append-only trigger, tamper detection), against a real database (`vaultgate_test`, created automatically) |
 | Access policy for local use | adds a policy that lets every signed-in user read, upload and download (`scripts/seed_policies.py`); access is denied by default |
 | Login | real Keycloak PKCE login for alice, bob and carol. Checks issuer, audience, lifetime and groups. The API accepts access tokens and refuses ID tokens, only carol sees `/admin/users`, and insecure flows are refused |
-| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean before it is downloaded, quarantines a text with a card number and CPFs (no download until carol releases it; a rescan ends the release), and reports an encrypted PDF unscannable; alice shares the clean file with an outside address: the recipient gets a code by email (Mailpit), verifies it and downloads through the gateway, and the revoke stops them; bob, signed in, downloads a file shared with him while carol can't; a file released for download only can't be shared |
-| Observability | Prometheus config and alert rule tests, Loki and Alloy configs, Grafana dashboards, and every Prometheus scrape target up |
+| Vault end to end | a 20 MiB upload through the gateway; the object in S3 is ciphertext without the plaintext; the download is identical with the right digest; tokens are single use; bob can't read alice's file; a wrong-size upload is refused; temporary deny policies are enforced by the API and again by the gateway, and a refused token stays usable; the scanner worker finds the random file clean before it is downloaded, quarantines a text with a card number and CPFs (no download until carol releases it; a rescan ends the release), and reports an encrypted PDF unscannable; alice shares the clean file with an outside address: the recipient gets a code by email (Mailpit), verifies it and downloads through the gateway, and the revoke stops them; bob, signed in, downloads a file shared with him while carol can't; a file released for download only can't be shared; the audit log holds the file's history and its chain verifies; Tempo has the upload's trace from the gateway through the API and the scan queue to the scanner, and Loki has log lines from all three under its trace ID |
+| Observability | Prometheus config and alert rule tests, Loki, Tempo and Alloy configs, Grafana dashboards, and every Prometheus scrape target up |
 
 ## Try it yourself
 
@@ -542,6 +542,25 @@ curl -s -X POST http://localhost:8000/admin/audit/verify -H "Authorization: Bear
 ```
 
 The chain stays broken from then on; `scripts/local_check.sh down` starts over with an empty database. In PowerShell, the same calls are `Invoke-RestMethod "http://localhost:8000/admin/audit?limit=20" -Headers $AsCarol` and `Invoke-RestMethod -Method Post http://localhost:8000/admin/audit/verify -Headers $AsCarol`.
+
+### Try the traces
+
+Every upload, download and scan above left a trace ([ADR 0008](adr/0008-tracing.md)). Upload a file as in the first walkthrough, then open Grafana (http://localhost:3000, admin / admin) → **Explore** → **Tempo** → **Search**, pick service `gateway` and span name `PUT /uploads/{upload_id}`, and open the newest trace. It shows:
+
+- the gateway's request, with `api consume upload`, `KMS.GenerateDataKey`, one `S3.UploadPart` per 8 MiB and `api complete`;
+- the API's side of each call (`POST /internal/intents/consume`, `POST /internal/files/{file_id}/complete`) with its database queries;
+- `scan request send`, then the scanner's `scan` a moment later in the same trace, with `unwrap key`, `open object`, `read and detect` (format, parts, how many reads) and its calls back to the API.
+
+Open any span's **Logs for this span** to see the lines all three services wrote under that trace in Loki. The other way round, in **Explore** → **Loki**, `{service="scanner"} |= "scan reported"` shows scan results; each line's `trace_id` has an **Open trace** link.
+
+From a terminal, the same search goes through Tempo's API (TraceQL), here for the file uploaded in the walkthrough:
+
+```bash
+curl -s -G http://localhost:3200/api/search --data-urlencode "q={ span.vaultgate.file_id = \"$FILE_ID\" }" | python3 -m json.tool
+curl -s http://localhost:3200/api/v2/traces/<traceID from the search> | python3 -m json.tool | grep '"name"'
+```
+
+What a span never holds: tokens, query strings, headers, file contents, SQL parameter values or error messages. A trace sent by a client (`traceparent` on a request to the API or the gateway) is ignored: a new trace starts.
 
 ## Troubleshooting
 

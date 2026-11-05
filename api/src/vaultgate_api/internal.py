@@ -38,6 +38,7 @@ from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.models import File, ScanFinding, Share, User
+from vaultgate_api.tracing import FASTAPI_TELEMETRY, TracingMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -489,8 +490,14 @@ async def report_scan(scan_id: uuid.UUID, body: ScanResult, session: SessionDep)
 
 
 internal_app = FastAPI(
-    title="VaultGate internal API", docs_url=None, redoc_url=None, openapi_url=None
+    title="VaultGate internal API",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+    telemetry=FASTAPI_TELEMETRY,
 )
 internal_app.add_middleware(RequestContextMiddleware)
+# Only the gateway and the scanner reach this port: their traces continue here.
+internal_app.add_middleware(TracingMiddleware, trust_incoming=True)
 internal_app.include_router(router)
 internal_app.include_router(scanner_router)

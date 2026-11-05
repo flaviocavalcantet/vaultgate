@@ -1,8 +1,9 @@
 """Structured logging for the gateway.
 
 Same contract as the API: one JSON object per line on stdout, tagged with the
-request ID, so logs from both services can be joined in the log store. Never log
-file bytes, tokens or query strings.
+request ID and, inside a traced request, the trace and span IDs, so logs from both
+services can be joined in the log store and with the trace (ADR 0008). Never log file
+bytes, tokens or query strings.
 """
 
 import json
@@ -12,6 +13,8 @@ import sys
 import uuid
 from contextvars import ContextVar
 from datetime import UTC, datetime
+
+from opentelemetry import trace
 
 SERVICE = "gateway"
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -45,12 +48,21 @@ class JsonFormatter(logging.Formatter):
         }
         if request_id := request_id_var.get():
             entry["request_id"] = request_id
+        entry.update(trace_fields())
         for key, value in vars(record).items():
             if key not in _STANDARD_ATTRS and not key.startswith("_"):
                 entry[key] = value
         if record.exc_info:
             entry["exc"] = self.formatException(record.exc_info)
         return json.dumps(entry, default=str)
+
+
+def trace_fields() -> dict[str, str]:
+    """The current span's IDs, if it is one that is kept (sampled)."""
+    context = trace.get_current_span().get_span_context()
+    if not (context.is_valid and context.trace_flags.sampled):
+        return {}
+    return {"trace_id": f"{context.trace_id:032x}", "span_id": f"{context.span_id:016x}"}
 
 
 def configure_logging(level: str = "INFO", fmt: str = "json") -> None:

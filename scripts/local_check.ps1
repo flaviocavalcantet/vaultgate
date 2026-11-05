@@ -467,6 +467,8 @@ function Test-Observability {
             'prom/prometheus:v3.1.0', 'test', 'rules', 'vaultgate_test.yml'),
         @('run', '--rm', '-v', "$repo/observability/loki/loki.yml:/cfg/loki.yml:ro",
             'grafana/loki:3.3.2', '-config.file=/cfg/loki.yml', '-verify-config'),
+        @('run', '--rm', '-v', "$repo/observability/tempo/tempo.yml:/cfg/tempo.yml:ro",
+            'grafana/tempo:2.6.1', '-config.file=/cfg/tempo.yml', '-config.verify=true'),
         @('run', '--rm', '-v', "$repo/observability/alloy:/cfg:ro", 'grafana/alloy:v1.5.1', 'fmt', '-t', '/cfg/config.alloy')
     )
     $ok = $true

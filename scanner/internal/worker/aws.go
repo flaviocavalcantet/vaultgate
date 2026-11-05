@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
+
+	"github.com/flaviocavalcantet/vaultgate/scanner/internal/tracing"
 )
 
 // S3Objects opens objects in one bucket. Reads are range requests made with the
@@ -92,13 +94,21 @@ func (q *SQSQueue) Receive(ctx context.Context, max int) ([]Delivery, error) {
 		QueueUrl:            &q.URL,
 		MaxNumberOfMessages: int32(max),
 		WaitTimeSeconds:     20, // long polling: an idle worker makes few requests
+		// The API's trace context (internal/tracing).
+		MessageAttributeNames: tracing.Propagator.Fields(),
 	})
 	if err != nil {
 		return nil, err
 	}
 	deliveries := make([]Delivery, 0, len(out.Messages))
 	for _, m := range out.Messages {
-		deliveries = append(deliveries, Delivery{Body: aws.ToString(m.Body), Handle: aws.ToString(m.ReceiptHandle)})
+		d := Delivery{Body: aws.ToString(m.Body), Handle: aws.ToString(m.ReceiptHandle), Trace: map[string]string{}}
+		for name, v := range m.MessageAttributes {
+			if v.StringValue != nil {
+				d.Trace[name] = *v.StringValue
+			}
+		}
+		deliveries = append(deliveries, d)
 	}
 	return deliveries, nil
 }

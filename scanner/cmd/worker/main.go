@@ -17,6 +17,8 @@
 //	                                 from other workers, renewed while it runs (default 120)
 //	VAULTGATE_METRICS_PORT           /metrics and /healthz (default 9100)
 //	VAULTGATE_LOG_LEVEL              default info
+//	OTEL_EXPORTER_OTLP_ENDPOINT      where traces go over OTLP/HTTP (e.g. http://alloy:4318);
+//	                                 unset, nothing is recorded (internal/tracing)
 //
 // SIGTERM or SIGINT stops receiving; scans in progress finish first.
 package main
@@ -43,6 +45,7 @@ import (
 
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/extract"
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/logging"
+	"github.com/flaviocavalcantet/vaultgate/scanner/internal/tracing"
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/worker"
 )
 
@@ -90,6 +93,19 @@ func run(logger *slog.Logger) error {
 		cfg.BaseEndpoint = aws.String(endpoint)
 	}
 
+	tracer, stopTracing, err := tracing.Setup(ctx, version)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// Spans still buffered are sent before exit, within a bound.
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := stopTracing(sctx); err != nil {
+			logger.Warn("flushing traces failed", "error", err)
+		}
+	}()
+
 	// One PDF engine instance per concurrent scan, each capped in memory and time.
 	pdf, err := extract.NewPDFium(concurrency, 512<<20, time.Minute)
 	if err != nil {
@@ -102,8 +118,10 @@ func run(logger *slog.Logger) error {
 		Help:        "Service build information",
 		ConstLabels: prometheus.Labels{"service": "scanner", "version": version},
 	}, func() float64 { return 1 }))
+	api := worker.NewHTTPAPI(env("VAULTGATE_API_INTERNAL_URL", "http://localhost:8001"), token)
+	api.Tracer = tracer
 	w := &worker.Worker{
-		API: worker.NewHTTPAPI(env("VAULTGATE_API_INTERNAL_URL", "http://localhost:8001"), token),
+		API: api,
 		Objects: &worker.S3Objects{
 			Client: s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = endpoint != "" }),
 			Bucket: env("VAULTGATE_BUCKET", "vaultgate-local-vault"),
@@ -112,6 +130,7 @@ func run(logger *slog.Logger) error {
 		Extractor: &extract.Extractor{Limits: extract.DefaultLimits(), PDF: pdf},
 		Logger:    logger,
 		Metrics:   worker.NewMetrics(prometheus.DefaultRegisterer),
+		Tracer:    tracer,
 	}
 	loop := &worker.Loop{
 		Worker:      w,

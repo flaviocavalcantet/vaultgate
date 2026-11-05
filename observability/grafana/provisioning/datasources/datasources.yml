@@ -19,3 +19,30 @@ datasources:
     url: http://loki:3100
     jsonData:
       maxLines: 1000
+      # A log line's trace_id opens its trace in Tempo (ADR 0008). Matched in the line
+      # itself: the Python services write `"trace_id": "..."`, the scanner
+      # `"trace_id":"..."`.
+      derivedFields:
+        - name: TraceID
+          matcherType: regex
+          matcherRegex: '"trace_id": ?"([0-9a-f]{32})"'
+          datasourceUid: tempo
+          url: "$${__value.raw}"
+          urlDisplayLabel: Open trace
+
+  # Traces, forwarded by Alloy. From a span, Grafana finds the logs written inside its
+  # trace: every VaultGate log line carries trace_id (structured metadata in Loki).
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        customQuery: true
+        query: '{service=~".+"} | trace_id = "$${__trace.traceId}"'
+      nodeGraph:
+        enabled: true

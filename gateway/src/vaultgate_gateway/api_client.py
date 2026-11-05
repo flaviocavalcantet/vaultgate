@@ -5,7 +5,10 @@ import json
 import uuid
 from dataclasses import dataclass, field
 
+from opentelemetry.trace import SpanKind, StatusCode
 from tornado.httpclient import AsyncHTTPClient, HTTPClientError, HTTPRequest
+
+from vaultgate_gateway import tracing
 
 
 class IntentRefused(Exception):
@@ -42,31 +45,46 @@ class InternalApi:
         self._timeout = timeout
         self._http = AsyncHTTPClient()
 
-    async def _post(self, path: str, body: dict) -> dict:
+    async def _post(self, operation: str, path: str, body: dict) -> dict:
         if not self._token:
             raise ApiUnavailable("VAULTGATE_INTERNAL_TOKEN is not set")
-        request = HTTPRequest(
-            f"{self._base}{path}",
-            method="POST",
-            body=json.dumps(body),
-            headers={
-                "Authorization": f"Bearer {self._token}",
-                "Content-Type": "application/json",
-            },
-            connect_timeout=self._timeout,
-            request_timeout=self._timeout,
-        )
-        try:
-            response = await self._http.fetch(request)
-        except HTTPClientError as exc:
-            if exc.code == 403 and path.endswith("/consume"):
-                raise IntentRefused from None
-            if exc.code == 409:
-                raise IntentRefused from None
-            raise ApiUnavailable(f"internal API answered {exc.code}") from None
-        except OSError as exc:
-            raise ApiUnavailable(type(exc).__name__) from None
-        return json.loads(response.body)
+        # The API continues this trace on its internal port (vaultgate_api.tracing).
+        with tracing.tracer.start_as_current_span(
+            f"api {operation}",
+            kind=SpanKind.CLIENT,
+            attributes={"http.request.method": "POST", "url.path": path},
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
+            request = HTTPRequest(
+                f"{self._base}{path}",
+                method="POST",
+                body=json.dumps(body),
+                headers=tracing.inject(
+                    {
+                        "Authorization": f"Bearer {self._token}",
+                        "Content-Type": "application/json",
+                    }
+                ),
+                connect_timeout=self._timeout,
+                request_timeout=self._timeout,
+            )
+            try:
+                response = await self._http.fetch(request)
+            except HTTPClientError as exc:
+                span.set_attribute("http.response.status_code", exc.code)
+                if exc.code == 403 and path.endswith("/consume"):
+                    raise IntentRefused from None
+                if exc.code == 409:
+                    raise IntentRefused from None
+                span.set_status(StatusCode.ERROR)
+                raise ApiUnavailable(f"internal API answered {exc.code}") from None
+            except OSError as exc:
+                span.set_attribute("error.type", type(exc).__name__)
+                span.set_status(StatusCode.ERROR)
+                raise ApiUnavailable(type(exc).__name__) from None
+            span.set_attribute("http.response.status_code", response.code)
+            return json.loads(response.body)
 
     async def _consume(
         self, token: str, kind: str, file_id: uuid.UUID, client_ip: str | None
@@ -74,6 +92,7 @@ class InternalApi:
         # The API re-checks the access policies with the client address seen here
         # (None when it could not be told), and refuses with 403 like a bad token.
         return await self._post(
+            f"consume {kind}",
             "/internal/intents/consume",
             {"token": token, "kind": kind, "file_id": str(file_id), "client_ip": client_ip},
         )
@@ -110,6 +129,7 @@ class InternalApi:
         self, file_id: uuid.UUID, *, size: int, sha256: str, wrapped_key: bytes, kms_key_id: str
     ) -> None:
         await self._post(
+            "complete",
             f"/internal/files/{file_id}/complete",
             {
                 "size": size,
@@ -120,4 +140,4 @@ class InternalApi:
         )
 
     async def fail(self, file_id: uuid.UUID) -> None:
-        await self._post(f"/internal/files/{file_id}/fail", {})
+        await self._post("fail", f"/internal/files/{file_id}/fail", {})

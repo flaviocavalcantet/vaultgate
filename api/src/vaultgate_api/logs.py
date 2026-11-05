@@ -2,7 +2,8 @@
 
 Every log line is one JSON object on stdout, so a collector (Loki, CloudWatch, ...)
 can index fields without parsing free text. Each line carries the request ID of the
-request that produced it, which ties API, gateway and scanner logs together.
+request that produced it and, inside a traced request, the trace and span IDs, which
+tie API, gateway and scanner logs to each other and to the trace (ADR 0008).
 
 Never log secrets or file contents: no tokens, no query strings, no PII.
 """
@@ -16,6 +17,7 @@ import uuid
 from contextvars import ContextVar
 from datetime import UTC, datetime
 
+from opentelemetry import trace
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 SERVICE = "api"
@@ -54,12 +56,21 @@ class JsonFormatter(logging.Formatter):
         }
         if request_id := request_id_var.get():
             entry["request_id"] = request_id
+        entry.update(trace_fields())
         for key, value in vars(record).items():
             if key not in _STANDARD_ATTRS and not key.startswith("_"):
                 entry[key] = value
         if record.exc_info:
             entry["exc"] = self.formatException(record.exc_info)
         return json.dumps(entry, default=str)
+
+
+def trace_fields() -> dict[str, str]:
+    """The current span's IDs, if it is one that is kept (sampled)."""
+    context = trace.get_current_span().get_span_context()
+    if not (context.is_valid and context.trace_flags.sampled):
+        return {}
+    return {"trace_id": f"{context.trace_id:032x}", "span_id": f"{context.span_id:016x}"}
 
 
 def configure_logging(level: str = "INFO", fmt: str = "json") -> None:

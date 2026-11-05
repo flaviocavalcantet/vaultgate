@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "VaultGate control plane: identity, access policies, file metadata, share links and audit log."
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115",
+    # 0.142 added built-in telemetry, which vaultgate_api.tracing turns off.
+    "fastapi>=0.142",
     "uvicorn[standard]>=0.30",
     "pydantic-settings>=2.4",
     "sqlalchemy[asyncio]>=2.0.30",
@@ -17,6 +18,10 @@ dependencies = [
     "tzdata>=2024.1",
     # SQS, for scan requests.
     "boto3>=1.34",
+    # Traces (ADR 0008), exported over OTLP/HTTP when an endpoint is configured.
+    "opentelemetry-sdk>=1.45",
+    "opentelemetry-exporter-otlp-proto-http>=1.45",
+    "opentelemetry-instrumentation-asyncpg>=0.66b2",
 ]
 
 [project.optional-dependencies]

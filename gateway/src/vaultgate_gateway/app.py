@@ -12,14 +12,18 @@ import hashlib
 import logging
 import os
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import quote
 
 import tornado.iostream
 import tornado.web
+from opentelemetry import context, trace
+from opentelemetry.trace import SpanKind, StatusCode
 from prometheus_client import start_http_server
 
-from vaultgate_gateway import metrics
+from vaultgate_gateway import metrics, tracing
 from vaultgate_gateway.api_client import ApiUnavailable, IntentRefused, InternalApi, UploadGrant
 from vaultgate_gateway.clientip import IPNetwork, client_ip
 from vaultgate_gateway.crypto import DecryptionError, Decryptor, Encryptor
@@ -57,16 +61,84 @@ def _background(coro) -> None:
 
 
 class BaseHandler(tornado.web.RequestHandler):
-    """Assigns every request an ID, echoed back in the X-Request-ID response header."""
+    """Assigns every request an ID, echoed back in the X-Request-ID response header,
+    and a SERVER span (vaultgate_gateway.tracing) that ends with the request."""
 
-    # Path template used as the metrics label; set by each concrete handler.
+    # Path template used as the metrics label and the span name; set by each handler.
     route = metrics.UNMATCHED_ROUTE
+    traced = True
     request_id: str
+    _span: trace.Span | None = None
+    _failed = False
 
     def prepare(self) -> None:
         self.request_id = resolve_request_id(self.request.headers.get(REQUEST_ID_HEADER))
         request_id_var.set(self.request_id)
         self.set_header(REQUEST_ID_HEADER, self.request_id)
+        if self.traced:
+            method = self.request.method or ""
+            # A new trace for every request: a client's own trace context is ignored.
+            self._span = tracing.tracer.start_span(
+                f"{method} {self.route}",
+                context=context.Context(),
+                kind=SpanKind.SERVER,
+                attributes={
+                    "http.request.method": method,
+                    "http.route": self.route,
+                    "url.path": self.request.path,
+                    "vaultgate.request_id": self.request_id,
+                },
+            )
+            # Current for the rest of this request's coroutine, like the request ID
+            # (the context belongs to that coroutine's task and goes with it).
+            context.attach(trace.set_span_in_context(self._span))
+
+    @contextmanager
+    def in_request(self) -> Iterator[None]:
+        """The request's span and ID around code Tornado runs outside the request's
+        coroutine (data_received, on_connection_close)."""
+        token = request_id_var.set(getattr(self, "request_id", None))
+        try:
+            if self._span is None:
+                yield
+            else:
+                with trace.use_span(
+                    self._span,
+                    end_on_exit=False,
+                    record_exception=False,
+                    set_status_on_exception=False,
+                ):
+                    yield
+        finally:
+            request_id_var.reset(token)
+
+    def mark_failure(self, reason: str) -> None:
+        """Record why the request failed; the first reason is the cause."""
+        if self._span is not None and not self._failed:
+            self._failed = True
+            self._span.set_attribute("vaultgate.failure", reason)
+
+    def end_span(self) -> None:
+        span, self._span = self._span, None
+        if span is None:
+            return
+        status = self.get_status()
+        span.set_attribute("http.response.status_code", status)
+        if (received := getattr(self, "_received", None)) is not None:
+            span.set_attribute("vaultgate.bytes_in", received)
+        if (sent := getattr(self, "_sent", None)) is not None:
+            span.set_attribute("vaultgate.bytes_out", sent)
+        if status >= 500:
+            span.set_status(StatusCode.ERROR)
+        span.end()
+
+    def on_finish(self) -> None:
+        self.end_span()
+
+    def on_connection_close(self) -> None:
+        self.mark_failure("client_disconnected")
+        self.end_span()
+        super().on_connection_close()
 
     def _bearer_token(self) -> str | None:
         header = self.request.headers.get("Authorization", "")
@@ -118,6 +190,7 @@ def on_request_finished(handler: tornado.web.RequestHandler) -> None:
 
 class HealthHandler(BaseHandler):
     route = "/healthz"
+    traced = False  # probes say nothing about a user's request
 
     def get(self) -> None:
         self.write({"status": "ok", "service": "gateway"})
@@ -175,6 +248,7 @@ class UploadHandler(BaseHandler):
             file_id = uuid.UUID(self.path_args[0])
         except ValueError:
             raise tornado.web.HTTPError(404) from None
+        self._span.set_attribute("vaultgate.file_id", str(file_id))
         token = self._bearer_token()
         if token is None:
             raise tornado.web.HTTPError(401)
@@ -215,6 +289,11 @@ class UploadHandler(BaseHandler):
             raise tornado.web.HTTPError(503) from None
 
     async def data_received(self, chunk: bytes) -> None:
+        # Tornado calls this from the connection's coroutine, not the request's.
+        with self.in_request():
+            await self._receive(chunk)
+
+    async def _receive(self, chunk: bytes) -> None:
         # Exceptions raised here never become a response (Tornado just drops the
         # connection), so errors are recorded and raised from put() instead; the rest
         # of the body is read and discarded, bounded by the declared size check.
@@ -276,11 +355,13 @@ class UploadHandler(BaseHandler):
         if self._grant is not None and not self._finished_ok and not self._cleaned_up:
             _background(self._fail("error"))
         self._end_upload()
+        super().on_finish()
 
     def on_connection_close(self) -> None:
         # Client went away mid-upload; on_finish is not called in that case.
         if self._grant is not None and not self._finished_ok and not self._cleaned_up:
-            _background(self._fail("client_disconnected"))
+            with self.in_request():  # the cleanup's calls belong to this request's trace
+                _background(self._fail("client_disconnected"))
         self._end_upload()
         super().on_connection_close()
 
@@ -329,6 +410,7 @@ class UploadHandler(BaseHandler):
 
     def _count_failure(self, reason: str) -> None:
         metrics.UPLOAD_FAILURES.labels(reason).inc()
+        self.mark_failure(reason)
 
     def _end_upload(self) -> None:
         if self._in_progress:
@@ -361,6 +443,7 @@ class DownloadHandler(BaseHandler):
             file_id = uuid.UUID(download_id)
         except ValueError:
             raise tornado.web.HTTPError(404) from None
+        self._span.set_attribute("vaultgate.file_id", str(file_id))
         token = self._bearer_token()
         if token is None:
             raise tornado.web.HTTPError(401)
@@ -444,9 +527,11 @@ class DownloadHandler(BaseHandler):
 
     def _count_failure(self, reason: str) -> None:
         metrics.DOWNLOAD_FAILURES.labels(reason).inc()
+        self.mark_failure(reason)
 
     def on_finish(self) -> None:
         self._end_download()
+        super().on_finish()
 
     def on_connection_close(self) -> None:
         self._end_download()
@@ -509,6 +594,7 @@ async def main() -> None:
     configure_logging(
         os.getenv("VAULTGATE_LOG_LEVEL", "INFO"), os.getenv("VAULTGATE_LOG_FORMAT", "json")
     )
+    tracing.configure_tracing()
     if not settings.internal_token:
         raise SystemExit("VAULTGATE_INTERNAL_TOKEN is required")
     metrics.BUILD_INFO.info({"service": "gateway", "version": "0.1.0"})

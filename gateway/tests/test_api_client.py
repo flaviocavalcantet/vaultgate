@@ -15,6 +15,7 @@ class FakeInternal(tornado.web.RequestHandler):
         self.application.settings["calls"].append(
             (path, self.request.headers.get("Authorization"), json.loads(self.request.body))
         )
+        self.application.settings.setdefault("headers", []).append(self.request.headers.copy())
         status = self.application.settings["status"]
         self.set_status(status)
         if status == 200 and path == "intents/consume":
