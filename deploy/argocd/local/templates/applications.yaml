@@ -1,0 +1,46 @@
+# The dependencies first (sync wave 0), then VaultGate (wave 1). The API waits for
+# PostgreSQL by restarting until its migrations run; the startup probe allows for it.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vaultgate-deps
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  source:
+    repoURL: {{ .Values.repoURL }}
+    targetRevision: {{ .Values.revision }}
+    path: deploy/k3d/deps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vaultgate-deps
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: ["CreateNamespace=true"]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vaultgate
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  source:
+    repoURL: {{ .Values.repoURL }}
+    targetRevision: {{ .Values.revision }}
+    path: deploy/helm/vaultgate
+    helm:
+      releaseName: vaultgate
+      valueFiles: [values-k3d.yaml]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vaultgate
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: ["CreateNamespace=true"]

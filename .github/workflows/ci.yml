@@ -95,24 +95,58 @@ jobs:
       - if: failure()
         run: docker compose logs api gateway scanner localstack mailpit alloy tempo
 
+  # The whole system on Kubernetes (M7): a k3d cluster, Argo CD syncing this commit from
+  # GitHub, the images built here and pushed to the cluster's registry, then the vault
+  # end-to-end check and the cluster checks (scripts/k3d.sh).
+  k3d-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      VAULTGATE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+      - name: Install k3d
+        run: |
+          curl -sSfL -o /tmp/k3d https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-amd64
+          echo "dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e  /tmp/k3d" | sha256sum -c -
+          sudo install -m 0755 /tmp/k3d /usr/local/bin/k3d
+      - run: make k3d-up
+      - run: make k3d-check
+      - if: failure()
+        run: |
+          kubectl get applications -n argocd -o wide || true
+          kubectl get pods,hpa,networkpolicy -A -o wide || true
+          kubectl -n argocd get applications -o yaml | grep -A20 "conditions:\|operationState:" || true
+          for ns in vaultgate vaultgate-deps; do kubectl -n $ns logs --all-containers --prefix --tail=200 --max-log-requests=20 -l app.kubernetes.io/name || true; done
+
   helm:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
       - run: helm lint deploy/helm/vaultgate
-      - run: helm lint deploy/helm/vaultgate -f deploy/helm/vaultgate/ci/local-cluster-values.yaml
+      - run: helm lint deploy/helm/vaultgate -f deploy/helm/vaultgate/values-k3d.yaml
+      - run: helm lint deploy/argocd/local
       # The rendered manifests against the Kubernetes API schemas (and the Prometheus
-      # Operator's, for the ServiceMonitors), with defaults and with everything on. The
-      # image and the CRD schema catalog are pinned (digest, commit): bump them on purpose.
+      # Operator's and Argo CD's, for their resources): defaults, the k3d values, every
+      # option on, and the k3d app of apps. The image and the CRD schema catalog are
+      # pinned (digest, commit): bump them on purpose.
       - name: kubeconform
         env:
           KUBECONFORM: ghcr.io/yannh/kubeconform:v0.6.7@sha256:0925177fb05b44ce18574076141b5c3d83235e1904d3f952182ac99ddc45762c
           CRDS: https://raw.githubusercontent.com/datreeio/CRDs-catalog/c86448cbf1a840ca62d119259864863897c8748a
         run: |
-          for values in "" "-f deploy/helm/vaultgate/ci/local-cluster-values.yaml"; do
-            helm template vaultgate deploy/helm/vaultgate $values |
+          everything="--set ingress.enabled=true --set metrics.serviceMonitor.enabled=true --set tracing.otlpEndpoint=http://alloy:4318"
+          for chart in "deploy/helm/vaultgate" "deploy/helm/vaultgate -f deploy/helm/vaultgate/values-k3d.yaml" \
+            "deploy/helm/vaultgate -f deploy/helm/vaultgate/values-k3d.yaml $everything" "deploy/argocd/local"; do
+            helm template vaultgate $chart |
               docker run -i --rm "$KUBECONFORM" -strict -summary \
                 -kubernetes-version 1.31.0 -schema-location default \
                 -schema-location "$CRDS/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" -
           done
+          # The cluster's dependencies (kustomize; the realm comes from infra/keycloak).
+          kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/k3d/deps |
+            docker run -i --rm "$KUBECONFORM" -strict -summary -kubernetes-version 1.31.0 -

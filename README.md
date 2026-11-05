@@ -182,7 +182,8 @@ gateway/        Tornado streaming gateway
 scanner/        Go PII scanner
 deploy/
   helm/         Helm chart for the API, gateway and scanner worker
-  argocd/       ArgoCD Application (GitOps)
+  argocd/       Argo CD applications: an example for a real cluster, the local app of apps
+  k3d/          Local cluster: k3d config, Argo CD install, in-cluster dependencies
 infra/
   terraform/
     modules/    Reusable modules (storage: S3 + KMS)
@@ -194,7 +195,7 @@ docs/adr/       Architecture decision records
 
 Everything runs on your machine at no cost: PostgreSQL, LocalStack (S3, KMS, SQS) and Keycloak run as containers, and Terraform applies against LocalStack instead of a real AWS account.
 
-Requirements: Docker, Python 3.12+, Go 1.26+, Terraform 1.6+. For Kubernetes: k3d or kind, Helm.
+Requirements: Docker, Python 3.12+, Go 1.26+, Terraform 1.6+. For Kubernetes: k3d 5.8+ and kubectl (see [Local Kubernetes](#local-kubernetes-k3d-and-argo-cd)).
 
 **New here?** [docs/local-testing.md](docs/local-testing.md) lists what to install and what each check proves. `scripts/local_check.sh quick` runs lint and unit tests without Docker, and `scripts/local_check.sh full` checks the whole stack end to end. On Windows, `scripts\local_check.ps1` does the same without Docker Desktop, using Docker Engine in WSL2.
 
@@ -420,7 +421,31 @@ Security events are recorded in `audit_events` ([ADR 0007](docs/adr/0007-audit-l
 - **Network policies** (`networkPolicy.enabled`): only the gateway and the scanner may reach the API's internal port, which hands out storage keys and wrapped data keys. The public and metrics ports stay open.
 - **Hardening, always on:** non-root, read-only root filesystem, no capabilities, no service account token, and a disruption budget of one pod at a time for the API and the gateway.
 
-`deploy/helm/vaultgate/ci/local-cluster-values.yaml` turns everything on, as the local cluster will; CI lints the chart and checks the rendered manifests against the Kubernetes schemas with both value sets.
+CI lints the chart and checks the rendered manifests against the Kubernetes schemas with the default values, the local cluster's (`values-k3d.yaml`) and every option on.
+
+### Local Kubernetes (k3d and Argo CD)
+
+`make k3d-up` runs the whole system on a local Kubernetes cluster, deployed the GitOps way ([ADR 0009](docs/adr/0009-local-kubernetes.md)). Stop compose first: the cluster uses the same host ports.
+
+1. k3d creates the cluster `vaultgate` (`deploy/k3d/cluster.yaml`), with its own image registry at `localhost:5050`.
+2. The API, gateway and scanner images are built from your working tree and pushed there.
+3. Argo CD is installed (`deploy/k3d/argocd`), and a root application hands it this repo at `VAULTGATE_REVISION` (default: the current branch, which must be pushed). From then on Argo CD syncs everything from git:
+   - the dependencies (`deploy/k3d/deps`: PostgreSQL, LocalStack, Keycloak, Mailpit) into `vaultgate-deps`;
+   - then the chart with `values-k3d.yaml` into `vaultgate`.
+4. Terraform creates the bucket, key and queues in the cluster's LocalStack, and the local access policy is seeded.
+
+Everything answers where compose does: the API on http://localhost:8000, the gateway on 8888, Keycloak on 8080, LocalStack on 4566 and Mailpit on 8025. Then:
+
+```bash
+make k3d-check     # vault e2e against the cluster; Argo CD synced, autoscaler reading CPU, internal port closed to other pods
+make k3d-images    # after a code change: rebuild, push, restart the pods
+make k3d-down      # delete the cluster
+kubectl -n argocd port-forward svc/argocd-server 8081:80   # Argo CD UI on http://localhost:8081, user admin, password below
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+kubectl -n vaultgate get hpa,pods                          # the gateway's autoscaler and the pods
+```
+
+Chart or manifest changes reach the cluster when they are pushed: Argo CD looks every minute. Code changes reach it with `make k3d-images`. CI runs `k3d-up` and `k3d-check` on every PR, syncing the PR's commit.
 
 ### Client addresses behind a proxy
 
@@ -471,7 +496,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Traces: OpenTelemetry in the API, gateway and scanner worker, through Alloy to Grafana Tempo, linked to the logs both ways; the e2e check follows an upload to its scan ([ADR 0008](docs/adr/0008-tracing.md))
 - [ ] **M7 — Kubernetes end to end:** k3d cluster with ArgoCD syncing this repo, horizontal autoscaling of the gateway
   - [x] Helm chart for all three services: configuration and credentials, optional ingress, CPU autoscaling of the gateway, network policies, disruption budgets, schema checks in CI
-  - [ ] Local k3d cluster: the dependencies in-cluster, images from a local registry, ArgoCD syncing this repo, the end-to-end check against it in CI
+  - [x] Local k3d cluster: the dependencies in-cluster, images from a local registry, Argo CD syncing this repo, the end-to-end check against it in CI ([ADR 0009](docs/adr/0009-local-kubernetes.md))
   - [ ] Cluster observability through ArgoCD: Prometheus Operator, Grafana, Loki, Tempo and Alloy with the repo's dashboards and rules, Alertmanager routing
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
 - [ ] **M9 — PKI and key management:** establish a certificate authority, store private keys securely, and distribute keys and certificates securely (scope to be defined)

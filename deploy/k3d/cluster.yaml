@@ -1,0 +1,38 @@
+# The local Kubernetes cluster (M7): k3s in Docker, created by `make k3d-up`.
+#
+# The host reaches the same ports as with docker compose, so the scripts and the
+# walkthroughs work unchanged: each is a NodePort of one Service, published on the
+# server node (loopback only). Images are built locally and pushed to the cluster's own
+# registry (localhost:5050 from the host, k3d-vaultgate-registry.localhost:5000 inside).
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: vaultgate
+servers: 1
+agents: 0
+image: rancher/k3s:v1.33.9-k3s1
+ports:
+  - port: 127.0.0.1:8000:30800 # API
+    nodeFilters: [server:0:direct]
+  - port: 127.0.0.1:8888:30888 # gateway
+    nodeFilters: [server:0:direct]
+  - port: 127.0.0.1:8080:30080 # Keycloak
+    nodeFilters: [server:0:direct]
+  - port: 127.0.0.1:4566:30566 # LocalStack (S3, KMS, SQS), for Terraform and the e2e check
+    nodeFilters: [server:0:direct]
+  - port: 127.0.0.1:8025:30025 # Mailpit UI and API
+    nodeFilters: [server:0:direct]
+registries:
+  create:
+    name: vaultgate-registry.localhost
+    host: 127.0.0.1
+    hostPort: "5050"
+options:
+  k3s:
+    extraArgs:
+      # NodePorts replace an ingress controller here: one port per service, as compose.
+      - arg: --disable=traefik
+        nodeFilters: [server:*]
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

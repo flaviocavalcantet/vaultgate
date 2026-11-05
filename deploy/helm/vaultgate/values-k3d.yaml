@@ -1,0 +1,44 @@
+# The local k3d cluster (deploy/k3d): images from the cluster's own registry, the
+# dependencies in the vaultgate-deps namespace, and the public ports on the same host
+# ports as docker compose (8000 for the API, 8888 for the gateway). Development values
+# only: the credentials below are the compose stack's local ones.
+image:
+  registry: k3d-vaultgate-registry.localhost:5000
+  tag: dev
+  # Rebuilt images keep the tag: a restarted pod pulls the new one.
+  pullPolicy: Always
+
+aws:
+  endpointUrl: http://localstack.vaultgate-deps:4566
+scanQueueUrl: http://localstack.vaultgate-deps:4566/000000000000/vaultgate-local-scans
+# No proxy in front (NodePorts): the address the services see, the node's after
+# kube-proxy, is the client's, so no X-Forwarded-For is trusted.
+
+secrets:
+  create: true
+  databaseUrl: postgresql+asyncpg://vaultgate:vaultgate@postgres.vaultgate-deps:5432/vaultgate
+  internalToken: dev-internal-token-change-me
+  scannerToken: dev-scanner-token-change-me
+  awsAccessKeyId: test
+  awsSecretAccessKey: test
+
+api:
+  replicas: 1
+  nodePort: 30800
+  oidc:
+    # Tokens carry iss=http://localhost:8080/realms/vaultgate (Keycloak's KC_HOSTNAME),
+    # as with compose; the API fetches discovery and keys from the Service.
+    discoveryUrl: http://keycloak.vaultgate-deps:8080/realms/vaultgate/.well-known/openid-configuration
+  smtp:
+    host: mailpit.vaultgate-deps
+    port: 1025
+
+gateway:
+  nodePort: 30888
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+
+networkPolicy:
+  enabled: true

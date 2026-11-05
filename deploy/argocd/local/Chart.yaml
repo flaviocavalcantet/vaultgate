@@ -1,0 +1,5 @@
+apiVersion: v2
+name: vaultgate-local
+description: "App of apps for the local k3d cluster (deploy/k3d), what Argo CD syncs from this repo"
+type: application
+version: 0.1.0

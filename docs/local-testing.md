@@ -28,6 +28,7 @@ Every check runs even if an earlier one fails, and a summary at the end shows wh
 | Docker with Compose | recent | `full` | [Colima](https://github.com/abiosoft/colima) (free) or [Docker Desktop](https://www.docker.com/products/docker-desktop/) | [Docker Engine](https://docs.docker.com/engine/install/ubuntu/) + `docker-compose-plugin` |
 | Terraform | 1.6+ | `full` | `brew tap hashicorp/tap && brew install hashicorp/tap/terraform` | [HashiCorp apt repo](https://developer.hashicorp.com/terraform/install) |
 | make, curl, git | any | `full` | included with Xcode CLT (`xcode-select --install`) | `sudo apt install make curl git` |
+| k3d, kubectl | k3d 5.8+ | the Kubernetes cluster (optional) | `brew install k3d kubectl` | [k3d.io](https://k3d.io/#installation), [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/) |
 
 - On Linux, `go test -race` also needs a C compiler: `sudo apt install gcc`.
 - Give Docker at least 4 GB of memory. The stack runs 9 containers: Postgres, LocalStack, Keycloak, API, gateway, Prometheus, Loki, Alloy and Grafana.
@@ -561,6 +562,37 @@ curl -s http://localhost:3200/api/v2/traces/<traceID from the search> | python3 
 ```
 
 What a span never holds: tokens, query strings, headers, file contents, SQL parameter values or error messages. A trace sent by a client (`traceparent` on a request to the API or the gateway) is ignored: a new trace starts.
+
+## On Kubernetes (k3d)
+
+The same system runs on a local Kubernetes cluster, deployed by Argo CD from this repo ([ADR 0009](adr/0009-local-kubernetes.md), README: [Local Kubernetes](../README.md#local-kubernetes-k3d-and-argo-cd)). It uses the host ports of compose, so stop compose first:
+
+```bash
+make down          # compose off
+make k3d-up        # cluster, images, Argo CD, then waits until everything is synced and healthy (5-10 minutes the first time)
+make k3d-check     # the vault end-to-end check against the cluster, plus the cluster checks below
+```
+
+What `k3d-check` proves on top of the vault check:
+
+| Check | What it proves |
+|---|---|
+| Argo CD | the root application, the dependencies and VaultGate are all `Synced` and `Healthy`: the cluster runs what git says |
+| Autoscaler | the gateway's HorizontalPodAutoscaler reads CPU utilization from metrics-server, so it can scale |
+| Network policy | a pod that is neither the gateway nor the scanner reaches the API's public port but not its internal one (8001, which hands out storage keys and wrapped data keys) |
+
+Every walkthrough above works unchanged against the cluster, since the ports are the same. Argo CD syncs the branch you are on, which must be pushed; set `VAULTGATE_REVISION` to try another branch or a commit. After changing code, `make k3d-images` rebuilds and pushes the images and restarts the pods. To look around:
+
+```bash
+kubectl get applications -n argocd                          # what Argo CD syncs, and its state
+kubectl -n vaultgate get pods,hpa,networkpolicy
+kubectl -n vaultgate logs deploy/vaultgate-api -f
+kubectl -n argocd port-forward svc/argocd-server 8081:80    # UI on http://localhost:8081 (admin; password below)
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+make k3d-down      # delete the cluster
+```
+
+The cluster has no metrics, logs or traces stack yet; it comes with the next M7 step. Until then `k3d-check` skips the trace check.
 
 ## Troubleshooting
 

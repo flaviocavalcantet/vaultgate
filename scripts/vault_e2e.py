@@ -32,6 +32,7 @@ then, as alice:
 
     python3 scripts/vault_e2e.py [--keycloak URL] [--api URL] [--s3 URL] [--bucket NAME]
                                  [--mailpit URL] [--tempo URL] [--loki URL]
+                                 [--skip-traces]
 
 Needs the bucket, KMS key and scan queue from `make tf-local`, the scanner worker, and the seeded allow policy from
 scripts/seed_policies.py (`make vault-check` does both). Standard library only, so it
@@ -246,7 +247,10 @@ def run(args) -> None:
     check_audit(args.api, file_id, carol)
 
     # 8. Traces, linked to the logs.
-    check_traces(args, file_id)
+    if args.skip_traces:
+        print("--  traces not checked (--skip-traces)")
+    else:
+        check_traces(args, file_id)
 
 
 # The upload's trace, hop by hop (ADR 0008).
@@ -580,6 +584,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--mailpit", default="http://localhost:8025")
     parser.add_argument("--tempo", default="http://localhost:3200")
     parser.add_argument("--loki", default="http://localhost:3100")
+    parser.add_argument("--skip-traces", action="store_true", help="a stack without Tempo and Loki")
     parser.add_argument("--size-mib", type=int, default=20)
     args = parser.parse_args(argv)
     for name in ("keycloak", "api", "s3", "mailpit", "tempo", "loki"):

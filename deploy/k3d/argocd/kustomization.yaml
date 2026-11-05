@@ -1,0 +1,29 @@
+# Argo CD for the local cluster: the official install manifest at a pinned release,
+# with a few local settings merged in. Applied by `make k3d-up` (server-side: the CRDs
+# are large).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+resources:
+  - namespace.yaml
+  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.5.7/manifests/install.yaml
+patches:
+  - patch: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: argocd-cm
+      data:
+        # The deps kustomization imports the Keycloak realm from infra/keycloak, outside
+        # its own directory (one copy of the realm for compose and the cluster).
+        kustomize.buildOptions: --load-restrictor LoadRestrictionsNone
+        # Local cluster: look for new commits every minute, not every three.
+        timeout.reconciliation: 60s
+  - patch: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: argocd-cmd-params-cm
+      data:
+        # The UI over plain HTTP through `kubectl port-forward` (loopback only).
+        server.insecure: "true"
