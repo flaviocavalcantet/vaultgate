@@ -19,6 +19,7 @@ answer who received a file. The log is read by admins only (/admin/audit).
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import uuid
@@ -46,6 +47,18 @@ GENESIS = "0" * 64
 _CHAIN_LOCK = 0x5641554C54  # "VAULT"
 
 
+def canonical_ip(value) -> str | None:
+    """One text form for an address, whatever wrote or read it: Postgres INET and
+    Python's ipaddress disagree on some forms (IPv4-mapped IPv6, a /32 suffix), and the
+    hash must not depend on which side rendered it. IPv4-mapped IPv6 becomes IPv4."""
+    if value is None:
+        return None
+    address = ipaddress.ip_interface(str(value)).ip
+    if address.version == 6 and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return str(address)
+
+
 def event_hash(event: AuditEvent) -> str:
     """SHA-256 over the event's fields and the previous hash, in a fixed form."""
     fields = {
@@ -56,7 +69,7 @@ def event_hash(event: AuditEvent) -> str:
         "outcome": event.outcome,
         "target_kind": event.target_kind,
         "target_id": str(event.target_id) if event.target_id else None,
-        "client_ip": str(event.client_ip) if event.client_ip else None,
+        "client_ip": canonical_ip(event.client_ip),
         "request_id": event.request_id,
         "details": event.details or {},
         "prev_hash": event.prev_hash,
@@ -88,7 +101,7 @@ async def record(
         outcome=outcome,
         target_kind=target_kind,
         target_id=target_id,
-        client_ip=client_ip if client_ip is not None else client_ip_var.get(),
+        client_ip=canonical_ip(client_ip if client_ip is not None else client_ip_var.get()),
         request_id=request_id_var.get(),
         details=details or {},
         prev_hash=prev or GENESIS,

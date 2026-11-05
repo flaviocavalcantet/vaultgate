@@ -218,3 +218,21 @@ async def test_checks_with_no_code_outstanding_leave_no_rows(recipients, provide
         )
         assert refused.status_code == 403
     assert await events(session, action="share.verification_failed") == []
+
+
+@pytest.mark.parametrize(
+    ("given", "stored"),
+    [
+        ("::ffff:198.51.100.7", "198.51.100.7"),  # IPv4-mapped IPv6, as dual-stack sockets give
+        ("2001:db8:0:0:0:0:0:1", "2001:db8::1"),
+        ("198.51.100.7", "198.51.100.7"),
+        (None, None),
+    ],
+)
+async def test_addresses_hash_the_same_written_and_read_back(session, given, stored):
+    """Postgres and Python render some addresses differently; the hash must not care."""
+    await audit.record(session, "test.address", actor_kind="system", client_ip=given)
+    [event] = await events(session, action="test.address")
+    await session.refresh(event)  # what INET gives back
+    assert audit.canonical_ip(event.client_ip) == stored
+    assert (await audit.verify(session)).ok
