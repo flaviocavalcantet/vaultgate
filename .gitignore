@@ -228,3 +228,6 @@ __marimo__/
 # Go
 /scanner/scanner
 /scanner/scanner.exe
+
+# Load test results (make load-test, load-smoke)
+loadtest/results/

@@ -457,6 +457,30 @@ kubectl -n vaultgate get hpa,pods                          # the gateway's autos
 
 Chart or manifest changes reach the cluster when they are pushed: Argo CD looks every minute. Code changes reach it with `make k3d-images`. CI runs `k3d-up` and `k3d-check` on every PR, syncing the PR's commit.
 
+### Load testing
+
+Locust scenarios in `loadtest/` run against the local cluster ([ADR 0011](docs/adr/0011-load-testing.md)). Each simulated user logs in as its own load user (`load-001` ... `load-050`, the `/load` group) through `vaultgate-load`, a local-only Keycloak client with the password grant. The web client stays PKCE-only.
+
+- **Transfers:** streaming uploads of 256 KiB to 128 MiB through the gateway, a wait for the scan's verdict, and the download back, checked by size.
+- **ControlPlane:** the API's small requests: `/me`, listing and reading files, download intents (policy and quarantine checks).
+- **Documents:** PDF and Office files and 8 MiB text files, timed from the end of the upload to the scanner's verdict (reported as `SCAN`, next to the HTTP requests).
+
+```bash
+pip install -r loadtest/requirements.txt
+make k3d-up
+make load-smoke    # 6 users, 90 s, uploads up to 32 MiB, with pass/fail thresholds (CI runs it)
+make load-test     # 30 users, 10 minutes, uploads up to 128 MiB; CSV and HTML in loadtest/results/
+```
+
+`loadtest/check.py` passes a run when:
+
+- no request failed: errors, short downloads and scans with no verdict all count;
+- every scenario did its work;
+- no gateway pod went above 90% of its 256 MiB memory limit, according to the cluster's Prometheus;
+- no VaultGate pod restarted.
+
+Latency is reported, not enforced: a shared CI runner varies too much.
+
 ### Client addresses behind a proxy
 
 Access policies can restrict by network (M3), so the API and the gateway must know the real client address. They take it from `X-Forwarded-For` only when the request comes from a proxy listed in `VAULTGATE_TRUSTED_PROXIES`, a comma-separated list of networks (for example the ingress controller's pod range). The header is read from the right, skipping trusted hops; the first other address is the client. With the list empty (the default, and what compose uses), the header is ignored and the TCP peer is the client. List proxy addresses only: a client inside a trusted range can claim any address. If a trusted proxy passes on something that isn't an address, the client counts as unknown rather than as the proxy. Logs record the resolved address as `client_ip`.
@@ -509,6 +533,8 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Local k3d cluster: the dependencies in-cluster, images from a local registry, Argo CD syncing this repo, the end-to-end check against it in CI ([ADR 0009](docs/adr/0009-local-kubernetes.md))
   - [x] Cluster observability through Argo CD: Prometheus Operator, Grafana, Loki, Tempo and Alloy with the repo's dashboards and rules, Alertmanager routing to email ([ADR 0010](docs/adr/0010-cluster-observability.md))
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
+  - [x] Scenarios for transfers, the API control plane and scanner throughput; local-only load users; a smoke run with thresholds in CI ([ADR 0011](docs/adr/0011-load-testing.md))
+  - [ ] Published report: the full run on the cluster, with throughput, latency, scan times, gateway memory and autoscaling
 - [ ] **M9 — PKI and key management:** establish a certificate authority, store private keys securely, and distribute keys and certificates securely (scope to be defined)
 - [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined)
 - [ ] **M11 — Delivery and scaling:** builds on M7 and the M8 load tests

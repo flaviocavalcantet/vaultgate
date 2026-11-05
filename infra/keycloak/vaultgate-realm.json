@@ -23,7 +23,8 @@
     { "name": "finance" },
     { "name": "legal" },
     { "name": "engineering" },
-    { "name": "vaultgate-admins" }
+    { "name": "vaultgate-admins" },
+    { "name": "load" }
   ],
   "users": [
     {
@@ -115,6 +116,44 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "vaultgate-load",
+      "name": "VaultGate load tests (local only)",
+      "description": "Public client for Locust (loadtest/): password grant only, for the /load users (vaultgate-users-0.json). Exists only in this local realm; vaultgate-web stays PKCE-only.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "audience: vaultgate-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "vaultgate-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     }
   ]
 }

@@ -28,6 +28,7 @@ Every check runs even if an earlier one fails, and a summary at the end shows wh
 | Docker with Compose | recent | `full` | [Colima](https://github.com/abiosoft/colima) (free) or [Docker Desktop](https://www.docker.com/products/docker-desktop/) | [Docker Engine](https://docs.docker.com/engine/install/ubuntu/) + `docker-compose-plugin` |
 | Terraform | 1.6+ | `full` | `brew tap hashicorp/tap && brew install hashicorp/tap/terraform` | [HashiCorp apt repo](https://developer.hashicorp.com/terraform/install) |
 | make, curl, git | any | `full` | included with Xcode CLT (`xcode-select --install`) | `sudo apt install make curl git` |
+| Locust | `pip install -r loadtest/requirements.txt` | the load tests (optional) | — | — |
 | k3d, kubectl | k3d 5.8+ | the Kubernetes cluster (optional) | `brew install k3d kubectl` | [k3d.io](https://k3d.io/#installation), [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/) |
 
 - On Linux, `go test -race` also needs a C compiler: `sudo apt install gcc`.
@@ -584,6 +585,8 @@ What `k3d-check` proves on top of the vault check:
 | Grafana | has the VaultGate dashboards and the Prometheus, Loki and Tempo data sources, from the same files as compose |
 | Alertmanager | mailed its Watchdog heartbeat to Mailpit: rules, routing and SMTP all work |
 | Traces | the vault check's last step runs too: the upload's trace in Tempo, from the gateway to the scanner, and its log lines in Loki |
+
+Load tests run against the cluster too (README: [Load testing](../README.md#load-testing)): `make load-smoke` is a 90-second run with pass/fail thresholds, and `make load-test` is the 10-minute run, which writes its CSV and HTML to `loadtest/results/`. Watch it in Grafana's VaultGate dashboards (http://localhost:3000) and in `kubectl -n vaultgate get hpa -w`.
 
 Every walkthrough above works unchanged against the cluster, since the ports are the same. Argo CD syncs the branch you are on, which must be pushed; set `VAULTGATE_REVISION` to try another branch or a commit. After changing code, `make k3d-images` rebuilds and pushes the images and restarts the pods. To look around:
 
