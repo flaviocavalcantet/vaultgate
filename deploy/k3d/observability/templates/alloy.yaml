@@ -70,6 +70,12 @@ spec:
           readinessProbe:
             httpGet: { path: /-/ready, port: http }
             periodSeconds: 10
+          # Root for the log files' ownership, but nothing else: reading them needs only
+          # DAC_READ_SEARCH, and the only writable paths are its state and /tmp.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"], add: ["DAC_READ_SEARCH"] }
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { memory: 512Mi }
@@ -77,7 +83,10 @@ spec:
             - { name: config, mountPath: /etc/alloy, readOnly: true }
             - { name: pod-logs, mountPath: /var/log/pods, readOnly: true }
             - { name: data, mountPath: /var/lib/alloy/data }
+            - { name: tmp, mountPath: /tmp }
       volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
         - name: config
           configMap: { name: alloy }
         - name: pod-logs
