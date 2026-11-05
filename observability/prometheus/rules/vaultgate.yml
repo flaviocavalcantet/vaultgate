@@ -16,6 +16,19 @@ groups:
           summary: "{{ $labels.job }} metrics endpoint is down"
           description: "Prometheus has not scraped {{ $labels.instance }} for 2 minutes; the service is down or its metrics port is unreachable."
 
+      # A service with nothing left to scrape, which TargetDown cannot see: on Kubernetes,
+      # a Deployment scaled to zero or with no ready pod has no targets at all. Under
+      # compose the targets are a fixed list and never go missing.
+      - alert: VaultGateTargetMissing
+        expr: |
+          absent(up{job="api"}) or absent(up{job="gateway"}) or absent(up{job="scanner"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} has no metrics target"
+          description: "Prometheus has had no {{ $labels.job }} target to scrape for 5 minutes: no pod runs, or its ServiceMonitor or scrape config is gone."
+
       - alert: VaultGateObservabilityDown
         expr: up{job=~"loki|alloy"} == 0
         for: 5m

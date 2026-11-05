@@ -167,6 +167,7 @@ Prometheus evaluates the rules in `observability/prometheus/rules/vaultgate.yml`
 | Alert | Fires when | Severity |
 |---|---|---|
 | `VaultGateTargetDown` | API or gateway metrics unreachable for 2 min | critical |
+| `VaultGateTargetMissing` | no API, gateway or scanner target to scrape at all for 5 min (on Kubernetes: scaled to zero, no ready pod, or the ServiceMonitor gone) | critical |
 | `VaultGateHighErrorRate` | more than 5% of a service's requests return 5xx for 5 min | critical |
 | `VaultGateHighLatency` | p95 of non-upload requests above 1 s for 10 min | warning |
 | `VaultGateGatewayMemoryHigh` | gateway resident memory above 200 MiB (limit 256 MiB) for 5 min | warning |

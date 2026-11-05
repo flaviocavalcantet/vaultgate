@@ -70,5 +70,8 @@ small local chart that reads compose's files. All of it synced by Argo CD into
 - Loki and Tempo keep their data on local-path volumes, lost with `make k3d-down`.
   A real deployment would run them against object storage, with their own charts.
 - The rules come from compose, where one Prometheus scrapes a fixed list of targets. On
-  Kubernetes, a service with no pods has no targets left, so "target down" doesn't fire
-  for it. A rule for missing targets would cover that case.
+  Kubernetes, a service with no pods has no targets left, so `VaultGateTargetDown`
+  (`up == 0`) can't fire for it. `VaultGateTargetMissing` covers that case: no API,
+  gateway or scanner target at all for five minutes. It never fires under compose. It
+  can fire once on a fresh cluster, if VaultGate takes more than five minutes to come
+  up after Prometheus.

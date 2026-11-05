@@ -24,6 +24,35 @@ tests:
               summary: "api metrics endpoint is down"
               description: "Prometheus has not scraped api:9100 for 2 minutes; the service is down or its metrics port is unreachable."
 
+  - name: a service with no target at all fires after 5 minutes
+    interval: 1m
+    input_series:
+      - series: 'up{job="api", instance="api:9100"}'
+        values: "1x20"
+      # The gateway's only target goes away after 1 minute (scaled to zero). Its last
+      # sample still counts for 5 minutes (lookback), so it is absent from about 6m and
+      # the alert fires 5 minutes later.
+      - series: 'up{job="gateway", instance="gateway:9100"}'
+        values: "1 1"
+      - series: 'up{job="scanner", instance="scanner:9100"}'
+        values: "1x20"
+    alert_rule_test:
+      # Nothing missing while every service has a target.
+      - eval_time: 1m
+        alertname: VaultGateTargetMissing
+        exp_alerts: []
+      # Absent, but not yet for 5 minutes.
+      - eval_time: 10m
+        alertname: VaultGateTargetMissing
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: VaultGateTargetMissing
+        exp_alerts:
+          - exp_labels: { severity: critical, job: gateway }
+            exp_annotations:
+              summary: "gateway has no metrics target"
+              description: "Prometheus has had no gateway target to scrape for 5 minutes: no pod runs, or its ServiceMonitor or scrape config is gone."
+
   - name: error ratio above 5 percent fires per service
     interval: 1m
     input_series:
