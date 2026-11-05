@@ -51,7 +51,7 @@ also to grants and intents already handed out.
 ## Consequences
 
 - Sharing is opt-in per organization (the `share` action) and never reaches flagged
-  files. Agents (M13) will count as sharing too.
+  files. Agents (M14) will count as sharing too.
 - External sharing depends on email delivery. Without an SMTP server codes cannot be
   sent and external recipients cannot download; locally Mailpit catches every message.
 - An internal share depends on the identity provider vouching for email addresses. An

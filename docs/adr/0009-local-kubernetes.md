@@ -29,7 +29,7 @@ own registry.**
   application, so a branch can be tried before it is merged. The images are the one
   exception: they are built from the working tree, pushed to the cluster's registry,
   and pulled again when a pod restarts. Publishing them from CI to GHCR, with the chart
-  pinned to them, is on the roadmap (M16).
+  pinned to them, is on the roadmap (M11).
 - **Host access through NodePorts, on compose's ports:** the API on 8000, the gateway
   on 8888, Keycloak on 8080, LocalStack on 4566 and Mailpit on 8025, all on loopback.
   The scripts, the e2e check and the walkthroughs then work unchanged against either
@@ -39,7 +39,7 @@ own registry.**
   get one. A real deployment uses the chart's Ingress, with TLS.
 - **Autoscaling on CPU:** the gateway's HorizontalPodAutoscaler (from the chart, 1 to 3
   pods locally). The checks show that it reads CPU utilization. Scaling on transfers
-  in progress (KEDA) comes later, judged against the M8 load tests (M16).
+  in progress (KEDA) comes later, judged against the M8 load tests (M11).
 - **Argo CD from its official manifest,** pinned to a release, with two settings merged
   in: kustomize may read the realm from `infra/keycloak` (one copy for both stacks),
   and the UI runs over plain HTTP for `kubectl port-forward`.

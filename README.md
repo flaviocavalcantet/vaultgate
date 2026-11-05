@@ -511,33 +511,33 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
 - [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
 - [ ] **M9 — PKI and key management:** establish a certificate authority, store private keys securely, and distribute keys and certificates securely (scope to be defined)
 - [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined)
-- [ ] **M11 — Agent baseline and evaluation:** a single-agent invoice reviewer and a reproducible benchmark that scores task success and safety separately
+- [ ] **M11 — Delivery and scaling:** builds on M7 and the M8 load tests
+  - [ ] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them, replacing the local registry
+  - [ ] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests
+- [ ] **M12 — Agent baseline and evaluation:** a single-agent invoice reviewer and a reproducible benchmark that scores task success and safety separately
   - [ ] Japanese PII detectors (My Number, corporate number) and qualified-invoice registration numbers, validated by check digit
   - [ ] Synthetic dataset: invoices and purchase orders with discrepancies, prompt-injection documents, unauthorized requests
   - [ ] Baseline agent and `make agent-eval`: deterministic scoring, safety violations counted apart from task failures
   - [ ] CI gate on recorded model responses; live evaluation on a schedule, optionally against a local open model
-- [ ] **M12 — Durable agent runtime:** long-running agent jobs that survive worker crashes
+- [ ] **M13 — Durable agent runtime:** long-running agent jobs that survive worker crashes
   - [ ] Job lifecycle in PostgreSQL (queued, running, retry, awaiting approval, done, failed, cancelled, timed out), dispatched over SQS
   - [ ] Leases and heartbeats, checkpoints at tool-call boundaries, idempotency keys, cancellation and timeouts, dead-letter queue
   - [ ] Crash-recovery test: kill the worker mid-job, resume, no duplicated side effects
   - [ ] ADR: at-least-once delivery and idempotent effects; building the runtime compared with Temporal or DBOS
-- [ ] **M13 — Agent tools and governance:** the model proposes, VaultGate decides
+- [ ] **M14 — Agent tools and governance:** the model proposes, VaultGate decides
   - [ ] MCP server with strict schemas; the user's identity comes from the job, never from the model
   - [ ] Tools go through access policies and intents; parsers run in the WebAssembly sandbox
   - [ ] Agent reads count as sharing: pending, quarantined and unscannable content never reaches the model, whatever the quarantine scope; agents see only the verdict and the kinds and counts, and a release must name the agent purpose
   - [ ] Human approval as a job state, re-checked when the approved action runs
   - [ ] Security benchmark: prompt injection inside real documents, other users' files, malicious tool arguments
-- [ ] **M14 — Agent observability and cost:** builds on the M6 traces
+- [ ] **M15 — Agent observability and cost:** builds on the M6 traces
   - [ ] OpenTelemetry spans for model and tool calls, with PII masked by the scanner's detectors
   - [ ] Per-job token and cost budgets, step limits
   - [ ] Model routing judged on the benchmark by cost per successful task
-- [ ] **M15 — Evidence:** builds on the M8 load tests
+- [ ] **M16 — Evidence:** builds on the M8 load tests
   - [ ] Load scenarios for agent jobs with a mocked model; a small real-model benchmark with a fixed budget
   - [ ] Failure scenarios: slow or unavailable model, redelivery, worker crash, budget exhaustion
   - [ ] Published report with measured results and known limits, threat model for agents, demo recording, case study
-- [ ] **M16 — Delivery and scaling:** builds on M7 and the M8 load tests
-  - [ ] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them, replacing the local registry
-  - [ ] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests
 
 ## License
 
