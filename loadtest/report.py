@@ -195,8 +195,11 @@ def table(rows: list[dict], kinds: set[str]) -> list[str]:
         "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in sorted((r for r in rows if r["Type"] in kinds), key=lambda r: r["Name"]):
+        # HTTP names already start with their method; the scan rows are named alone.
+        name = r["Name"].replace("|", "/")
+        label = name if name.startswith(r["Type"] + " ") else f"{r['Type']} {name}"
         lines.append(
-            f"| {r['Type']} {r['Name'].replace('|', '/')} | {r['Request Count']} | "
+            f"| {label} | {r['Request Count']} | "
             f"{r['Failure Count']} | {ms(r['50%'])} | {ms(r['95%'])} | {ms(r['99%'])} | "
             f"{ms(r['Max Response Time'])} | {float(r['Requests/s']):.2f} |"
         )
