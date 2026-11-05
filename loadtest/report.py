@@ -219,6 +219,12 @@ def machine() -> str:
 
 
 def commit() -> str:
+    """The commit that was deployed: VAULTGATE_REVISION when it names one (CI sets it to the
+    PR's head; checkout's own HEAD is a merge commit that never reaches the repository),
+    otherwise the working tree's."""
+    revision = os.getenv("VAULTGATE_REVISION", "")
+    if len(revision) == 40 and all(c in "0123456789abcdef" for c in revision):
+        return revision[:7]
     try:
         return subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True
