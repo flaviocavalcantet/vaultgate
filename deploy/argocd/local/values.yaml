@@ -1,0 +1,4 @@
+# Set by `make k3d-up` (the root Application's Helm parameters): which repo and which
+# revision every application below syncs, so a branch can be tried before it is merged.
+repoURL: https://github.com/flaviocavalcantet/vaultgate
+revision: main

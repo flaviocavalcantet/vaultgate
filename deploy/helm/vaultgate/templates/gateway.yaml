@@ -66,3 +66,18 @@ spec:
     - { name: http, port: {{ $gw.port }}, targetPort: http }
     # In-cluster only. Never expose this port through an Ingress.
     - { name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics }
+{{- with $gw.nodePort }}
+---
+# The public port on every node (local clusters): a Service of its own, so the other
+# ports never get a node port.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}-nodeport
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  type: NodePort
+  selector: {{- include "vaultgate.selector" $ctx | nindent 4 }}
+  ports:
+    - { name: http, port: {{ $gw.port }}, targetPort: http, nodePort: {{ . }} }
+{{- end }}

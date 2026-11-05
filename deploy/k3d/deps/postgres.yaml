@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: postgres }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          env:
+            - { name: POSTGRES_USER, value: vaultgate }
+            - { name: POSTGRES_PASSWORD, value: vaultgate }
+            - { name: POSTGRES_DB, value: vaultgate }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "vaultgate"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  # k3s's local-path provisioner: the data survives pod restarts, not `make k3d-down`.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: { app.kubernetes.io/name: postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: postgres }

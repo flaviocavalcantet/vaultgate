@@ -1,0 +1,23 @@
+# The root application: `make k3d-up` applies it with REPO and REVISION filled in, and
+# ArgoCD then syncs everything else from this repo (app of apps).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vaultgate-local
+  namespace: argocd
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  source:
+    repoURL: ${REPO}
+    targetRevision: ${REVISION}
+    path: deploy/argocd/local
+    helm:
+      parameters:
+        - { name: repoURL, value: "${REPO}" }
+        - { name: revision, value: "${REVISION}" }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }

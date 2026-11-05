@@ -1,4 +1,4 @@
-.PHONY: up down test lint migrate tf-local obs-check auth-check vault-check token seed-policies
+.PHONY: up down test lint migrate tf-local obs-check auth-check vault-check token seed-policies k3d-up k3d-images k3d-check k3d-down
 
 up:          ## Start the local stack (services, dependencies and Prometheus/Loki/Tempo/Alloy/Grafana)
 	docker compose up --build -d
@@ -46,3 +46,15 @@ seed-policies: ## Allow every signed-in user everything (local development only;
 
 tf-local:    ## Apply Terraform against LocalStack (run `make up` first)
 	cd infra/terraform/envs/local && terraform init && terraform apply -auto-approve
+
+k3d-up:      ## Local Kubernetes: k3d cluster, images in its registry, Argo CD syncing this repo (needs Docker, k3d, kubectl, Terraform)
+	scripts/k3d.sh up
+
+k3d-images:  ## Rebuild the images, push them to the cluster's registry and restart the pods
+	scripts/k3d.sh images
+
+k3d-check:   ## The vault end-to-end check against the cluster, plus Argo CD, autoscaler and network policy checks
+	scripts/k3d.sh check
+
+k3d-down:    ## Delete the local cluster
+	scripts/k3d.sh down

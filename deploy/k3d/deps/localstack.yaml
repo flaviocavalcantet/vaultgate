@@ -1,0 +1,38 @@
+# Emulates S3, KMS and SQS. State lives in the pod: after a restart, run
+# `make tf-local` again (`make k3d-up` does).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: localstack
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: localstack }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: localstack }
+    spec:
+      containers:
+        - name: localstack
+          # Pinned like compose: releases from 2026.03 on need an auth token.
+          image: localstack/localstack:4.4.0
+          env:
+            - { name: SERVICES, value: "s3,kms,sqs" }
+          ports:
+            - { name: http, containerPort: 4566 }
+          readinessProbe:
+            httpGet: { path: /_localstack/health, port: http }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: localstack
+spec:
+  type: NodePort
+  selector: { app.kubernetes.io/name: localstack }
+  ports:
+    - { name: http, port: 4566, targetPort: http, nodePort: 30566 }

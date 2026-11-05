@@ -48,6 +48,9 @@ api:
   internalPort: 8001
   # /readyz also checks the database, so a pod without one receives no traffic.
   readinessPath: /readyz
+  # Set to also publish the public port on every node at this port (an extra NodePort
+  # Service with that port only), as the local k3d cluster does; empty behind an Ingress.
+  nodePort: ""
   # Where clients reach the API and the gateway; links and intents carry these.
   publicUrl: http://localhost:8000
   gatewayPublicUrl: http://localhost:8888
@@ -70,6 +73,7 @@ gateway:
   replicas: 2
   port: 8888
   readinessPath: /healthz
+  nodePort: ""
   env: {}
   resources:
     # The CPU request is what the autoscaler's utilization is measured against.
