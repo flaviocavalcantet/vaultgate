@@ -29,8 +29,19 @@ kind: Service
 metadata:
   name: mailpit
 spec:
-  type: NodePort
   selector: { app.kubernetes.io/name: mailpit }
   ports:
     - { name: smtp, port: 1025, targetPort: smtp }
+    - { name: http, port: 8025, targetPort: http }
+---
+# The UI and API on the host (localhost:8025): a Service of its own, so SMTP never gets
+# a node port.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailpit-ui
+spec:
+  type: NodePort
+  selector: { app.kubernetes.io/name: mailpit }
+  ports:
     - { name: http, port: 8025, targetPort: http, nodePort: 30025 }
