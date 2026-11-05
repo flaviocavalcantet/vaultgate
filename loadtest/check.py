@@ -1,9 +1,10 @@
 """Pass or fail a load run (M8, ADR 0011): `make load-smoke` runs it after Locust.
 
-    python3 loadtest/check.py RESULTS_PREFIX [--prometheus URL] [--window 5m]
+    python3 loadtest/check.py RESULTS_PREFIX [--prometheus URL]
 
-Reads Locust's RESULTS_PREFIX_stats.csv and asks the cluster's Prometheus about the same
-minutes. The run fails when:
+Reads Locust's RESULTS_PREFIX_stats.csv and asks the cluster's Prometheus about the run's
+own minutes: from its first sample in RESULTS_PREFIX_stats_history.csv until now, so
+nothing from before the run (setup, earlier checks) counts. The run fails when:
 
 - any request failed (Locust counts timeouts, wrong status codes, short downloads and
   scans with no verdict as failures);
@@ -11,7 +12,8 @@ minutes. The run fails when:
   calls, Documents no document verdict (each checked by names only it produces);
 - a gateway pod's resident memory came within 10% of its 256 MiB limit: streaming must
   keep it flat whatever the transfer sizes;
-- a VaultGate pod restarted during the run (out of memory, failed probes).
+- a VaultGate pod restarted during the run (out of memory, failed probes);
+- Prometheus has no gateway memory or pod restart data to judge by.
 
 Standard library only.
 """
@@ -20,6 +22,7 @@ import argparse
 import csv
 import json
 import sys
+import time
 import urllib.parse
 import urllib.request
 
@@ -50,12 +53,20 @@ def query(prometheus: str, promql: str) -> float | None:
     return max((float(r["value"][1]) for r in result), default=None)
 
 
+def run_window(prefix: str) -> str:
+    """A PromQL range covering the run: from Locust's first history sample to now, plus
+    one scrape interval for the last samples to land."""
+    with open(f"{prefix}_stats_history.csv", newline="") as f:
+        started = min(int(row["Timestamp"]) for row in csv.DictReader(f))
+    return f"{int(time.time() - started) + 15}s"
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("prefix")
     parser.add_argument("--prometheus", default="http://localhost:9090")
-    parser.add_argument("--window", default="5m", help="how far back the run reaches")
     args = parser.parse_args(argv)
+    window = run_window(args.prefix)
 
     with open(f"{args.prefix}_stats.csv", newline="") as f:
         rows = list(csv.DictReader(f))
@@ -73,12 +84,12 @@ def main(argv: list[str]) -> int:
     try:
         memory = query(
             args.prometheus,
-            f'max_over_time(process_resident_memory_bytes{{job="gateway"}}[{args.window}])',
+            f'max_over_time(process_resident_memory_bytes{{job="gateway"}}[{window}])',
         )
         restarts = query(
             args.prometheus,
             "sum(increase(kube_pod_container_status_restarts_total"
-            f'{{namespace="vaultgate"}}[{args.window}]))',
+            f'{{namespace="vaultgate"}}[{window}]))',
         )
     except OSError as exc:
         print(f"FAIL Prometheus at {args.prometheus} did not answer: {exc}")
@@ -87,7 +98,9 @@ def main(argv: list[str]) -> int:
         problems.append("no gateway memory samples in Prometheus")
     elif memory > MEMORY_CEILING:
         problems.append(f"gateway memory reached {memory / 2**20:.0f} MiB (limit 256 MiB)")
-    if restarts:
+    if restarts is None:
+        problems.append("no pod restart data in Prometheus (kube-state-metrics not scraped?)")
+    elif restarts:
         problems.append(f"VaultGate pods restarted {restarts:.0f} times")
 
     print(f"requests: {requests}, failed: {failures}")

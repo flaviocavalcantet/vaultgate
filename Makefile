@@ -69,9 +69,9 @@ LOCUST = locust -f loadtest/locustfile.py --headless --host http://localhost:800
 load-test:   ## Full load run against the local cluster: 30 users for 10 minutes; results in loadtest/results/
 	mkdir -p $(LOAD_RESULTS)
 	$(LOCUST) -u 30 -r 1 -t 10m --csv $(LOAD_RESULTS)/full --html $(LOAD_RESULTS)/full.html
-	python3 loadtest/check.py $(LOAD_RESULTS)/full --window 12m
+	python3 loadtest/check.py $(LOAD_RESULTS)/full
 
 load-smoke:  ## Short load run with pass/fail thresholds (CI): 6 users for 90 s, uploads up to 32 MiB
 	mkdir -p $(LOAD_RESULTS)
 	VAULTGATE_LOAD_MAX_MIB=32 $(LOCUST) -u 6 -r 2 -t 90s --csv $(LOAD_RESULTS)/smoke
-	python3 loadtest/check.py $(LOAD_RESULTS)/smoke --window 3m
+	python3 loadtest/check.py $(LOAD_RESULTS)/smoke
