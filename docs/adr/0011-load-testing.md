@@ -47,16 +47,28 @@ users, judged with Prometheus's view of the same minutes.**
   - no gateway pod above 90% of its 256 MiB memory limit, according to Prometheus;
   - no VaultGate pod restarted during the run.
 - **CI:** after `k3d-check`, `make load-smoke` runs 6 users for 90 seconds, with uploads
-  up to 32 MiB, against the same cluster, and applies those thresholds. The full run
-  (`make load-test`: 30 users, 10 minutes, uploads up to 128 MiB) produces the
-  published report.
+  up to 32 MiB, against the same cluster, and applies those thresholds.
+- **The published report** (`docs/load-testing.md`, `make load-report`): 20 users for
+  6 minutes, with uploads up to 128 MiB. `loadtest/report.py` builds it from Locust's
+  results and from Prometheus's view of the same minutes (gateway memory, CPU and pods,
+  throughput, scans in progress), with charts drawn as plain SVG. A workflow
+  (`load-report`) runs it on a fresh cluster whenever the load tests change, or by hand,
+  and the report says where it was measured.
+- **Local-only cleanup:** VaultGate has no file deletion yet. Each Transfers object is
+  removed from LocalStack once its download checked out. These are unsigned requests,
+  which only LocalStack accepts, and they remove every version, since the bucket is
+  versioned. Without this, a full run would keep gigabytes of ciphertext in the
+  runner's memory and disk. The make targets turn it on (`VAULTGATE_LOAD_CLEANUP=1`).
 
 ## Consequences
 
 - Each PR shows that transfers, API calls and scans still work under concurrent load,
   and that the gateway's memory stays flat. The smoke run adds a few minutes to
   `k3d-e2e`.
-- Load users and their data stay in the cluster's database and buckets. Runs are meant
-  for a throwaway cluster (`make k3d-down` afterwards).
+- Load users and their data stay in the cluster's database. Only the Transfers objects
+  are removed from the bucket. Runs are meant for a throwaway cluster
+  (`make k3d-down` afterwards).
+- The report is regenerated from a run, never edited by hand. Each run's numbers vary
+  with the machine it ran on.
 - No latency threshold gates CI: a shared runner's latency varies too much. Latency and
   throughput are reported, not enforced.

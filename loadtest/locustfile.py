@@ -23,6 +23,12 @@ Settings, from the environment (defaults: the local stack's ports):
     VAULTGATE_LOAD_USERS   how many load users exist (50; see loadtest/make_users.py)
     VAULTGATE_SCAN_TIMEOUT seconds to wait for a verdict before counting a failure (300)
     VAULTGATE_LOAD_MAX_MIB largest Transfers upload, in MiB (128; the smoke run uses 32)
+    VAULTGATE_LOAD_CLEANUP 1 to delete each Transfers object from LocalStack once its
+                           download checked out (the make targets set it): VaultGate has
+                           no delete yet, and a full run would otherwise keep gigabytes
+                           of ciphertext in LocalStack, in the runner's memory and disk
+    VAULTGATE_S3, VAULTGATE_BUCKET  where those objects are (http://localhost:4566,
+                           vaultgate-local-vault)
 
 The API is Locust's --host (http://localhost:8000); the gateway's address comes from
 the intents the API hands out.
@@ -33,8 +39,10 @@ import os
 import random
 import threading
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import requests
 from locust import HttpUser, between, events, task
 
 KEYCLOAK = os.getenv("VAULTGATE_KEYCLOAK", "http://localhost:8080").rstrip("/")
@@ -43,6 +51,9 @@ CLIENT_ID = "vaultgate-load"
 PASSWORD = "vaultgate-load-password"  # local-only test users
 LOAD_USERS = int(os.getenv("VAULTGATE_LOAD_USERS", "50"))
 SCAN_TIMEOUT = float(os.getenv("VAULTGATE_SCAN_TIMEOUT", "300"))
+CLEANUP = os.getenv("VAULTGATE_LOAD_CLEANUP") == "1"
+S3 = os.getenv("VAULTGATE_S3", "http://localhost:4566").rstrip("/")
+BUCKET = os.getenv("VAULTGATE_BUCKET", "vaultgate-local-vault")
 
 MiB = 1024 * 1024
 # Upload sizes for Transfers, by weight: mostly documents, some large files.
@@ -197,6 +208,22 @@ class VaultUser(HttpUser):
                 response.failure(f"download: {response.status_code}, {got} of {size} bytes")
 
 
+def delete_object(file_id: str) -> None:
+    """Every version of the file's object, from LocalStack (the bucket is versioned):
+    unsigned requests, which LocalStack accepts and real S3 never would. Outside the
+    results: it is the test's housekeeping, not VaultGate's work."""
+    key = f"files/{file_id}"
+    listing = requests.get(f"{S3}/{BUCKET}", params={"versions": "", "prefix": key}, timeout=30)
+    ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+    for entry in ET.fromstring(listing.content):
+        if entry.tag.endswith(("}Version", "}DeleteMarker")):
+            version = entry.find("s3:VersionId", ns)
+            if entry.find("s3:Key", ns).text == key and version is not None:
+                requests.delete(
+                    f"{S3}/{BUCKET}/{key}", params={"versionId": version.text}, timeout=30
+                )
+
+
 def size_label(size: int) -> str:
     return f"{size // MiB} MiB" if size >= MiB else f"{size // 1024} KiB"
 
@@ -213,6 +240,8 @@ class Transfers(VaultUser):
         file_id = self.upload(f"load-{size_label(size)}.bin", size, RandomBody(size))
         if file_id and self.wait_for_verdict(file_id, size_label(size)) == "clean":
             self.download(file_id, size)
+        if file_id and CLEANUP:
+            delete_object(file_id)
 
 
 class ControlPlane(VaultUser):
