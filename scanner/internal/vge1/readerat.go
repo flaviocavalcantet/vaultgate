@@ -164,7 +164,7 @@ func (r *ReaderAt) group(g int64) ([]byte, error) {
 func (r *ReaderAt) nonce(chunk int64) []byte {
 	nonce := make([]byte, 0, 12)
 	nonce = append(nonce, r.prefix...)
-	nonce = binary.BigEndian.AppendUint32(nonce, uint32(chunk))
+	nonce = binary.BigEndian.AppendUint32(nonce, uint32(chunk)) // #nosec G115 -- chunk < maxChunks (2^32), checked in NewReaderAt
 	if chunk == r.chunks-1 {
 		return append(nonce, 1)
 	}

@@ -154,6 +154,19 @@ func TestRTFTextIsExtracted(t *testing.T) {
 	expect(t, "RTF", found, pii(card, cpf)...)
 }
 
+// \u takes a signed 16-bit number: a larger one must not wrap around into a digit
+// (4294967344 is 2^32 + '0') that a reader of the document never sees.
+func TestRTFUnicodeOutOfRangeIsNotADigit(t *testing.T) {
+	rtf := `{\rtf1\ansi CPF 529.982.247-2\u4294967349?}` // 2^32 + '5'
+	var text bytes.Buffer
+	if _, err := extractor().Extract(strings.NewReader(rtf), int64(len(rtf)), &text); err != nil {
+		t.Fatal(err)
+	}
+	if got := text.String(); strings.Contains(got, "247-25") || !strings.Contains(got, "\uFFFD") {
+		t.Fatalf("%q", got)
+	}
+}
+
 func TestDeeplyNestedRTFIsUnscannable(t *testing.T) {
 	deep := `{\rtf1 ` + strings.Repeat("{", maxRTFDepth+1) + "x" + strings.Repeat("}", maxRTFDepth+1) + "}"
 	assertUnscannable(t, "nested groups", extractor(), []byte(deep))

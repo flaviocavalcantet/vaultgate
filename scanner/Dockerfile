@@ -9,5 +9,7 @@ RUN CGO_ENABLED=0 go build -o /out/scanner ./cmd/scanner && \
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/scanner /out/worker /
+# The image's nonroot user (65532), stated so it holds whatever the base image says.
+USER nonroot:nonroot
 # The CLI by default; the worker runs with --entrypoint /worker (compose does).
 ENTRYPOINT ["/scanner"]

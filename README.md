@@ -544,7 +544,12 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] OpenBao in the cluster, self-initialized from git, auto-unsealed; the offline root CA and the ceremony that installs the intermediate, whose key OpenBao generates and keeps ([ADR 0012](docs/adr/0012-pki-and-key-management.md))
   - [x] TLS on every hop: cert-manager issuing short-lived certificates from OpenBao, trust-manager distributing the root, the API, gateway, Keycloak, PostgreSQL, the metrics and traces endpoints and the ingress serving TLS, every client verifying
   - [x] Secrets from OpenBao: the services' credentials delivered at start, nothing secret in git or Helm values, dynamic PostgreSQL credentials per pod
-- [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined; enrolling external nodes is M11)
+- [ ] **M10 — Security auditing and node trust:** audits of the code, dependencies, images, cluster and running system, with a threat model and a published report; mutual TLS between the services (enrolling external nodes is M11)
+  - [x] Code and dependency scans in CI on every PR: SAST (Semgrep, Bandit, gosec), known vulnerabilities (pip-audit, govulncheck), leaked secrets (gitleaks); findings and their triage in [docs/security-scans.md](docs/security-scans.md)
+  - [ ] Image and cluster scans: the container images (Trivy), the Kubernetes manifests against hardening checks (Trivy config, kube-linter)
+  - [ ] Service identity: client certificates from OpenBao for the gateway and the scanner; the API's internal port requires mutual TLS and authorizes by certificate identity, the shared tokens kept as a second factor
+  - [ ] Running-system tests: OWASP ZAP against the API and the gateway on the cluster, and negative tests (authorization bypass, token reuse, TLS downgrade, plain HTTP)
+  - [ ] Threat model (STRIDE over the data flows) and a published audit report: findings, their fixes, and what is accepted
 - [ ] **M11 — Node enrollment:** certificates for external nodes through VaultGate's API, built on the M9 PKI, with a choice of first-trust methods
   - [ ] A second intermediate CA for nodes, from the offline root, limited to node identities; short-lived certificates, revocation (CRL and OCSP)
   - [ ] Enrollment API: a node sends a CSR for a key it generated itself, and VaultGate signs it through OpenBao once the node passes its first-trust check; under the access policies and in the audit log; renewal over mTLS with the current certificate, so the first credential is used once

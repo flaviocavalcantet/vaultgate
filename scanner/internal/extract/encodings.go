@@ -420,10 +420,16 @@ func (x *run) rtf(r io.Reader) error {
 				err = emit('\t')
 			case "u":
 				if hasParam {
-					if param < 0 {
-						param += 65536
+					// RTF writes a code unit as a signed 16-bit number. Anything outside
+					// that range is not a character Word would show: a replacement
+					// character, never a wrapped rune (\u4294967344 is not '0').
+					r := '\uFFFD'
+					if param >= -32768 && param < 0 {
+						r = rune(param + 65536)
+					} else if param >= 0 && param <= 65535 {
+						r = rune(param)
 					}
-					err = emit(rune(param))
+					err = emit(r)
 					fallback = top.uc
 				}
 			case "uc":

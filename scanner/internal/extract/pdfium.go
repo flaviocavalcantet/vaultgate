@@ -40,8 +40,8 @@ func NewPDFium(workers int, maxMemory int64, timeout time.Duration) (*PDFium, er
 		// go-pdfium's own runtime config plus our limits; PDFium needs exception handling.
 		RuntimeConfig: wazero.NewRuntimeConfig().
 			WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExceptionHandling).
-			WithMemoryLimitPages(uint32(maxMemory / 65536)). // WebAssembly pages are 64 KiB
-			WithCloseOnContextDone(true),                    // so a killed instance stops running
+			WithMemoryLimitPages(uint32(min(max(maxMemory/65536, 1), 65536))). // #nosec G115 -- clamped; 64 KiB pages, 4 GiB at most
+			WithCloseOnContextDone(true),                                      // so a killed instance stops running
 	})
 	if err != nil {
 		return nil, fmt.Errorf("starting PDFium: %w", err)

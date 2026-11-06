@@ -271,7 +271,7 @@ func digits(s string) []int {
 func digitBytes(d []int) []byte {
 	var b bytes.Buffer
 	for _, x := range d {
-		b.WriteByte(byte('0' + x))
+		b.WriteByte(byte('0' + x)) // #nosec G115 -- x is a decimal digit, 0 to 9
 	}
 	return b.Bytes()
 }
