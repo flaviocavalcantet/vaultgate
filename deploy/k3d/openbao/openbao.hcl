@@ -164,7 +164,8 @@ EOT
 # own service account and may read the secrets it uses and nothing else; the values
 # never pass through git or Helm values. `make k3d-up` seeds them with random values
 # (scripts/service_secrets.py seed) as the secrets-seed service account, which may create a
-# secret but not read or change one: a seeded value is never overwritten.
+# secret and see whether one exists (its metadata), but not read or change one: a seeded
+# value is never overwritten.
 initialize "secrets" {
   request "mount" {
     operation = "update"
@@ -181,6 +182,7 @@ initialize "secrets" {
     data = {
       policy = <<EOT
 path "secret/data/vaultgate/*" { capabilities = ["create"] }
+path "secret/metadata/vaultgate/*" { capabilities = ["read"] }
 path "auth/token/revoke-self" { capabilities = ["update"] }
 EOT
     }

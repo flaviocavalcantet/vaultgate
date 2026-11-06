@@ -4,8 +4,8 @@
     scripts/service_secrets.py seed    create each secret that doesn't exist yet, with a random
                                value (the local cluster's dependencies' own credentials
                                for the AWS keys and the database URL); existing ones are
-                               kept: the seed role may create a secret, never read or
-                               overwrite one
+                               kept: the seed role may create a secret and see that one
+                               exists, never read or overwrite one
     scripts/service_secrets.py check   each service's login reads its own secrets, and is refused
                                the others'
 
@@ -59,16 +59,24 @@ def login(role: str, jwt: str) -> str:
     return pki.bao("POST", "auth/kubernetes/login", body=body)["auth"]["client_token"]
 
 
+def exists(token: str, name: str) -> bool:
+    """From the secret's metadata, which the seed role may read (never its value)."""
+    try:
+        pki.bao("GET", f"secret/metadata/vaultgate/{name}", token)
+        return True
+    except pki.Failure as e:
+        if " 404 " in str(e):
+            return False
+        raise  # a refusal here is a wrong policy, not an existing secret
+
+
 def seed_with(token: str) -> None:
     for name, data in generated().items():
-        try:
-            pki.bao("POST", f"secret/data/vaultgate/{name}", token, {"data": data})
-            print(f"ok  secret {name} created")
-        except pki.Failure as e:
-            # Writing over an existing secret needs `update`, which the seed role lacks.
-            if " 403 " not in str(e):
-                raise
+        if exists(token, name):
             print(f"ok  secret {name} exists (kept)")
+            continue
+        pki.bao("POST", f"secret/data/vaultgate/{name}", token, {"data": data})
+        print(f"ok  secret {name} created")
 
 
 def seed() -> None:
