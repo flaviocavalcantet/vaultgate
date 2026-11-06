@@ -8,6 +8,9 @@
 //	VAULTGATE_SCAN_QUEUE_URL         SQS queue of scan requests (required)
 //	VAULTGATE_API_INTERNAL_URL       the API's internal port (default http://localhost:8001)
 //	VAULTGATE_SCANNER_TOKEN          secret for the internal scanner routes (required)
+//	VAULTGATE_API_CLIENT_CERT_FILE, VAULTGATE_API_CLIENT_KEY_FILE
+//	                                 the scanner's client certificate for that port, when it
+//	                                 wants one (mutual TLS), reloaded when renewed
 //	VAULTGATE_SECRETS_DIR            where credentials may come from instead, as files named
 //	                                 after their variables in lower case (vaultgate_scanner_token)
 //	VAULTGATE_BUCKET                 vault bucket (default vaultgate-local-vault)
@@ -128,6 +131,20 @@ func run(logger *slog.Logger) error {
 	}, func() float64 { return 1 }))
 	api := worker.NewHTTPAPI(env("VAULTGATE_API_INTERNAL_URL", "http://localhost:8001"), token)
 	api.Tracer = tracer
+	clientCert, clientKey := os.Getenv("VAULTGATE_API_CLIENT_CERT_FILE"), os.Getenv("VAULTGATE_API_CLIENT_KEY_FILE")
+	if (clientCert == "") != (clientKey == "") {
+		return errors.New("set both VAULTGATE_API_CLIENT_CERT_FILE and VAULTGATE_API_CLIENT_KEY_FILE, or neither")
+	}
+	if clientCert != "" {
+		clientReloader, err := tlsreload.New(clientCert, clientKey, logger)
+		if err != nil {
+			return err
+		}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.TLSClientConfig = clientReloader.ClientConfig()
+		api.Client.Transport = transport
+		go clientReloader.Run(ctx, time.Minute)
+	}
 	w := &worker.Worker{
 		API: api,
 		Objects: &worker.S3Objects{

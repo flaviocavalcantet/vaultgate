@@ -92,6 +92,27 @@ initialize "pki" {
       max_ttl                     = "72h"
     }
   }
+  # Client certificates for the API's internal port (M10, ADR 0013): an identity as a
+  # URI in VaultGate's own namespace, spiffe://vaultgate/ns/vaultgate/sa/<account>, and
+  # nothing else: no DNS names, IP addresses or localhost, and not usable by a server.
+  request "client-role" {
+    operation = "update"
+    path      = "pki/roles/vaultgate-client"
+    data = {
+      allowed_domains   = []
+      allow_localhost   = false
+      allow_ip_sans     = false
+      allowed_uri_sans  = ["spiffe://vaultgate/ns/vaultgate/sa/*"]
+      enforce_hostnames = true
+      require_cn        = false
+      key_type          = "ec"
+      key_bits          = 256
+      server_flag       = false
+      client_flag       = true
+      ttl               = "24h"
+      max_ttl           = "72h"
+    }
+  }
 }
 
 initialize "auth" {
@@ -153,6 +174,30 @@ EOT
       bound_service_account_namespaces = ["cert-manager"]
       audience                         = "vault://vaultgate-ca"
       token_policies                   = ["cert-manager"]
+      token_ttl                        = "10m"
+      token_max_ttl                    = "10m"
+    }
+  }
+  # The client certificates' issuer: a namespaced Issuer in VaultGate's namespace, which
+  # logs in as that namespace's vaultgate-client-issuer account, with its own audience
+  # (vault://<namespace>/<issuer>), and may sign under the client role only.
+  request "cert-manager-clients-policy" {
+    operation = "update"
+    path      = "sys/policies/acl/cert-manager-clients"
+    data = {
+      policy = <<EOT
+path "pki/sign/vaultgate-client" { capabilities = ["update"] }
+EOT
+    }
+  }
+  request "cert-manager-clients-role" {
+    operation = "update"
+    path      = "auth/kubernetes/role/cert-manager-clients"
+    data = {
+      bound_service_account_names      = ["vaultgate-client-issuer"]
+      bound_service_account_namespaces = ["vaultgate"]
+      audience                         = "vault://vaultgate/vaultgate-clients"
+      token_policies                   = ["cert-manager-clients"]
       token_ttl                        = "10m"
       token_max_ttl                    = "10m"
     }

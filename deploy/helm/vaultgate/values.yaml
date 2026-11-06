@@ -47,6 +47,25 @@ secrets:
 # and exits. The services read them through VAULTGATE_SECRETS_DIR, and the AWS SDKs
 # through AWS_SHARED_CREDENTIALS_FILE. Needs tls.enabled: OpenBao is verified with the
 # trust bundle. The agent's configuration: files/openbao-agent/<service>.hcl.
+# Mutual TLS on the API's internal port (M10, ADR 0013), with tls.enabled: the gateway
+# and the scanner present client certificates naming them (a URI,
+# spiffe://<trustDomain>/ns/<namespace>/sa/<release>-<component>), and the API accepts
+# only those from the root in rootSecret, each on its own routes. The shared tokens stay
+# required too. The certificates come from an Issuer in the release's namespace (so no
+# other namespace can get one) that signs through OpenBao's vaultgate-client role; its
+# login is the service account <release>-client-issuer, for which cert-manager mints
+# tokens.
+mtls:
+  enabled: false
+  trustDomain: vaultgate
+  # A Secret in the release's namespace with the root's certificate (key ca.crt): what
+  # the API verifies client certificates against, and the Issuer OpenBao's server.
+  rootSecret: vaultgate-root-ca
+  # OpenBao's role that signs client certificates, and cert-manager's own identity.
+  signPath: pki/sign/vaultgate-client
+  openbaoRole: cert-manager-clients
+  certManager: { namespace: cert-manager, serviceAccount: cert-manager }
+
 openbao:
   enabled: false
   address: https://openbao.openbao.svc:8200

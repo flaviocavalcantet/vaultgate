@@ -118,12 +118,19 @@ pki_ceremony() {
   # Only now, with the intermediate installed, the root goes to cert-manager: its issuer
   # stays not ready until then, so certificate requests wait instead of failing (a
   # failed one is retried an hour later), and to trust-manager, which hands it out.
-  kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
-  kubectl -n cert-manager create secret generic vaultgate-root-ca --from-file=ca.crt="$ROOT_CA" \
-    --dry-run=client -o yaml | kubectl apply -f -
-  # If the issuer already exists, have cert-manager look at it now rather than after its
-  # retry backoff (up to five minutes).
+  # VaultGate's namespace gets it too (M10, ADR 0013): its client certificates' Issuer
+  # verifies OpenBao with it, and the API verifies those certificates against it.
+  local ns
+  for ns in cert-manager vaultgate; do
+    kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+    kubectl -n "$ns" create secret generic vaultgate-root-ca --from-file=ca.crt="$ROOT_CA" \
+      --dry-run=client -o yaml | kubectl apply -f -
+  done
+  # If the issuers already exist, have cert-manager look at them now rather than after
+  # its retry backoff (up to five minutes).
   kubectl annotate clusterissuer vaultgate-ca --overwrite \
+    "vaultgate.io/root-ca-installed=$(date +%s)" >/dev/null 2>&1 || true
+  kubectl -n vaultgate annotate issuer vaultgate-clients --overwrite \
     "vaultgate.io/root-ca-installed=$(date +%s)" >/dev/null 2>&1 || true
 }
 
@@ -272,6 +279,8 @@ check_pki() {
   python3 scripts/pki.py check-service localhost:8000 localhost:8888 localhost:8080
   log "PostgreSQL: the API logs in with its own short-lived credentials, over TLS, verified; without TLS PostgreSQL refuses"
   kubectl -n vaultgate exec -i deploy/vaultgate-api -c api -- python - <scripts/postgres_tls_check.py
+  log "mutual TLS: the API's internal port wants the gateway's client certificate, not none or a server's"
+  kubectl -n vaultgate exec -i deploy/vaultgate-gateway -c gateway -- python - <scripts/mtls_check.py
 }
 
 check_secrets() {

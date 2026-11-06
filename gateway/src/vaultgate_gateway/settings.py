@@ -42,6 +42,10 @@ class Settings:
     # which SSL_CERT_FILE replaces (the cluster's trust bundle).
     api_internal_url: str = _env("API_INTERNAL_URL", "http://localhost:8001")
     internal_token: str | None = field(default=_secret("INTERNAL_TOKEN"), repr=False)
+    # The gateway's client certificate for that port, when it wants one (mutual TLS,
+    # M10, ADR 0013): a PEM certificate (with its chain) and key, reloaded when renewed.
+    api_client_cert_file: str | None = _env("API_CLIENT_CERT_FILE")
+    api_client_key_file: str | None = _env("API_CLIENT_KEY_FILE")
     # Object storage and KMS. An endpoint URL points both at LocalStack locally.
     bucket: str = _env("BUCKET", "vaultgate-local-vault")
     kms_key_id: str = _env("KMS_KEY_ID", "alias/vaultgate-local")

@@ -2,6 +2,7 @@
 
 import base64
 import json
+import ssl
 import uuid
 from dataclasses import dataclass, field
 
@@ -39,10 +40,20 @@ class DownloadGrant:
 
 
 class InternalApi:
-    def __init__(self, base_url: str, token: str | None, *, timeout: float = 10) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None,
+        *,
+        timeout: float = 10,
+        ssl_context: ssl.SSLContext | None = None,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._token = token
         self._timeout = timeout
+        # With mutual TLS: the context holding the client certificate (and the trust
+        # store the API's certificate is verified against).
+        self._ssl_context = ssl_context
         self._http = AsyncHTTPClient()
 
     async def _post(self, operation: str, path: str, body: dict) -> dict:
@@ -68,6 +79,7 @@ class InternalApi:
                 ),
                 connect_timeout=self._timeout,
                 request_timeout=self._timeout,
+                ssl_options=self._ssl_context,
             )
             try:
                 response = await self._http.fetch(request)

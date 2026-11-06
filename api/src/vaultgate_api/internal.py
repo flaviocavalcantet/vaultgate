@@ -17,7 +17,9 @@ findings or that the file could not be read.
 Gateway routes need `Authorization: Bearer <VAULTGATE_INTERNAL_TOKEN>` and scanner
 routes `Bearer <VAULTGATE_SCANNER_TOKEN>`; neither secret opens the other's routes. A
 secret that is not configured refuses every request: the internal API fails closed.
-The port is never exposed through an ingress or published on the host.
+With mutual TLS on (vaultgate_api.mtls), each route also wants its caller's identity
+from its client certificate: the gateway's, or the scanner's. The port is never exposed
+through an ingress or published on the host.
 """
 
 import base64
@@ -27,7 +29,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, IPvAnyAddress, SecretStr, field_validator
 from sqlalchemy import select, update
@@ -38,6 +40,7 @@ from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.models import File, ScanFinding, Share, User
+from vaultgate_api.mtls import client_identities
 from vaultgate_api.tracing import FASTAPI_TELEMETRY, TracingMiddleware
 
 logger = logging.getLogger(__name__)
@@ -55,11 +58,20 @@ def _check(credentials: HTTPAuthorizationCredentials | None, secret: SecretStr |
 Credentials = Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
 
 
-async def require_gateway(credentials: Credentials) -> None:
+def _check_identity(request: Request, expected: str | None) -> None:
+    if not settings.internal_client_ca_file:
+        return  # no mutual TLS: the token alone
+    if not expected or expected not in client_identities(request.scope):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+
+async def require_gateway(request: Request, credentials: Credentials) -> None:
+    _check_identity(request, settings.internal_gateway_identity)
     _check(credentials, settings.internal_token)
 
 
-async def require_scanner(credentials: Credentials) -> None:
+async def require_scanner(request: Request, credentials: Credentials) -> None:
+    _check_identity(request, settings.internal_scanner_identity)
     _check(credentials, settings.scanner_token)
 
 

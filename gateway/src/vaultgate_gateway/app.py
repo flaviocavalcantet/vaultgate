@@ -575,9 +575,11 @@ def make_app(
     )
 
 
-def services_from_settings() -> Services:
+def services_from_settings(api_context: ssl.SSLContext | None = None) -> Services:
     return Services(
-        api=InternalApi(settings.api_internal_url, settings.internal_token),
+        api=InternalApi(
+            settings.api_internal_url, settings.internal_token, ssl_context=api_context
+        ),
         keys=KmsKeyProvider.from_settings(
             kms_key_id=settings.kms_key_id,
             region=settings.aws_region,
@@ -617,8 +619,24 @@ async def main() -> None:
         reloading = asyncio.get_running_loop().create_task(  # noqa: F841
             reloader.run(settings.tls_reload_interval_seconds)
         )
+    # The client certificate for the API's internal port (mutual TLS, ADR 0013).
+    if bool(settings.api_client_cert_file) != bool(settings.api_client_key_file):
+        raise SystemExit(
+            "set both VAULTGATE_API_CLIENT_CERT_FILE and VAULTGATE_API_CLIENT_KEY_FILE, or neither"
+        )
+    api_context = None
+    if settings.api_client_cert_file and settings.api_client_key_file:
+        # The system's trust store (SSL_CERT_FILE) for the API's certificate.
+        api_context = ssl.create_default_context()
+        api_context.load_cert_chain(settings.api_client_cert_file, settings.api_client_key_file)
+        client_reloader = CertificateReloader(
+            settings.api_client_cert_file, settings.api_client_key_file, [api_context]
+        )
+        client_reloading = asyncio.get_running_loop().create_task(  # noqa: F841
+            client_reloader.run(settings.tls_reload_interval_seconds)
+        )
     # xheaders stays off: client addresses come from clientip, against trusted_proxies.
-    make_app(services_from_settings(), settings.trusted_proxies).listen(
+    make_app(services_from_settings(api_context), settings.trusted_proxies).listen(
         settings.port, max_body_size=settings.max_upload_bytes, ssl_options=ssl_context
     )
     logger.info(
