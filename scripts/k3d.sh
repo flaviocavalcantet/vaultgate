@@ -139,8 +139,16 @@ secrets_seed() {
 # Secrets above) opens nothing any more.
 secrets_rotate() {
   log "OpenBao's PostgreSQL password, rotated"
-  VAULTGATE_OPENBAO_JWT=$(kubectl -n openbao create token secrets-seed --audience openbao --duration 10m) \
-    python3 scripts/service_secrets.py rotate-db
+  # OpenBao verifies PostgreSQL with the trust bundle, which trust-manager writes and
+  # kubelet then copies into OpenBao's pod, up to a minute after PostgreSQL is ready:
+  # retried until it can (a failed attempt changes nothing).
+  local jwt
+  jwt=$(kubectl -n openbao create token secrets-seed --audience openbao --duration 10m)
+  # The last try in the open, so a failure says why.
+  wait_for 300 "OpenBao to reach PostgreSQL over TLS" \
+    env VAULTGATE_OPENBAO_JWT="$jwt" python3 scripts/service_secrets.py rotate-db ||
+    VAULTGATE_OPENBAO_JWT="$jwt" python3 scripts/service_secrets.py rotate-db
+  echo "ok  OpenBao's PostgreSQL password rotated: only OpenBao knows it"
 }
 
 app_ready() { # Synced and Healthy
