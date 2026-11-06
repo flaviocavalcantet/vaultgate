@@ -20,6 +20,8 @@ spec:
     spec:
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
       automountServiceAccountToken: false
+      {{- include "vaultgate.serviceAccount" $ctx | nindent 6 }}
+      {{- include "vaultgate.openbaoInit" $ctx | nindent 6 }}
       containers:
         - name: api
           image: {{ include "vaultgate.image" $ctx }}
@@ -57,9 +59,9 @@ spec:
             - name: VAULTGATE_SMTP_PORT
               value: {{ $api.smtp.port | quote }}
             {{- end }}
-            {{- include "vaultgate.secretEnv" (dict "root" . "env" "VAULTGATE_DATABASE_URL" "key" "database-url") | nindent 12 }}
-            {{- include "vaultgate.secretEnv" (dict "root" . "env" "VAULTGATE_INTERNAL_TOKEN" "key" "internal-token") | nindent 12 }}
-            {{- include "vaultgate.secretEnv" (dict "root" . "env" "VAULTGATE_SCANNER_TOKEN" "key" "scanner-token") | nindent 12 }}
+            {{- include "vaultgate.credentialEnv" (dict "root" . "env" "VAULTGATE_DATABASE_URL" "key" "database-url") | nindent 12 }}
+            {{- include "vaultgate.credentialEnv" (dict "root" . "env" "VAULTGATE_INTERNAL_TOKEN" "key" "internal-token") | nindent 12 }}
+            {{- include "vaultgate.credentialEnv" (dict "root" . "env" "VAULTGATE_SCANNER_TOKEN" "key" "scanner-token") | nindent 12 }}
             {{- include "vaultgate.extraEnv" $api.env | nindent 12 }}
           ports:
             - { name: http, containerPort: {{ $api.port }} }
@@ -74,10 +76,12 @@ spec:
           resources: {{- toYaml $api.resources | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            {{- include "vaultgate.openbaoMount" $ctx | nindent 12 }}
             {{- include "vaultgate.tlsMount" $ctx | nindent 12 }}
             {{- include "vaultgate.trustMount" . | nindent 12 }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+        {{- include "vaultgate.openbaoVolumes" $ctx | nindent 8 }}
         {{- include "vaultgate.tlsVolume" $ctx | nindent 8 }}
         {{- include "vaultgate.trustVolume" . | nindent 8 }}
 ---

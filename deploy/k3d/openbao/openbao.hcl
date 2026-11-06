@@ -158,3 +158,114 @@ EOT
     }
   }
 }
+
+# The services' credentials (M9, ADR 0012), in a key-value store: each secret at
+# secret/vaultgate/<name>, its value in the field `value`. Each service logs in as its
+# own service account and may read the secrets it uses and nothing else; the values
+# never pass through git or Helm values. `make k3d-up` seeds them with random values
+# (scripts/service_secrets.py seed) as the secrets-seed service account, which may create a
+# secret but not read or change one: a seeded value is never overwritten.
+initialize "secrets" {
+  request "mount" {
+    operation = "update"
+    path      = "sys/mounts/secret"
+    data = {
+      type        = "kv"
+      description = "VaultGate's service credentials"
+      options     = { version = "2" }
+    }
+  }
+  request "seed-policy" {
+    operation = "update"
+    path      = "sys/policies/acl/secrets-seed"
+    data = {
+      policy = <<EOT
+path "secret/data/vaultgate/*" { capabilities = ["create"] }
+path "auth/token/revoke-self" { capabilities = ["update"] }
+EOT
+    }
+  }
+  request "seed-role" {
+    operation = "update"
+    path      = "auth/kubernetes/role/secrets-seed"
+    data = {
+      bound_service_account_names      = ["secrets-seed"]
+      bound_service_account_namespaces = ["openbao"]
+      audience                         = "openbao"
+      token_policies                   = ["secrets-seed"]
+      token_ttl                        = "10m"
+      token_max_ttl                    = "10m"
+      token_no_default_policy          = true
+    }
+  }
+  request "api-policy" {
+    operation = "update"
+    path      = "sys/policies/acl/vaultgate-api"
+    data = {
+      policy = <<EOT
+path "secret/data/vaultgate/database-url" { capabilities = ["read"] }
+path "secret/data/vaultgate/internal-token" { capabilities = ["read"] }
+path "secret/data/vaultgate/scanner-token" { capabilities = ["read"] }
+path "secret/data/vaultgate/aws" { capabilities = ["read"] }
+EOT
+    }
+  }
+  request "gateway-policy" {
+    operation = "update"
+    path      = "sys/policies/acl/vaultgate-gateway"
+    data = {
+      policy = <<EOT
+path "secret/data/vaultgate/internal-token" { capabilities = ["read"] }
+path "secret/data/vaultgate/aws" { capabilities = ["read"] }
+EOT
+    }
+  }
+  request "scanner-policy" {
+    operation = "update"
+    path      = "sys/policies/acl/vaultgate-scanner"
+    data = {
+      policy = <<EOT
+path "secret/data/vaultgate/scanner-token" { capabilities = ["read"] }
+path "secret/data/vaultgate/aws" { capabilities = ["read"] }
+EOT
+    }
+  }
+  # One login per service: its service account in the vaultgate namespace, a token for
+  # OpenBao's audience, and a short-lived OpenBao token with that service's policy.
+  request "api-role" {
+    operation = "update"
+    path      = "auth/kubernetes/role/vaultgate-api"
+    data = {
+      bound_service_account_names      = ["vaultgate-api"]
+      bound_service_account_namespaces = ["vaultgate"]
+      audience                         = "openbao"
+      token_policies                   = ["vaultgate-api"]
+      token_ttl                        = "10m"
+      token_max_ttl                    = "1h"
+    }
+  }
+  request "gateway-role" {
+    operation = "update"
+    path      = "auth/kubernetes/role/vaultgate-gateway"
+    data = {
+      bound_service_account_names      = ["vaultgate-gateway"]
+      bound_service_account_namespaces = ["vaultgate"]
+      audience                         = "openbao"
+      token_policies                   = ["vaultgate-gateway"]
+      token_ttl                        = "10m"
+      token_max_ttl                    = "1h"
+    }
+  }
+  request "scanner-role" {
+    operation = "update"
+    path      = "auth/kubernetes/role/vaultgate-scanner"
+    data = {
+      bound_service_account_names      = ["vaultgate-scanner"]
+      bound_service_account_namespaces = ["vaultgate"]
+      audience                         = "openbao"
+      token_policies                   = ["vaultgate-scanner"]
+      token_ttl                        = "10m"
+      token_max_ttl                    = "1h"
+    }
+  }
+}

@@ -580,6 +580,7 @@ What `k3d-check` proves on top of the vault check:
 |---|---|
 | Argo CD | the root application, the dependencies and VaultGate are all `Synced` and `Healthy`: the cluster runs what git says |
 | PKI | OpenBao is initialized and unsealed and serves TLS that verifies against your root CA; its intermediate CA chains to the root, may sign only leaf certificates, and only for cluster and localhost names |
+| Credentials | each service's OpenBao login reads its own secrets (the API all four, the gateway the internal token and AWS file, the scanner the scanner token and AWS file) and is refused the others; no Secret holds them and no deployment has one in its environment |
 | TLS | the API's, the gateway's and Keycloak's certificates are issued and come from the intermediate, last at most three days, verify against your root, and plain HTTP gets no answer; the API's connection to PostgreSQL is TLS with the server verified, and PostgreSQL refuses one without TLS; every other check talks to them over that TLS |
 | Autoscaler | the gateway's HorizontalPodAutoscaler reads CPU utilization from metrics-server, so it can scale |
 | Network policy | a pod that is neither the gateway nor the scanner reaches the API's public port but not its internal one (8001, which hands out storage keys and wrapped data keys) |

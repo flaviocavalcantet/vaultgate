@@ -114,6 +114,14 @@ pki_ceremony() {
     "vaultgate.io/root-ca-installed=$(date +%s)" >/dev/null 2>&1 || true
 }
 
+# The services' credentials, in OpenBao (M9, ADR 0012): random values for the tokens,
+# created once and kept. The pods' OpenBao agents wait for them.
+secrets_seed() {
+  log "the services' credentials, in OpenBao"
+  VAULTGATE_OPENBAO_JWT=$(kubectl -n openbao create token secrets-seed --audience openbao --duration 10m) \
+    python3 scripts/service_secrets.py seed
+}
+
 app_ready() { # Synced and Healthy
   local status
   status=$(kubectl -n argocd get application "$1" \
@@ -157,6 +165,7 @@ up() {
   # certificates come from, and the pods wait for those.
   wait_for 900 "vaultgate-openbao to be synced and healthy" app_ready vaultgate-openbao
   pki_ceremony
+  secrets_seed
   for app in vaultgate-deps cert-manager kube-prometheus-stack trust-manager \
     vaultgate-observability vaultgate-pki vaultgate; do
     wait_for 900 "$app to be synced and healthy" app_ready "$app"
@@ -234,9 +243,28 @@ check_pki() {
   kubectl -n vaultgate exec -i deploy/vaultgate-api -c api -- python - <scripts/postgres_tls_check.py
 }
 
+check_secrets() {
+  log "credentials: each service reads its own from OpenBao, none is in a Secret or an environment"
+  local jwts=() service
+  for service in api gateway scanner; do
+    jwts+=("$service=$(kubectl -n vaultgate create token "vaultgate-$service" --audience openbao --duration 10m)")
+  done
+  VAULTGATE_SERVICE_JWTS=$(IFS=,; echo "${jwts[*]}") python3 scripts/service_secrets.py check
+  if kubectl -n vaultgate get secret vaultgate >/dev/null 2>&1; then
+    echo "the vaultgate Secret exists: the credentials should come from OpenBao only" >&2
+    return 1
+  fi
+  if kubectl -n vaultgate get deploy -o yaml | grep -E -q "secretKeyRef|_TOKEN$|AWS_SECRET_ACCESS_KEY"; then
+    echo "a deployment takes a credential from its environment" >&2
+    return 1
+  fi
+  echo "ok  no Secret holds them, no deployment has one in its environment"
+}
+
 check() {
   check_cluster
   check_pki
+  check_secrets
   check_observability
   log "vault end to end, against the cluster"
   host_trust python3 scripts/vault_e2e.py --api "$API" --keycloak "$KEYCLOAK"

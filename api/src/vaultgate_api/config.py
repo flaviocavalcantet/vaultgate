@@ -1,3 +1,4 @@
+import os
 from typing import Annotated, Literal
 
 from pydantic import IPvAnyNetwork, SecretStr, field_validator
@@ -7,9 +8,17 @@ from vaultgate_api.clientip import parse_networks
 
 
 class Settings(BaseSettings):
-    """Runtime configuration, read from environment variables prefixed with VAULTGATE_."""
+    """Runtime configuration, read from environment variables prefixed with VAULTGATE_.
 
-    model_config = SettingsConfigDict(env_prefix="VAULTGATE_")
+    Any setting can also come from a file in VAULTGATE_SECRETS_DIR named after its
+    variable, in lower case (vaultgate_internal_token): how the credentials arrive from
+    OpenBao on the cluster (M9, ADR 0012), on a memory-backed volume rather than in the
+    environment. A variable that is set wins over the file.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="VAULTGATE_", secrets_dir=os.getenv("VAULTGATE_SECRETS_DIR")
+    )
 
     # SQLAlchemy URL; the asyncpg driver is required because the API is fully async.
     database_url: str = "postgresql+asyncpg://vaultgate:vaultgate@localhost:5432/vaultgate"

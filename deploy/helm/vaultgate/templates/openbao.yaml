@@ -1,0 +1,22 @@
+{{- if .Values.openbao.enabled }}
+{{- range $name := list "api" "gateway" "scanner" }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+# The {{ $name }}'s identity towards OpenBao (its role vaultgate-{{ $name }} expects this
+# account). No token is mounted in the pod but the agent's, for OpenBao's audience.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}-openbao-agent
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+data:
+  agent.hcl: |- {{- $.Files.Get (printf "files/openbao-agent/%s.hcl" $name) | nindent 4 }}
+{{- end }}
+{{- end }}

@@ -21,6 +21,8 @@ spec:
     spec:
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
       automountServiceAccountToken: false
+      {{- include "vaultgate.serviceAccount" $ctx | nindent 6 }}
+      {{- include "vaultgate.openbaoInit" $ctx | nindent 6 }}
       # Transfers in progress get time to finish when a pod is scaled down.
       terminationGracePeriodSeconds: 120
       containers:
@@ -42,7 +44,7 @@ spec:
             - name: VAULTGATE_TRUSTED_PROXIES
               value: {{ . | quote }}
             {{- end }}
-            {{- include "vaultgate.secretEnv" (dict "root" . "env" "VAULTGATE_INTERNAL_TOKEN" "key" "internal-token") | nindent 12 }}
+            {{- include "vaultgate.credentialEnv" (dict "root" . "env" "VAULTGATE_INTERNAL_TOKEN" "key" "internal-token") | nindent 12 }}
             {{- include "vaultgate.extraEnv" $gw.env | nindent 12 }}
           ports:
             - { name: http, containerPort: {{ $gw.port }} }
@@ -54,10 +56,12 @@ spec:
           resources: {{- toYaml $gw.resources | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            {{- include "vaultgate.openbaoMount" $ctx | nindent 12 }}
             {{- include "vaultgate.tlsMount" $ctx | nindent 12 }}
             {{- include "vaultgate.trustMount" . | nindent 12 }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+        {{- include "vaultgate.openbaoVolumes" $ctx | nindent 8 }}
         {{- include "vaultgate.tlsVolume" $ctx | nindent 8 }}
         {{- include "vaultgate.trustVolume" . | nindent 8 }}
 ---

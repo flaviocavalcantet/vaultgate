@@ -439,7 +439,7 @@ CI lints the chart and checks the rendered manifests against the Kubernetes sche
      - kube-prometheus-stack, the upstream chart at a pinned version, with `deploy/k3d/kube-prometheus-stack.yaml`: the Prometheus Operator, Prometheus, Alertmanager and Grafana;
      - `deploy/k3d/observability`: Loki, Tempo and Alloy, and VaultGate's alert rules, dashboards and data sources, all from the files compose uses;
    - then the chart with `values-k3d.yaml` into `vaultgate`, with ServiceMonitors, traces to Alloy, and TLS: day-long certificates from `vaultgate-ca` for the API and the gateway, renewed and reloaded as they run.
-5. The PKI ceremony installs the intermediate CA (`scripts/pki.py intermediate`) as soon as OpenBao is up. OpenBao generates the key, which never leaves it, and a CSR. The root signs the CSR on your machine, and OpenBao installs the certificate. Then the root's certificate goes to cert-manager, whose issuer can sign from then on.
+5. The PKI ceremony installs the intermediate CA (`scripts/pki.py intermediate`) as soon as OpenBao is up, and the services' credentials are seeded in OpenBao with random values (`scripts/service_secrets.py seed`); each pod's OpenBao agent then writes its own to memory before the service starts. OpenBao generates the key, which never leaves it, and a CSR. The root signs the CSR on your machine, and OpenBao installs the certificate. Then the root's certificate goes to cert-manager, whose issuer can sign from then on.
 6. Terraform creates the bucket, key and queues in the cluster's LocalStack, and the local access policy is seeded.
 
 Everything answers where compose does:

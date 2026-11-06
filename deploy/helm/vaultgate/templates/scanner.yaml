@@ -21,6 +21,8 @@ spec:
     spec:
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
       automountServiceAccountToken: false
+      {{- include "vaultgate.serviceAccount" $ctx | nindent 6 }}
+      {{- include "vaultgate.openbaoInit" $ctx | nindent 6 }}
       # Scans in progress finish before the worker exits (it stops receiving on SIGTERM).
       terminationGracePeriodSeconds: 660
       containers:
@@ -42,7 +44,7 @@ spec:
               value: {{ .Values.storage.bucket | quote }}
             - name: VAULTGATE_SCANNER_CONCURRENCY
               value: {{ $sc.concurrency | quote }}
-            {{- include "vaultgate.secretEnv" (dict "root" . "env" "VAULTGATE_SCANNER_TOKEN" "key" "scanner-token") | nindent 12 }}
+            {{- include "vaultgate.credentialEnv" (dict "root" . "env" "VAULTGATE_SCANNER_TOKEN" "key" "scanner-token") | nindent 12 }}
             {{- include "vaultgate.extraEnv" $sc.env | nindent 12 }}
           ports:
             - { name: metrics, containerPort: {{ .Values.metrics.port }} }
@@ -51,10 +53,12 @@ spec:
           resources: {{- toYaml $sc.resources | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            {{- include "vaultgate.openbaoMount" $ctx | nindent 12 }}
             {{- include "vaultgate.tlsMount" $ctx | nindent 12 }}
             {{- include "vaultgate.trustMount" . | nindent 12 }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+        {{- include "vaultgate.openbaoVolumes" $ctx | nindent 8 }}
         {{- include "vaultgate.tlsVolume" $ctx | nindent 8 }}
         {{- include "vaultgate.trustVolume" . | nindent 8 }}
 ---

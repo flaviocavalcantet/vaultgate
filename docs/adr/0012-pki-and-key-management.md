@@ -158,9 +158,45 @@ load renewed certificates as they run.**
   name any Service. A shared cluster would give each namespace its own role, limited to
   `*.<namespace>.svc`, or add cert-manager's approver-policy.
 
+### The services' credentials
+
+**OpenBao holds them, each service reads only its own, and they reach the pods as
+files in memory.**
+
+- **Stored** in a key-value mount (`secret/`): `secret/vaultgate/<name>`, the value in
+  its `value` field. The secrets are the internal token, the scanner token, the
+  database URL, and the AWS credentials file.
+- **Seeded by `make k3d-up`** (`scripts/service_secrets.py seed`) with random tokens.
+  - It runs as the `secrets-seed` service account, whose policy has `create` only. It
+    can create a secret, but never read or overwrite one, so a second run keeps every
+    value.
+  - None of them is ever in git, in Helm values or in a Kubernetes Secret.
+  - Compose keeps its fixed development tokens.
+- **Read by each service with its own identity.** The chart gives the API, the gateway
+  and the scanner a service account each, and OpenBao has a matching Kubernetes role
+  and policy for each:
+  - the API reads all four secrets;
+  - the gateway reads the internal token and the AWS file;
+  - the scanner reads the scanner token and the AWS file.
+
+  `k3d-check` logs in as each one, and fails unless exactly those reads succeed.
+- **Delivered by the OpenBao agent**, as each pod's init container:
+  1. It logs in with a projected service-account token for OpenBao's audience. That
+     token lasts 10 minutes and is mounted in the agent only.
+  2. It writes the secrets with mode `0400` to a memory-backed volume, never the node's
+     disk, and exits. Until a secret exists, it waits.
+  3. The services read the files through `VAULTGATE_SECRETS_DIR` (one file per
+     setting, named after its variable), and the AWS SDKs through
+     `AWS_SHARED_CREDENTIALS_FILE`. A set variable still wins, so compose and the tests
+     are unchanged.
+- **Why files, not environment variables:** the environment shows up in `kubectl
+  describe`, in crash dumps and in child processes. The `vaultgate` Secret is gone too,
+  and `k3d-check` checks that no Deployment takes a credential from its environment.
+
 ### Next in M9
 
-- The services' credentials come from OpenBao, with database credentials per pod.
+- Database credentials per pod from OpenBao's database engine, replacing the database
+  URL's fixed password, and PostgreSQL's own passwords out of git.
 
 ## Consequences
 
