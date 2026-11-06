@@ -16,6 +16,9 @@
 //	VAULTGATE_SCAN_VISIBILITY_SECONDS  how long a message in progress stays hidden
 //	                                 from other workers, renewed while it runs (default 120)
 //	VAULTGATE_METRICS_PORT           /metrics and /healthz (default 9100)
+//	VAULTGATE_TLS_CERT_FILE, VAULTGATE_TLS_KEY_FILE
+//	                                 serve that port over TLS with this certificate, reloaded
+//	                                 when renewed (internal/tlsreload); unset, plain HTTP
 //	VAULTGATE_LOG_LEVEL              default info
 //	OTEL_EXPORTER_OTLP_ENDPOINT      where traces go over OTLP/HTTP (e.g. http://alloy:4318);
 //	                                 unset, nothing is recorded (internal/tracing)
@@ -45,6 +48,7 @@ import (
 
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/extract"
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/logging"
+	"github.com/flaviocavalcantet/vaultgate/scanner/internal/tlsreload"
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/tracing"
 	"github.com/flaviocavalcantet/vaultgate/scanner/internal/worker"
 )
@@ -144,8 +148,26 @@ func run(logger *slog.Logger) error {
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	server := &http.Server{Addr: fmt.Sprintf(":%d", metricsPort), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	certFile, keyFile := os.Getenv("VAULTGATE_TLS_CERT_FILE"), os.Getenv("VAULTGATE_TLS_KEY_FILE")
+	if (certFile == "") != (keyFile == "") {
+		return errors.New("set both VAULTGATE_TLS_CERT_FILE and VAULTGATE_TLS_KEY_FILE, or neither")
+	}
+	if certFile != "" {
+		reloader, err := tlsreload.New(certFile, keyFile, logger)
+		if err != nil {
+			return err
+		}
+		server.TLSConfig = reloader.ServerConfig()
+		go reloader.Run(ctx, time.Minute)
+	}
 	go func() {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		var err error
+		if server.TLSConfig != nil {
+			err = server.ListenAndServeTLS("", "") // the certificate comes from TLSConfig
+		} else {
+			err = server.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("metrics server stopped", "error", err)
 		}
 	}()

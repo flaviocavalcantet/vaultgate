@@ -583,10 +583,10 @@ What `k3d-check` proves on top of the vault check:
 | TLS | the API's, the gateway's and Keycloak's certificates are issued and come from the intermediate, last at most three days, verify against your root, and plain HTTP gets no answer; the API's connection to PostgreSQL is TLS with the server verified, and PostgreSQL refuses one without TLS; every other check talks to them over that TLS |
 | Autoscaler | the gateway's HorizontalPodAutoscaler reads CPU utilization from metrics-server, so it can scale |
 | Network policy | a pod that is neither the gateway nor the scanner reaches the API's public port but not its internal one (8001, which hands out storage keys and wrapped data keys) |
-| Prometheus | scrapes the API, gateway and scanner (through the chart's ServiceMonitors) and Loki, Tempo and Alloy, all up |
+| Prometheus | scrapes the API, gateway and scanner (through the chart's ServiceMonitors, over TLS verified against the trust bundle) and Loki, Tempo and Alloy, all up |
 | Grafana | has the VaultGate dashboards and the Prometheus, Loki and Tempo data sources, from the same files as compose |
 | Alertmanager | mailed its Watchdog heartbeat to Mailpit: rules, routing and SMTP all work |
-| Traces | the vault check's last step runs too: the upload's trace in Tempo, from the gateway to the scanner, and its log lines in Loki |
+| Traces | the vault check's last step runs too: the upload's trace in Tempo, from the gateway to the scanner (sent to Alloy over TLS), and its log lines in Loki |
 
 Load tests run against the cluster too (README: [Load testing](../README.md#load-testing)): `make load-smoke` is a 90-second run with pass/fail thresholds, `make load-test` is the 6-minute run, which writes its CSV and HTML to `loadtest/results/`, and `make load-report` runs it and regenerates `docs/load-testing.md`. Watch it in Grafana's VaultGate dashboards (http://localhost:3000) and in `kubectl -n vaultgate get hpa -w`.
 

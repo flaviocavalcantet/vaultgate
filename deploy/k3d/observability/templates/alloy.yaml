@@ -81,12 +81,15 @@ spec:
             limits: { memory: 512Mi }
           volumeMounts:
             - { name: config, mountPath: /etc/alloy, readOnly: true }
+            - { name: tls, mountPath: /etc/alloy/tls, readOnly: true }
             - { name: pod-logs, mountPath: /var/log/pods, readOnly: true }
             - { name: data, mountPath: /var/lib/alloy/data }
             - { name: tmp, mountPath: /tmp }
       volumes:
         - name: tmp
           emptyDir: { sizeLimit: 64Mi }
+        - name: tls
+          secret: { secretName: alloy-tls, defaultMode: 0440 }
         - name: config
           configMap: { name: alloy }
         - name: pod-logs
@@ -105,3 +108,19 @@ spec:
   ports:
     - { name: http, port: 12345, targetPort: http }
     - { name: otlp-http, port: 4318, targetPort: otlp-http }
+---
+# The OTLP receiver's certificate (M9, ADR 0012): the services send their traces over TLS.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: alloy
+  labels: { app.kubernetes.io/name: alloy }
+spec:
+  secretName: alloy-tls
+  issuerRef: { kind: ClusterIssuer, name: vaultgate-ca }
+  duration: 24h
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  usages: [digital signature, server auth]
+  dnsNames:
+    - alloy.{{ .Release.Namespace }}.svc
+    - alloy.{{ .Release.Namespace }}.svc.cluster.local

@@ -28,6 +28,9 @@ chart owns restarts the pods that read it. */}}
 prometheus.io/scrape: "true"
 prometheus.io/port: {{ .root.Values.metrics.port | quote }}
 prometheus.io/path: /metrics
+{{- if .root.Values.tls.enabled }}
+prometheus.io/scheme: https
+{{- end }}
 {{- end }}
 {{- if .root.Values.secrets.create }}
 checksum/secret: {{ include (print .root.Template.BasePath "/secret.yaml") .root | sha256sum }}
@@ -102,6 +105,9 @@ certificate carries). */}}
 - name: SSL_CERT_FILE
   value: /etc/vaultgate/trust/{{ .Values.tls.trustBundle.key }}
 - name: PGSSLROOTCERT
+  value: /etc/vaultgate/trust/{{ .Values.tls.trustBundle.key }}
+# The OTLP exporters (Python's and Go's) verify the trace collector with it.
+- name: OTEL_EXPORTER_OTLP_CERTIFICATE
   value: /etc/vaultgate/trust/{{ .Values.tls.trustBundle.key }}
 {{- end }}
 - name: VAULTGATE_METRICS_PORT

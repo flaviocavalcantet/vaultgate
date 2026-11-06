@@ -1,9 +1,10 @@
 {{- if .Values.tls.enabled }}
-{{- range $name := list "api" "gateway" }}
+{{- range $name := list "api" "gateway" "scanner" }}
 {{- $ctx := dict "root" $ "name" $name }}
 {{- $fullname := include "vaultgate.fullname" $ctx }}
 ---
-# The {{ $name }}'s server certificate, under the Service's names. cert-manager keeps the
+# The {{ $name }}'s server certificate (its ports, the metrics port included), under the
+# Service's names. cert-manager keeps the
 # key in the Secret (a new one at each renewal) and renews before a third of the
 # certificate's life is left; the {{ $name }} loads the renewed pair as it runs.
 apiVersion: cert-manager.io/v1

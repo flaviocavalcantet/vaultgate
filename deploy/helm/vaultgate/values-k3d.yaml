@@ -62,4 +62,5 @@ metrics:
   serviceMonitor:
     enabled: true
 tracing:
-  otlpEndpoint: http://alloy.monitoring:4318
+  # Alloy's OTLP receiver serves TLS (deploy/k3d/observability).
+  otlpEndpoint: https://alloy.monitoring.svc:4318

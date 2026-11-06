@@ -127,7 +127,7 @@ load renewed certificates as they run.**
   issuer isn't ready, and certificate requests wait instead of failing.
 - **The chart:** `tls.enabled` turns it all on (`values-k3d.yaml` does).
   - The public and the internal ports both speak TLS only, with probes over HTTPS.
-  - The metrics port stays plain HTTP for now.
+  - The metrics ports speak TLS as well (below).
   - Off, the chart serves plain HTTP as before.
 - **The dependencies:**
   - **PostgreSQL** serves TLS 1.3 with its own day-long certificate, and its `pg_hba`
@@ -139,14 +139,27 @@ load renewed certificates as they run.**
     (health), and reloads its certificate every hour. Its issuer becomes
     `https://localhost:8080/realms/vaultgate`, and the API fetches discovery and keys
     from `keycloak.vaultgate-deps.svc` over TLS.
-- **Not yet:** the ingress, and the metrics and traces endpoints (below).
+- **Metrics:** the API's, gateway's and scanner's metrics ports serve TLS with the
+  same certificates, which are renewed in place like the others (the scanner's in Go,
+  by `internal/tlsreload`). The ServiceMonitors scrape over https and verify against the
+  trust bundle and the Service's name, and `k3d-check` fails on a target scraped over
+  plain HTTP.
+- **Traces:** Alloy's OTLP receiver serves TLS with its own certificate, reloaded
+  hourly. The services' exporters verify it (`OTEL_EXPORTER_OTLP_CERTIFICATE`).
+  Inside the `monitoring` namespace, Alloy to Tempo and Prometheus to Loki and Tempo
+  stay plain HTTP: they carry no tokens or file data.
+- **The ingress (optional in the chart; the local cluster uses NodePorts):** with TLS
+  on and no `ingress.tls` given, cert-manager issues the ingress's certificate for both
+  hosts. The backends then speak HTTPS only, so the controller must too, and verify them
+  with the bundle. That setting belongs to each controller, so it is passed through
+  `ingress.serviceAnnotations`. Traefik's ServersTransport is one example. This is
+  checked against the schemas only, since the local cluster has no ingress controller.
 - **What a production cluster would change:** this role lets any namespace's Certificate
   name any Service. A shared cluster would give each namespace its own role, limited to
   `*.<namespace>.svc`, or add cert-manager's approver-policy.
 
 ### Next in M9
 
-- TLS for the ingress, and the metrics and traces endpoints.
 - The services' credentials come from OpenBao, with database credentials per pod.
 
 ## Consequences

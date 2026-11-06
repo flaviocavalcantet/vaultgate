@@ -108,8 +108,9 @@ tls:
   # Short-lived: cert-manager renews them with a third of their life left, and the
   # services load the new pair without a restart.
   duration: 24h
-  # Names on the API's and the gateway's certificates besides their Services' own
-  # (<release>-api.<namespace>.svc and .svc.cluster.local): localhost for NodePorts.
+  # Names on the API's, gateway's and scanner's certificates besides their Services' own
+  # (<release>-api.<namespace>.svc and .svc.cluster.local): localhost for NodePorts. The
+  # metrics ports serve TLS too, and the ServiceMonitors verify them with the bundle.
   extraDnsNames: []
   # A ConfigMap in the release's namespace (trust-manager writes it) whose key replaces
   # the services' trust store (SSL_CERT_FILE): the roots their clients accept.
@@ -125,7 +126,17 @@ ingress:
   # TLS for those hosts, as Ingress spec.tls: [{ secretName: ..., hosts: [...] }].
   # Anywhere but a local cluster, bearer tokens and files must not travel in plain HTTP:
   # set it (cert-manager issues the certificate from it, with its annotation above).
+  # Left empty with tls.enabled, the chart has cert-manager issue the ingress's
+  # certificate for both hosts from tls.issuerRef (Secret <release>-ingress-tls).
   tls: []
+  # With tls.enabled the backends (the API's and the gateway's ports) speak HTTPS only,
+  # so the controller must too, and should verify them with the trust bundle. How is
+  # the controller's own setting; these annotations go on the API's and the gateway's
+  # Services. Traefik: traefik.ingress.kubernetes.io/service.serversscheme: https, and
+  # traefik.ingress.kubernetes.io/service.serverstransport naming a ServersTransport
+  # whose rootCAs is the bundle. (ingress-nginx reads the Ingress's annotations instead:
+  # backend-protocol HTTPS, proxy-ssl-verify "on", proxy-ssl-secret.)
+  serviceAnnotations: {}
 
 # NetworkPolicies: the API's internal port only from the gateway and scanner pods; the
 # public ports and the metrics port stay open. Needs a CNI that enforces them (k3s does).
