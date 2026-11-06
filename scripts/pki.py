@@ -251,8 +251,14 @@ def installed_intermediate(token: str) -> bytes | None:
         if " 404 " in str(e):
             return None
         raise
+    root = ROOT_CERT.read_text().strip()
     for issuer in keys:
-        cert = bao("GET", f"pki/issuer/{issuer}", token)["data"]["certificate"].encode()
+        data = bao("GET", f"pki/issuer/{issuer}", token)["data"]
+        cert = data["certificate"].encode()
+        # The root comes in with the chain, without its key: it chains to itself, but
+        # issues nothing.
+        if not data.get("key_id") or data["certificate"].strip() == root:
+            continue
         try:
             verify(cert)
         except Failure:
@@ -309,8 +315,23 @@ def install_intermediate(token: str) -> None:
         token,
         {"certificate": (cert + ROOT_CERT.read_bytes()).decode()},
     )
-    issuers = installed.get("data", {}).get("imported_issuers") or []
-    print(f"ok  intermediate CA installed (issuer {', '.join(issuers)}), valid for "
+    # The import adds the intermediate and the root (without its key) as issuers; the
+    # default, which issues and which pki/ca/pem serves, stays the old one unless set.
+    # On a renewal that would keep signing with the expiring intermediate.
+    imported = installed.get("data", {}).get("imported_issuers") or []
+    new = next(
+        (
+            issuer
+            for issuer in imported
+            if bao("GET", f"pki/issuer/{issuer}", token)["data"]["certificate"].strip()
+            == cert.decode().strip()
+        ),
+        None,
+    )
+    if new is None:
+        raise Failure(f"the installed intermediate is not among the imported issuers {imported}")
+    bao("POST", "pki/config/issuers", token, {"default": new})
+    print(f"ok  intermediate CA installed as the default issuer ({new}), valid for "
           f"{INTERMEDIATE_DAYS} days")  # fmt: skip
 
 
