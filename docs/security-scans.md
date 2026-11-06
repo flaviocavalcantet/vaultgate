@@ -40,6 +40,9 @@ The first run, over the code as of M9.
   a CPF or card number, a finding that isn't there. Values outside −32768 to 65535 now
   become U+FFFD, the replacement character. Test:
   `TestRTFUnicodeOutOfRangeIsNotADigit`.
+- **`golang.org/x/net` v0.59.0** (govulncheck GO-2026-6603, GO-2026-6611, GO-2026-6612,
+  GO-2026-6617: HTTP/2 flaws, reached through the AWS SDK's HTTP client). Upgraded to
+  v0.60.0, which fixes all four.
 - **The scanner image's user** (Semgrep `missing-user-entrypoint`, `scanner/Dockerfile`).
   The distroless `nonroot` base image already runs as UID 65532, but the Dockerfile did
   not say so: it now states `USER nonroot:nonroot`, so the image can't silently become
@@ -72,8 +75,6 @@ The first run, over the code as of M9.
 - pip-audit: no known vulnerability in the API's or the gateway's dependencies.
 - gitleaks: no secret in any of the 184 commits or the working tree. The test
   passwords in compose files and tests are deliberately not secrets (gitleaks agrees).
-- govulncheck runs in CI only: its database host is unreachable from the sandbox the
-  first run was made in.
 
 ### Tooling, reviewed and accepted
 
