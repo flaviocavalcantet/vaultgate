@@ -13,6 +13,19 @@ app.kubernetes.io/name: {{ .name }}
 app.kubernetes.io/instance: {{ .root.Release.Name }}
 {{- end }}
 
+{{/* Replicas on different nodes where there are several: one node going down takes one
+replica with it, not all. Preferred, so a single-node cluster still runs them all. */}}
+{{- define "vaultgate.affinity" -}}
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels: {{- include "vaultgate.selector" . | nindent 14 }}
+{{- end }}
+
 {{- define "vaultgate.fullname" -}}
 {{ .root.Release.Name }}-{{ .name }}
 {{- end }}

@@ -12,6 +12,14 @@ spec:
     metadata:
       labels: { app.kubernetes.io/name: localstack }
     spec:
+      # The image's localstack user, not root. Its state, caches and temporary files
+      # live in the volumes below, which go with the pod as its state always did.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: localstack
           # Pinned like compose: releases from 2026.03 on need an auth token.
@@ -26,6 +34,21 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits: { memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: state, mountPath: /var/lib/localstack }
+            - { name: home, mountPath: /home/localstack }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: state
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

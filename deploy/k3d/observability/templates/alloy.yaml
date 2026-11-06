@@ -40,6 +40,8 @@ kind: DaemonSet
 metadata:
   name: alloy
   labels: { app.kubernetes.io/name: alloy }
+  annotations:
+    ignore-check.kube-linter.io/run-as-non-root: "reads the node's root-owned pod logs"
 spec:
   selector:
     matchLabels: { app.kubernetes.io/name: alloy }
@@ -51,7 +53,7 @@ spec:
     spec:
       serviceAccountName: alloy
       # The node's pod log files belong to root; Alloy only reads them (read-only mount).
-      securityContext: { runAsUser: 0 }
+      securityContext: { runAsUser: 0, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: alloy
           image: {{ .Values.images.alloy }}

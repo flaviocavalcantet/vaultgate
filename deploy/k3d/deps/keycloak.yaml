@@ -20,6 +20,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: keycloak
+  annotations:
+    ignore-check.kube-linter.io/no-read-only-root-fs: "start-dev rebuilds Keycloak into its own directory"
 spec:
   replicas: 1
   selector:
@@ -29,7 +31,10 @@ spec:
       labels: { app.kubernetes.io/name: keycloak }
     spec:
       securityContext:
-        fsGroup: 1000 # the image's keycloak user: it may read the key (0440)
+        runAsNonRoot: true
+        runAsUser: 1000 # the image's keycloak user
+        fsGroup: 1000 # it may read the key (0440)
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: keycloak
           image: quay.io/keycloak/keycloak:26.0.7
@@ -63,6 +68,11 @@ spec:
           resources:
             requests: { cpu: 200m, memory: 512Mi }
             limits: { memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Not read-only: start-dev rebuilds Keycloak into its own directory first.
+            readOnlyRootFilesystem: false
+            capabilities: { drop: [ALL] }
           volumeMounts:
             - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
             - { name: tls, mountPath: /etc/keycloak/tls, readOnly: true }

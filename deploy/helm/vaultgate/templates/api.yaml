@@ -7,6 +7,8 @@ kind: Deployment
 metadata:
   name: {{ include "vaultgate.fullname" $ctx }}
   labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+  annotations:
+    ignore-check.kube-linter.io/env-var-secret: "VAULTGATE_SECRETS_DIR is a directory's path"
 spec:
   replicas: {{ $api.replicas }}
   selector:
@@ -20,6 +22,7 @@ spec:
     spec:
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
       automountServiceAccountToken: false
+      {{- include "vaultgate.affinity" $ctx | nindent 6 }}
       {{- include "vaultgate.serviceAccount" $ctx | nindent 6 }}
       {{- include "vaultgate.openbaoInit" $ctx | nindent 6 }}
       containers:

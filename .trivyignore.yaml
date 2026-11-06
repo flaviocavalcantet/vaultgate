@@ -1,0 +1,29 @@
+# Trivy findings reviewed and accepted (M10, docs/security-scans.md), each limited to
+# where it was found: the same check anywhere else is still reported.
+misconfigurations:
+  # Keycloak in development mode (start-dev) rebuilds itself into its own directory when
+  # it starts. Otherwise hardened: non-root, no capabilities, no privilege escalation.
+  - id: KSV-0014
+    paths: [deploy/k3d/deps/keycloak.yaml]
+    statement: start-dev writes to Keycloak's own directory
+  # Not a secret: the init script reads OpenBao's first password from the environment
+  # (the Secret postgres-credentials); the check matches the word.
+  - id: KSV-0109
+    paths: [deploy/k3d/deps/postgres.yaml]
+    statement: the ConfigMap holds a script that reads a password from the environment
+  # Alloy collects the node's pod logs, which belong to root: it runs as root with one
+  # capability (DAC_READ_SEARCH, to read them), a read-only root filesystem and the logs
+  # mounted read-only from the node.
+  - id: KSV-0012
+    paths: [deploy/k3d/observability/templates/alloy.yaml]
+    statement: reads the node's root-owned pod logs
+  - id: KSV-0022
+    paths: [deploy/k3d/observability/templates/alloy.yaml]
+    statement: DAC_READ_SEARCH, to read the pod logs
+  - id: KSV-0023
+    paths: [deploy/k3d/observability/templates/alloy.yaml]
+    statement: the node's pod logs, mounted read-only
+  # Which registries may supply images is the cluster's admission policy, not something a
+  # manifest can state; every image here is pinned to a version.
+  - id: KSV-0125
+    statement: a cluster admission policy, not a manifest property

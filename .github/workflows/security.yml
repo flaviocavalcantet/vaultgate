@@ -1,11 +1,13 @@
 name: Security
 
-# Static checks of the code and its dependencies (M10, docs/security-scans.md). Each job
-# fails on a finding. A false positive is suppressed where it occurs, with its reason
-# (`# nosec`, `#nosec`, `nosemgrep`), never by turning a rule off for everything. The
-# tools and Semgrep's rules are pinned, so a new finding comes from a change here, not
-# from an upgrade; the vulnerability databases (pip-audit, govulncheck) are not pinned,
-# and a weekly run catches what they learn.
+# Static checks of the code, its dependencies, the images and the Kubernetes manifests
+# (M10, docs/security-scans.md). Each job fails on a finding. A false positive or an
+# accepted finding is suppressed where it occurs, with its reason (`# nosec`, `#nosec`,
+# an ignore-check.kube-linter.io annotation, a path in .trivyignore.yaml), never by
+# turning a rule off for everything. The tools and Semgrep's rules are pinned, so a new
+# finding comes from a change here, not from an upgrade; the vulnerability databases
+# (pip-audit, govulncheck, Trivy) are not pinned, and a weekly run catches what they
+# learn.
 
 on:
   push:
@@ -108,3 +110,44 @@ jobs:
           go-version: "1.26"
       - run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
       - run: gitleaks git --redact --no-banner .
+
+  # The images as built from the Dockerfiles: known vulnerabilities in their operating
+  # system packages and everything installed in them. Only fixable ones fail the job:
+  # one with no fix released yet can't be acted on here, and the weekly run picks it up
+  # once a fix is out.
+  trivy-images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, gateway, scanner]
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t vaultgate-${{ matrix.service }}:scan ${{ matrix.service }}
+      - name: Trivy
+        run: >-
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.2
+          image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+          vaultgate-${{ matrix.service }}:scan
+
+  # Misconfigurations in the Dockerfiles, the Helm charts, the Kubernetes manifests and
+  # Terraform; accepted findings are in .trivyignore.yaml, each with its reason and path.
+  trivy-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Trivy
+        run: >-
+          docker run --rm -v "$PWD:/src" -w /src aquasec/trivy:0.76.2
+          config --severity MEDIUM,HIGH,CRITICAL --exit-code 1
+          --ignorefile .trivyignore.yaml --skip-dirs deploy/k3d/argocd .
+
+  kube-linter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - run: go install golang.stackrox.io/kube-linter/cmd/kube-linter@v0.8.3
+      - run: scripts/kube_lint.sh

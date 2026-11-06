@@ -22,7 +22,12 @@ spec:
       annotations:
         checksum/config: {{ .Files.Get "files/loki.yml" | sha256sum }}
     spec:
-      securityContext: { runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: loki
           image: {{ .Values.images.loki }}
@@ -34,6 +39,7 @@ spec:
             periodSeconds: 10
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true # it writes only to its data volume
             capabilities: { drop: ["ALL"] }
           resources:
             requests: { cpu: 50m, memory: 128Mi }

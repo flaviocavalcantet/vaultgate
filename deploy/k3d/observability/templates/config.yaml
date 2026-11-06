@@ -31,6 +31,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: prometheus
+  annotations:
+    # kube-prometheus-stack's pods, from its own chart: not in this one.
+    ignore-check.kube-linter.io/dangling-service: "selects kube-prometheus-stack's pods"
 spec:
   selector:
     app.kubernetes.io/name: prometheus
