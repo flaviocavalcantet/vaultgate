@@ -99,7 +99,7 @@ loki.write "local" {
 
 // --- Traces ------------------------------------------------------------------
 // The services export OTLP/HTTP here (OTEL_EXPORTER_OTLP_ENDPOINT=
-// http://alloy.monitoring:4318, from the chart's tracing.otlpEndpoint).
+// https://alloy.monitoring.svc:4318, from the chart's tracing.otlpEndpoint).
 
 // Over TLS (M9, ADR 0012): the certificate from the cluster's CA, which the services'
 // exporters verify (OTEL_EXPORTER_OTLP_CERTIFICATE); renewals are read within the hour.
