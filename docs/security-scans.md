@@ -106,8 +106,11 @@ In `scripts/` and `loadtest/`, Semgrep and Bandit report:
 
 ### Images
 
-- **The scanner** (distroless `static-debian12:nonroot`, two static Go binaries): no
-  HIGH or CRITICAL vulnerability.
+- **The scanner** (distroless `static-debian12:nonroot`, two static Go binaries): one
+  HIGH, CVE-2026-78661 in `golang.org/x/net/html` (denial of service through crafted
+  HTML), fixed by upgrading `golang.org/x/net` to v0.62.0. govulncheck hadn't reported
+  it, rightly: the scanner never calls that package. Trivy goes by the module's
+  version, and the upgrade costs nothing. Its operating system packages: none.
 - **The API and the gateway** (`python:3.12-slim`, Debian 13): 49 HIGH, none CRITICAL,
   all in Debian packages with no fix released (util-linux, ncurses, SQLite, systemd's
   libraries, zlib, perl-base), most of them tools a service never runs. The gate fails
