@@ -64,8 +64,13 @@ spec:
     metadata:
       labels: { app.kubernetes.io/name: postgres }
     spec:
+      # As the image's postgres user (999) from the start, not root dropping to it.
       securityContext:
-        fsGroup: 999 # the image's postgres group: it may read the key (0440, root's)
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999 # it may read the key (0440, root's)
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: postgres
           image: postgres:16
@@ -97,12 +102,22 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true # writes go to the volumes below
+            capabilities: { drop: [ALL] }
           volumeMounts:
             - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql } # its socket and lock file
+            - { name: tmp, mountPath: /tmp }
             - { name: tls, mountPath: /etc/postgres/tls, readOnly: true }
             - { name: hba, mountPath: /etc/postgres/hba, readOnly: true }
             - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
       volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
         - name: tls
           secret: { secretName: postgres-tls, defaultMode: 0440 }
         - name: hba

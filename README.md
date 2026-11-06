@@ -546,7 +546,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Secrets from OpenBao: the services' credentials delivered at start, nothing secret in git or Helm values, dynamic PostgreSQL credentials per pod
 - [ ] **M10 — Security auditing and node trust:** audits of the code, dependencies, images, cluster and running system, with a threat model and a published report; mutual TLS between the services (enrolling external nodes is M11)
   - [x] Code and dependency scans in CI on every PR: SAST (Semgrep, Bandit, gosec), known vulnerabilities (pip-audit, govulncheck), leaked secrets (gitleaks); findings and their triage in [docs/security-scans.md](docs/security-scans.md)
-  - [ ] Image and cluster scans: the container images (Trivy), the Kubernetes manifests against hardening checks (Trivy config, kube-linter)
+  - [x] Image and cluster scans: the container images (Trivy), the Kubernetes manifests against hardening checks (Trivy config, kube-linter); the local cluster's dependencies hardened (non-root, no capabilities, seccomp, read-only root where they can)
   - [ ] Service identity: client certificates from OpenBao for the gateway and the scanner; the API's internal port requires mutual TLS and authorizes by certificate identity, the shared tokens kept as a second factor
   - [ ] Running-system tests: OWASP ZAP against the API and the gateway on the cluster, and negative tests (authorization bypass, token reuse, TLS downgrade, plain HTTP)
   - [ ] Threat model (STRIDE over the data flows) and a published audit report: findings, their fixes, and what is accepted

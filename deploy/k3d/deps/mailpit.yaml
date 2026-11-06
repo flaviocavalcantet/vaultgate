@@ -12,6 +12,12 @@ spec:
     metadata:
       labels: { app.kubernetes.io/name: mailpit }
     spec:
+      # The image's nobody: Mailpit needs no user of its own.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: mailpit
           image: axllent/mailpit:v1.33.0
@@ -23,6 +29,15 @@ spec:
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp } # its message database
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

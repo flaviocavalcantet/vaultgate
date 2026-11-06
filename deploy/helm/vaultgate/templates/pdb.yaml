@@ -9,6 +9,9 @@ metadata:
   labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
 spec:
   maxUnavailable: 1
+  # A pod that isn't ready serves nothing: evicting it never makes things worse, and a
+  # stuck one must not block a node drain.
+  unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels: {{- include "vaultgate.selector" $ctx | nindent 6 }}
 {{- end }}
