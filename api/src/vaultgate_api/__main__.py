@@ -4,7 +4,8 @@ Starts uvicorn with logging already configured, so uvicorn's own messages come o
 in the same JSON format as the application's instead of its default text format.
 Two servers run in one process: the public API and, on its own port, the internal
 API the gateway and the scanner use; next to them, a periodic sweep of abandoned
-uploads and the resender of stuck scan requests.
+uploads and the resender of stuck scan requests. With a TLS certificate configured, both
+servers speak TLS only, and a renewed certificate is loaded without a restart.
 """
 
 import asyncio
@@ -17,29 +18,41 @@ from vaultgate_api.config import settings
 from vaultgate_api.db import get_sessionmaker
 from vaultgate_api.logs import configure_logging
 from vaultgate_api.scans import get_scan_queue, run_resender
+from vaultgate_api.tls import CertificateReloader
 from vaultgate_api.tracing import configure_tracing
 from vaultgate_api.uploads import run_sweeper
 
 
 def _server(app: str, port: int) -> uvicorn.Server:
-    return uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host=settings.host,
-            port=port,
-            log_config=None,
-            access_log=False,
-            # Off: ClientAddressMiddleware resolves the client against trusted_proxies
-            # (uvicorn's own handling would trust 127.0.0.1 implicitly).
-            proxy_headers=False,
-        )
+    config = uvicorn.Config(
+        app,
+        host=settings.host,
+        port=port,
+        log_config=None,
+        access_log=False,
+        # Off: ClientAddressMiddleware resolves the client against trusted_proxies
+        # (uvicorn's own handling would trust 127.0.0.1 implicitly).
+        proxy_headers=False,
+        ssl_certfile=settings.tls_cert_file,
+        ssl_keyfile=settings.tls_key_file,
     )
+    config.load()  # builds the SSLContext now, so the reloader can renew it in place
+    return uvicorn.Server(config)
 
 
 async def serve() -> None:
+    if bool(settings.tls_cert_file) != bool(settings.tls_key_file):
+        raise SystemExit("set both VAULTGATE_TLS_CERT_FILE and VAULTGATE_TLS_KEY_FILE, or neither")
     public = _server("vaultgate_api.main:app", settings.port)
     internal = _server("vaultgate_api.internal:internal_app", settings.internal_port)
     tasks = [public.serve(), internal.serve()]
+    if settings.tls_cert_file and settings.tls_key_file:
+        reloader = CertificateReloader(
+            settings.tls_cert_file,
+            settings.tls_key_file,
+            [public.config.ssl, internal.config.ssl],
+        )
+        tasks.append(reloader.run(settings.tls_reload_interval_seconds))
     if settings.upload_sweep_interval_seconds > 0:
         tasks.append(run_sweeper(get_sessionmaker(), settings.upload_sweep_interval_seconds))
     if settings.audit_anchor_interval_seconds > 0:
