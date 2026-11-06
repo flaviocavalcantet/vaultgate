@@ -164,22 +164,25 @@ load renewed certificates as they run.**
 files in memory.**
 
 - **Stored** in a key-value mount (`secret/`): `secret/vaultgate/<name>`, the value in
-  its `value` field. The secrets are the internal token, the scanner token, the
-  database URL, and the AWS credentials file.
+  its `value` field. The secrets are the internal token, the scanner token and the
+  AWS credentials file. The database credentials are not stored at all (below).
 - **Seeded by `make k3d-up`** (`scripts/service_secrets.py seed`) with random tokens.
-  - It runs as the `secrets-seed` service account, whose policy has `create` only. It
-    can create a secret, but never read or overwrite one, so a second run keeps every
-    value.
+  - It runs as the `secrets-seed` service account. Its policy has `create` on the
+    secrets and `read` on their metadata. It can create a secret and see that one
+    exists, but never read or overwrite one, so a second run keeps every value, and a
+    refused write fails instead of passing for "exists".
   - None of them is ever in git, in Helm values or in a Kubernetes Secret.
   - Compose keeps its fixed development tokens.
 - **Read by each service with its own identity.** The chart gives the API, the gateway
   and the scanner a service account each, and OpenBao has a matching Kubernetes role
   and policy for each:
-  - the API reads all four secrets;
+  - the API reads the three secrets and its database credentials;
   - the gateway reads the internal token and the AWS file;
   - the scanner reads the scanner token and the AWS file.
 
-  `k3d-check` logs in as each one, and fails unless exactly those reads succeed.
+  `k3d-check` logs in as each one and asks OpenBao what that login may read
+  (`sys/capabilities-self`, which issues nothing). It fails unless the answer is
+  exactly that list.
 - **Delivered by the OpenBao agent**, as each pod's init container:
   1. It logs in with a projected service-account token for OpenBao's audience. That
      token lasts 10 minutes and is mounted in the agent only.
@@ -193,10 +196,38 @@ files in memory.**
   describe`, in crash dumps and in child processes. The `vaultgate` Secret is gone too,
   and `k3d-check` checks that no Deployment takes a credential from its environment.
 
-### Next in M9
+### Database credentials
 
-- Database credentials per pod from OpenBao's database engine, replacing the database
-  URL's fixed password, and PostgreSQL's own passwords out of git.
+**Each API pod logs in to PostgreSQL with credentials of its own, which OpenBao issues
+and ends.**
+
+- **PostgreSQL's bootstrap** (an init script, on an empty data directory):
+  - The schema belongs to `vaultgate_owner`, a role nobody logs in as.
+  - OpenBao gets its own login, `openbao`. It may create roles, hand out
+    `vaultgate_owner`, and end other sessions.
+  - `make k3d-up` puts two random passwords in Secrets: the superuser's, and OpenBao's
+    first one. No password is in git.
+- **OpenBao's database engine:**
+  - It connects as `openbao`, over TLS verified with the trust bundle (mounted
+    optionally, since the bundle exists only after the ceremony).
+  - Self-initialization configures it from that first password, and once PostgreSQL is
+    up `make k3d-up` rotates it (`database/rotate-root`). From then on only OpenBao
+    knows it.
+- **Each credential:**
+  - It is a login `v-…` with a one-hour lease, renewable up to a day.
+  - It is created `IN ROLE vaultgate_owner`, with `vaultgate_owner` as its default
+    role. Everything it creates, the migrations included, belongs to `vaultgate_owner`,
+    and the login itself owns nothing.
+  - When the lease ends, OpenBao ends the login's sessions and drops it.
+- **Renewal in the pod:**
+  - The API's OpenBao agent is a native sidecar. It renews the lease, and once it
+    can't, writes new credentials into the URL file.
+  - The API logs in with the file's credentials at each new connection, and recycles
+    pooled connections every 15 minutes. A rotation needs no restart.
+  - The gateway and the scanner have no database access.
+- **Checked:** `k3d-check` confirms, from the API's pod, that its connection is TLS
+  with the server verified, logs in as an OpenBao login acting as `vaultgate_owner`,
+  and that a connection without TLS is refused.
 
 ## Consequences
 

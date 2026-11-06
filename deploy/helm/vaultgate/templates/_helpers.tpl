@@ -141,7 +141,10 @@ certificate carries). */}}
 {{- end }}
 {{- end }}
 
-{{/* With OpenBao: the agent that writes the component's secrets before it starts. */}}
+{{/* With OpenBao: the agent that writes the component's secrets before it starts. For
+the API it stays running beside it (a native sidecar: an init container that restarts),
+renewing the database credentials and writing new ones before the old expire; the
+API starts once the files are there. The others' agents write and exit. */}}
 {{- define "vaultgate.openbaoInit" -}}
 {{- $root := .root }}
 {{- if $root.Values.openbao.enabled }}
@@ -152,6 +155,13 @@ initContainers:
   - name: openbao-agent
     image: {{ $root.Values.openbao.image }}
     command: [bao, agent, -config=/etc/openbao-agent/agent.hcl]
+    {{- if eq .name "api" }}
+    restartPolicy: Always
+    startupProbe:
+      exec: { command: [test, -s, /run/secrets/vaultgate/vaultgate_database_url] }
+      periodSeconds: 2
+      failureThreshold: 300
+    {{- end }}
     env:
       - { name: BAO_ADDR, value: {{ $root.Values.openbao.address | quote }} }
       - { name: BAO_CACERT, value: /etc/vaultgate/trust/{{ $root.Values.tls.trustBundle.key }} }

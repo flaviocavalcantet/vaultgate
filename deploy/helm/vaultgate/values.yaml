@@ -51,6 +51,13 @@ openbao:
   enabled: false
   address: https://openbao.openbao.svc:8200
   image: openbao/openbao:2.7.1
+  # The API's database credentials come from OpenBao's database engine (this role),
+  # short-lived and its own per pod; the agent writes them into a URL for this database.
+  database:
+    role: vaultgate-api
+    host: postgres.vaultgate-deps.svc
+    port: 5432
+    name: vaultgate
 
 api:
   replicas: 2
