@@ -1,0 +1,49 @@
+# The full load run on a fresh k3d cluster (M8, ADR 0011), whenever the load tests change
+# or by hand. It writes docs/load-testing.md and its charts (loadtest/report.py): the
+# job summary shows the report, and the log carries the files between markers, so a run's
+# numbers can be committed as they are. A shared runner's numbers describe VaultGate's
+# behaviour, not production hardware; the report says where it was measured.
+name: load-report
+
+on:
+  pull_request:
+    paths: ["loadtest/**", ".github/workflows/load-report.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  load-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      VAULTGATE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install k3d
+        run: |
+          curl -sSfL -o /tmp/k3d https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-amd64
+          echo "dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e  /tmp/k3d" | sha256sum -c -
+          sudo install -m 0755 /tmp/k3d /usr/local/bin/k3d
+      - run: make k3d-up
+      - run: pip install -r loadtest/requirements.txt
+      - run: make load-report
+      - name: Report
+        if: always()
+        run: |
+          [ -f docs/load-testing.md ] || exit 0
+          cat docs/load-testing.md >> "$GITHUB_STEP_SUMMARY"
+          for f in docs/load-testing.md docs/load-testing/*.svg; do
+            echo "=== BEGIN $f"; cat "$f"; echo "=== END $f"
+          done
+      - if: failure()
+        run: |
+          kubectl get pods,hpa -A -o wide || true
+          df -h || true

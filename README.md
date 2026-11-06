@@ -469,7 +469,8 @@ Locust scenarios in `loadtest/` run against the local cluster ([ADR 0011](docs/a
 pip install -r loadtest/requirements.txt
 make k3d-up
 make load-smoke    # 6 users, 90 s, uploads up to 32 MiB, with pass/fail thresholds (CI runs it)
-make load-test     # 30 users, 10 minutes, uploads up to 128 MiB; CSV and HTML in loadtest/results/
+make load-test     # 20 users, 6 minutes, uploads up to 128 MiB; CSV and HTML in loadtest/results/
+make load-report   # the same run, then docs/load-testing.md and its charts
 ```
 
 `loadtest/check.py` passes a run when:
@@ -479,7 +480,7 @@ make load-test     # 30 users, 10 minutes, uploads up to 128 MiB; CSV and HTML i
 - no gateway pod went above 90% of its 256 MiB memory limit, according to the cluster's Prometheus;
 - no VaultGate pod restarted.
 
-Latency is reported, not enforced: a shared CI runner varies too much.
+Latency is reported, not enforced: a shared CI runner varies too much. The published numbers are in **[docs/load-testing.md](docs/load-testing.md)**: throughput, latency, scan times, gateway memory and its autoscaling, from a full run on a GitHub runner. The `load-report` workflow regenerates them whenever the load tests change.
 
 ### Client addresses behind a proxy
 
@@ -532,9 +533,9 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Helm chart for all three services: configuration and credentials, optional ingress, CPU autoscaling of the gateway, network policies, disruption budgets, schema checks in CI
   - [x] Local k3d cluster: the dependencies in-cluster, images from a local registry, Argo CD syncing this repo, the end-to-end check against it in CI ([ADR 0009](docs/adr/0009-local-kubernetes.md))
   - [x] Cluster observability through Argo CD: Prometheus Operator, Grafana, Loki, Tempo and Alloy with the repo's dashboards and rules, Alertmanager routing to email ([ADR 0010](docs/adr/0010-cluster-observability.md))
-- [ ] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
+- [x] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
   - [x] Scenarios for transfers, the API control plane and scanner throughput; local-only load users; a smoke run with thresholds in CI ([ADR 0011](docs/adr/0011-load-testing.md))
-  - [ ] Published report: the full run on the cluster, with throughput, latency, scan times, gateway memory and autoscaling
+  - [x] Published report ([docs/load-testing.md](docs/load-testing.md)): the full run on the cluster, with throughput, latency, scan times, gateway memory and autoscaling
 - [ ] **M9 — PKI and key management:** establish a certificate authority, store private keys securely, and distribute keys and certificates securely (scope to be defined)
 - [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined)
 - [ ] **M11 — Delivery and scaling:** builds on M7 and the M8 load tests
