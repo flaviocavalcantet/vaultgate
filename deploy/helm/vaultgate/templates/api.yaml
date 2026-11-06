@@ -26,6 +26,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             {{- include "vaultgate.commonEnv" . | nindent 12 }}
+            {{- include "vaultgate.tlsEnv" $ctx | nindent 12 }}
             - name: VAULTGATE_PORT
               value: {{ $api.port | quote }}
             - name: VAULTGATE_INTERNAL_PORT
@@ -64,16 +65,21 @@ spec:
             - { name: http, containerPort: {{ $api.port }} }
             - { name: internal, containerPort: {{ $api.internalPort }} }
             - { name: metrics, containerPort: {{ .Values.metrics.port }} }
-          readinessProbe: { httpGet: { path: {{ $api.readinessPath }}, port: http } }
-          livenessProbe: { httpGet: { path: /healthz, port: http } }
+          {{- $scheme := ternary "HTTPS" "HTTP" .Values.tls.enabled }}
+          readinessProbe: { httpGet: { path: {{ $api.readinessPath }}, port: http, scheme: {{ $scheme }} } }
+          livenessProbe: { httpGet: { path: /healthz, port: http, scheme: {{ $scheme }} } }
           # Room for the migrations on a first start.
-          startupProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 5, failureThreshold: 36 }
+          startupProbe: { httpGet: { path: /healthz, port: http, scheme: {{ $scheme }} }, periodSeconds: 5, failureThreshold: 36 }
           securityContext: {{- include "vaultgate.containerSecurityContext" . | nindent 12 }}
           resources: {{- toYaml $api.resources | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            {{- include "vaultgate.tlsMount" $ctx | nindent 12 }}
+            {{- include "vaultgate.trustMount" . | nindent 12 }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+        {{- include "vaultgate.tlsVolume" $ctx | nindent 8 }}
+        {{- include "vaultgate.trustVolume" . | nindent 8 }}
 ---
 apiVersion: v1
 kind: Service

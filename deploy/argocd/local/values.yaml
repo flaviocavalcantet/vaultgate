@@ -4,3 +4,6 @@ repoURL: https://github.com/flaviocavalcantet/vaultgate
 revision: main
 # The upstream chart's version (ADR 0010); bump it on purpose.
 kubePrometheusStack: 92.21.1
+# cert-manager and trust-manager (M9, ADR 0012), likewise.
+certManager: v1.21.3
+trustManager: v0.25.0

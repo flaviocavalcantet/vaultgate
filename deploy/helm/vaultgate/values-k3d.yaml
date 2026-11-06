@@ -23,9 +23,18 @@ secrets:
   awsAccessKeyId: test
   awsSecretAccessKey: test
 
+# TLS on the API and the gateway (M9, ADR 0012): certificates from OpenBao's
+# intermediate through cert-manager, and the root in trust-manager's bundle
+# (deploy/k3d/pki). localhost is on them for the NodePorts, so the host verifies too.
+tls:
+  enabled: true
+  extraDnsNames: [localhost]
+
 api:
   replicas: 1
   nodePort: 30800
+  publicUrl: https://localhost:8000
+  gatewayPublicUrl: https://localhost:8888
   oidc:
     # Tokens carry iss=http://localhost:8080/realms/vaultgate (Keycloak's KC_HOSTNAME),
     # as with compose; the API fetches discovery and keys from the Service.

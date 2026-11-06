@@ -14,6 +14,9 @@ CA, whose key OpenBao generates and keeps, and signing OpenBao's own server cert
     scripts/pki.py check             OpenBao unsealed, its TLS and the intermediate chained to
                                      the root, the intermediate's constraints
     scripts/pki.py check-tls         only the first: OpenBao answers, unsealed, over TLS
+    scripts/pki.py check-service HOST:PORT...
+                                     each serves TLS that verifies against the root, with a
+                                     certificate from the intermediate that lasts 3 days at most
 
 Settings, from the environment:
 
@@ -34,6 +37,7 @@ import getpass
 import json
 import os
 import secrets
+import socket
 import ssl
 import subprocess
 import sys
@@ -365,6 +369,32 @@ def check() -> None:
         raise Failure(f"the intermediate CA expires within {RENEW_BEFORE_DAYS} days")
 
 
+SERVICE_MAX_DAYS = 3  # OpenBao's vaultgate-service role: 72h at most
+
+
+def check_service(addresses: list[str]) -> None:
+    context = ssl.create_default_context(cafile=str(ROOT_CERT))
+    for address in addresses:
+        host, _, port = address.rpartition(":")
+        try:
+            with (
+                socket.create_connection((host, int(port)), timeout=10) as sock,
+                context.wrap_socket(sock, server_hostname=host) as tls,
+            ):
+                cert = tls.getpeercert()
+        except (OSError, ssl.SSLError) as e:
+            raise Failure(f"{address}: {e}") from None
+        issuer = dict(item for rdn in cert["issuer"] for item in rdn).get("commonName")
+        if issuer != "VaultGate Local Intermediate CA":
+            raise Failure(f"{address}: certificate issued by {issuer!r}, not the intermediate")
+        lifetime = ssl.cert_time_to_seconds(cert["notAfter"]) - ssl.cert_time_to_seconds(
+            cert["notBefore"]
+        )
+        if lifetime > SERVICE_MAX_DAYS * 86400 + 60:
+            raise Failure(f"{address}: certificate valid for {lifetime / 86400:.1f} days")
+        print(f"ok  {address}: TLS from the intermediate, valid {lifetime / 3600:.0f} hours")
+
+
 def need_openssl3() -> None:
     try:
         version = openssl("version").decode()
@@ -385,6 +415,8 @@ def main(argv: list[str]) -> int:
         need_openssl3()
         if len(argv) == 2 and argv[0] == "openbao-tls":
             openbao_tls(Path(argv[1]))
+        elif len(argv) >= 2 and argv[0] == "check-service":
+            check_service(argv[1:])
         elif len(argv) == 1 and argv[0] in commands:
             commands[argv[0]]()
         else:

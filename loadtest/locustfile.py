@@ -30,8 +30,9 @@ Settings, from the environment (defaults: the local stack's ports):
     VAULTGATE_S3, VAULTGATE_BUCKET  where those objects are (http://localhost:4566,
                            vaultgate-local-vault)
 
-The API is Locust's --host (http://localhost:8000); the gateway's address comes from
-the intents the API hands out.
+The API is Locust's --host (https://localhost:8000 on the cluster, whose root CA
+REQUESTS_CA_BUNDLE names); the gateway's address comes from the intents the API hands
+out.
 """
 
 import itertools

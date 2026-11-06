@@ -36,7 +36,7 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             - name: VAULTGATE_API_INTERNAL_URL
-              value: "http://{{ .Release.Name }}-api:{{ .Values.api.internalPort }}"
+              value: {{ include "vaultgate.apiInternalUrl" . | quote }}
             - name: VAULTGATE_BUCKET
               value: {{ .Values.storage.bucket | quote }}
             - name: VAULTGATE_SCANNER_CONCURRENCY
@@ -50,8 +50,10 @@ spec:
           resources: {{- toYaml $sc.resources | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            {{- include "vaultgate.trustMount" . | nindent 12 }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+        {{- include "vaultgate.trustVolume" . | nindent 8 }}
 ---
 apiVersion: v1
 kind: Service

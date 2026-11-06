@@ -67,7 +67,9 @@ k3d-down:    ## Delete the local cluster
 # download checked out, so a run doesn't pile gigabytes of ciphertext into the cluster.
 LOAD_RESULTS ?= loadtest/results
 LOAD_PROFILE = 20 users (Transfers, ControlPlane and Documents weighted 3:2:1) for 6 minutes, uploads up to 128 MiB
-LOCUST = VAULTGATE_LOAD_CLEANUP=1 locust -f loadtest/locustfile.py --headless --host http://localhost:8000 --exit-code-on-error 0
+# The API and the gateway serve TLS on the cluster (M9): Locust's requests trust its root.
+PKI_DIR ?= $(or $(VAULTGATE_PKI_DIR),$(if $(CI),$(RUNNER_TEMP)/vaultgate-pki,$(HOME)/.vaultgate/pki))
+LOCUST = VAULTGATE_LOAD_CLEANUP=1 REQUESTS_CA_BUNDLE=$(PKI_DIR)/root-ca.crt locust -f loadtest/locustfile.py --headless --host https://localhost:8000 --exit-code-on-error 0
 
 load-test:   ## Full load run against the local cluster: 20 users for 6 minutes; results in loadtest/results/
 	mkdir -p $(LOAD_RESULTS)

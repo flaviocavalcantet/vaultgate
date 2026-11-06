@@ -84,11 +84,60 @@ key never enters the cluster.**
 - **The root in SoftHSM (PKCS#11):** shows HSM-style key handling, but adds tooling and
   is still a file on disk. Production would use a real HSM or an air-gapped machine.
 
+### Certificates for the services
+
+**cert-manager signs through OpenBao, trust-manager hands out the root, and the services
+load renewed certificates as they run.**
+
+- **Issuing** (`deploy/k3d/pki`):
+  - cert-manager 1.21 and trust-manager 0.25 are installed from their upstream charts,
+    at pinned versions.
+  - The `vaultgate-ca` ClusterIssuer sends each certificate's CSR to OpenBao's
+    `vaultgate-service` role. The key stays with cert-manager in the cluster; OpenBao
+    only signs.
+  - cert-manager logs in as the `openbao-issuer` service account, with a token it mints
+    for that issuer's audience. The account's OpenBao policy allows that one signing
+    path.
+- **The `vaultgate-service` role:**
+  - DNS names under `svc` and `cluster.local`, and `localhost`, so services are named
+    by their Service's full name (`vaultgate-api.vaultgate.svc`), never a short name;
+  - no IP addresses, wildcards or client certificates (M10 brings those);
+  - ECDSA P-256 keys;
+  - valid one day by default, three at most.
+
+  The intermediate's name constraints would reject anything else anyway.
+- **Short-lived certificates, reloaded in place.**
+  - The API's and the gateway's certificates last a day, and cert-manager renews them
+    with a third of their life left.
+  - The services check the mounted files every minute and load a renewed pair into their
+    running TLS context, so they need no restart. A pair that doesn't load, such as a key
+    that doesn't match, is skipped and the old one stays in use.
+  - A revoked or stolen certificate is therefore useful for a day at most. Revocation
+    lists are left for the node certificates of M11.
+- **Trust:** trust-manager writes one bundle into every namespace, a ConfigMap
+  `vaultgate-ca` holding the root and the public CAs.
+  - The services read it as their trust store (`SSL_CERT_FILE`, which Python's `ssl` and
+    Go's `crypto/x509` both honour). Their clients verify without any VaultGate-specific
+    code: the gateway and the scanner calling the API, and later the API calling
+    PostgreSQL and Keycloak.
+  - The host trusts `root-ca.crt` from `~/.vaultgate/pki`.
+- **Ordering:** cert-manager waits a long time after a failed issuance: an hour, then
+  longer. `make k3d-up` therefore creates the root's Secret, which the issuer and the
+  bundle need, only after the ceremony has installed the intermediate. Until then the
+  issuer isn't ready, and certificate requests wait instead of failing.
+- **The chart:** `tls.enabled` turns it all on (`values-k3d.yaml` does).
+  - The public and the internal ports both speak TLS only, with probes over HTTPS.
+  - The metrics port stays plain HTTP for now.
+  - Off, the chart serves plain HTTP as before.
+- **The API and the gateway come first.** Keycloak, PostgreSQL, the ingress, and the
+  metrics and traces endpoints follow (below).
+- **What a production cluster would change:** this role lets any namespace's Certificate
+  name any Service. A shared cluster would give each namespace its own role, limited to
+  `*.<namespace>.svc`, or add cert-manager's approver-policy.
+
 ### Next in M9
 
-- cert-manager requests certificates from OpenBao, short-lived, and trust-manager
-  distributes the root. With them, the API, gateway, Keycloak, PostgreSQL and the
-  ingress serve TLS, and every client verifies.
+- TLS for Keycloak, PostgreSQL, the ingress, and the metrics and traces endpoints.
 - The services' credentials come from OpenBao, with database credentials per pod.
 
 ## Consequences
@@ -107,3 +156,6 @@ key never enters the cluster.**
   editing the file on a running one.
 - Compose stays as it is: plain HTTP, with its secrets in environment variables. It is
   the quick development stack, and the PKI is a property of the cluster.
+- On the cluster, the API and the gateway answer on https only. The scripts, the load
+  tests and `curl` need the root: `--cacert ~/.vaultgate/pki/root-ca.crt`, or
+  `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE`.

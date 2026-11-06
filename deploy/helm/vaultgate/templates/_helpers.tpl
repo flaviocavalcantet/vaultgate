@@ -46,8 +46,61 @@ checksum/secret: {{ include (print .root.Template.BasePath "/secret.yaml") .root
       {{- end }}
 {{- end }}
 
-{{/* Settings every service reads: metrics port, traces, AWS. */}}
+{{/* http or https, as the services serve. */}}
+{{- define "vaultgate.scheme" -}}
+{{ ternary "https" "http" .Values.tls.enabled }}
+{{- end }}
+
+{{/* The API's internal port, by its Service's name in the namespace (a name its
+certificate carries). */}}
+{{- define "vaultgate.apiInternalUrl" -}}
+{{ include "vaultgate.scheme" . }}://{{ .Release.Name }}-api.{{ .Release.Namespace }}.svc:{{ .Values.api.internalPort }}
+{{- end }}
+
+{{/* With TLS: the certificate a server presents (cert-manager's Secret). */}}
+{{- define "vaultgate.tlsEnv" -}}
+{{- if .root.Values.tls.enabled }}
+- name: VAULTGATE_TLS_CERT_FILE
+  value: /etc/vaultgate/tls/tls.crt
+- name: VAULTGATE_TLS_KEY_FILE
+  value: /etc/vaultgate/tls/tls.key
+{{- end }}
+{{- end }}
+
+{{- define "vaultgate.tlsMount" -}}
+{{- if .root.Values.tls.enabled }}
+- { name: tls, mountPath: /etc/vaultgate/tls, readOnly: true }
+{{- end }}
+{{- end }}
+
+{{- define "vaultgate.tlsVolume" -}}
+{{- if .root.Values.tls.enabled }}
+- name: tls
+  secret: { secretName: {{ include "vaultgate.fullname" . }}-tls, defaultMode: 0440 }
+{{- end }}
+{{- end }}
+
+{{/* With TLS: the trust bundle that replaces every service's trust store. */}}
+{{- define "vaultgate.trustMount" -}}
+{{- if .Values.tls.enabled }}
+- { name: trust, mountPath: /etc/vaultgate/trust, readOnly: true }
+{{- end }}
+{{- end }}
+
+{{- define "vaultgate.trustVolume" -}}
+{{- if .Values.tls.enabled }}
+- name: trust
+  configMap: { name: {{ .Values.tls.trustBundle.configMap }} }
+{{- end }}
+{{- end }}
+
+{{/* Settings every service reads: metrics port, traces, AWS, trust store. */}}
 {{- define "vaultgate.commonEnv" -}}
+{{- if .Values.tls.enabled }}
+# What the services' clients trust (Python's ssl and Go's crypto/x509 both read it).
+- name: SSL_CERT_FILE
+  value: /etc/vaultgate/trust/{{ .Values.tls.trustBundle.key }}
+{{- end }}
 - name: VAULTGATE_METRICS_PORT
   value: {{ .Values.metrics.port | quote }}
 {{- with .Values.tracing.otlpEndpoint }}

@@ -47,7 +47,10 @@ audit "file" "stdout" {
 # - Kubernetes logins, and the one role the ceremony needs (scripts/pki.py intermediate):
 #   a short-lived token for the `pki-ceremony` service account, allowed to have the
 #   intermediate's CSR generated, its signed certificate installed and made the default
-#   issuer, and the token revoked when done; nothing else (no `default` policy).
+#   issuer, and the token revoked when done; nothing else (no `default` policy);
+# - the role cert-manager signs service certificates with, and its login: the
+#   openbao-issuer service account in cert-manager's namespace, which may sign under
+#   that role only.
 initialize "pki" {
   request "mount" {
     operation = "update"
@@ -65,6 +68,28 @@ initialize "pki" {
     data = {
       issuing_certificates    = ["https://openbao.openbao.svc:8200/v1/pki/ca"]
       crl_distribution_points = ["https://openbao.openbao.svc:8200/v1/pki/crl"]
+    }
+  }
+  # Server certificates for the cluster's services, signed from a CSR (cert-manager's
+  # key stays with cert-manager): DNS names under svc and cluster.local, and localhost,
+  # for a day by default and three at most. No IP addresses, wildcards or other names.
+  request "service-role" {
+    operation = "update"
+    path      = "pki/roles/vaultgate-service"
+    data = {
+      allowed_domains             = ["svc", "cluster.local", "localhost"]
+      allow_subdomains            = true
+      allow_bare_domains          = true
+      allow_wildcard_certificates = false
+      allow_ip_sans               = false
+      enforce_hostnames           = true
+      require_cn                  = false
+      key_type                    = "ec"
+      key_bits                    = 256
+      server_flag                 = true
+      client_flag                 = false
+      ttl                         = "24h"
+      max_ttl                     = "72h"
     }
   }
 }
@@ -107,6 +132,29 @@ EOT
       token_ttl                        = "10m"
       token_max_ttl                    = "10m"
       token_no_default_policy          = true
+    }
+  }
+  request "cert-manager-policy" {
+    operation = "update"
+    path      = "sys/policies/acl/cert-manager"
+    data = {
+      policy = <<EOT
+path "pki/sign/vaultgate-service" { capabilities = ["update"] }
+EOT
+    }
+  }
+  # cert-manager asks for this service account's token with its issuer's audience
+  # (vault://<ClusterIssuer name>), so the token is good for this issuer only.
+  request "cert-manager-role" {
+    operation = "update"
+    path      = "auth/kubernetes/role/cert-manager"
+    data = {
+      bound_service_account_names      = ["openbao-issuer"]
+      bound_service_account_namespaces = ["cert-manager"]
+      audience                         = "vault://vaultgate-ca"
+      token_policies                   = ["cert-manager"]
+      token_ttl                        = "10m"
+      token_max_ttl                    = "10m"
     }
   }
 }
