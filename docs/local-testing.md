@@ -29,7 +29,7 @@ Every check runs even if an earlier one fails, and a summary at the end shows wh
 | Terraform | 1.6+ | `full` | `brew tap hashicorp/tap && brew install hashicorp/tap/terraform` | [HashiCorp apt repo](https://developer.hashicorp.com/terraform/install) |
 | make, curl, git | any | `full` | included with Xcode CLT (`xcode-select --install`) | `sudo apt install make curl git` |
 | Locust | `pip install -r loadtest/requirements.txt` | the load tests (optional) | — | — |
-| k3d, kubectl | k3d 5.8+ | the Kubernetes cluster (optional) | `brew install k3d kubectl` | [k3d.io](https://k3d.io/#installation), [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/) |
+| k3d, kubectl, openssl | k3d 5.8+, OpenSSL 3 | the Kubernetes cluster (optional) | `brew install k3d kubectl openssl@3`, then `export VAULTGATE_OPENSSL=$(brew --prefix openssl@3)/bin/openssl` (macOS's own `openssl` is LibreSSL) | [k3d.io](https://k3d.io/#installation), [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/) |
 
 - On Linux, `go test -race` also needs a C compiler: `sudo apt install gcc`.
 - Give Docker at least 4 GB of memory. The stack runs 9 containers: Postgres, LocalStack, Keycloak, API, gateway, Prometheus, Loki, Alloy and Grafana.
@@ -570,7 +570,7 @@ The same system runs on a local Kubernetes cluster, deployed by Argo CD from thi
 
 ```bash
 make down          # compose off
-make k3d-up        # cluster, images, Argo CD, then waits until everything is synced and healthy (5-10 minutes the first time)
+make k3d-up        # cluster, images, root CA, Argo CD, then waits until everything is synced and healthy (5-10 minutes the first time)
 make k3d-check     # the vault end-to-end check against the cluster, plus the cluster checks below
 ```
 
@@ -579,6 +579,7 @@ What `k3d-check` proves on top of the vault check:
 | Check | What it proves |
 |---|---|
 | Argo CD | the root application, the dependencies and VaultGate are all `Synced` and `Healthy`: the cluster runs what git says |
+| PKI | OpenBao is initialized and unsealed and serves TLS that verifies against your root CA; its intermediate CA chains to the root, may sign only leaf certificates, and only for cluster and localhost names |
 | Autoscaler | the gateway's HorizontalPodAutoscaler reads CPU utilization from metrics-server, so it can scale |
 | Network policy | a pod that is neither the gateway nor the scanner reaches the API's public port but not its internal one (8001, which hands out storage keys and wrapped data keys) |
 | Prometheus | scrapes the API, gateway and scanner (through the chart's ServiceMonitors) and Loki, Tempo and Alloy, all up |
@@ -587,6 +588,8 @@ What `k3d-check` proves on top of the vault check:
 | Traces | the vault check's last step runs too: the upload's trace in Tempo, from the gateway to the scanner, and its log lines in Loki |
 
 Load tests run against the cluster too (README: [Load testing](../README.md#load-testing)): `make load-smoke` is a 90-second run with pass/fail thresholds, `make load-test` is the 6-minute run, which writes its CSV and HTML to `loadtest/results/`, and `make load-report` runs it and regenerates `docs/load-testing.md`. Watch it in Grafana's VaultGate dashboards (http://localhost:3000) and in `kubectl -n vaultgate get hpa -w`.
+
+The first `k3d-up` creates the root CA in `~/.vaultgate/pki` and asks for a passphrase for its key (12 characters or more). Later runs reuse that root and ask for the passphrase again when they need to sign something; set `VAULTGATE_PKI_PASSPHRASE` to skip the prompt. Keep the passphrase: without it the root can't sign anything, and a new root means a new cluster (`make k3d-down`, remove `~/.vaultgate/pki`). OpenBao answers on https://localhost:8200, for example `curl --cacert ~/.vaultgate/pki/root-ca.crt https://localhost:8200/v1/pki/ca/pem`.
 
 Every walkthrough above works unchanged against the cluster, since the ports are the same. Argo CD syncs the branch you are on, which must be pushed; set `VAULTGATE_REVISION` to try another branch or a commit. After changing code, `make k3d-images` rebuilds and pushes the images and restarts the pods. To look around:
 
@@ -603,7 +606,7 @@ Grafana (http://localhost:3000, admin / admin), Prometheus (9090) and Mailpit (8
 
 ## Troubleshooting
 
-- **A port is already in use** (5432, 8000, 8080, 8888, 4566, 3000, 8025, 9090): stop the other program, for example a local Postgres (`brew services stop postgresql`), or run `down` to clear an old stack.
+- **A port is already in use** (5432, 8000, 8080, 8888, 4566, 3000, 8025, 9090; 8200 on the cluster): stop the other program, for example a local Postgres (`brew services stop postgresql`), or run `down` to clear an old stack.
 - **API tests with PostgreSQL fail with `password authentication failed for user "vaultgate"` (Windows):** a PostgreSQL installed on Windows also listens on 5432. Windows lets it share the port with Docker, so the tests reach it instead of the stack. The PowerShell script detects this and says so. Stop it in an admin PowerShell with `Get-Service postgresql* | Stop-Service`; `Get-Service postgresql* | Set-Service -StartupType Manual` keeps it from starting at boot.
 - **A service never becomes ready:** run `docker compose ps` and `docker compose logs <service>`. Keycloak is the slowest to start (up to a minute or two).
 - **`make tf-local` fails because a resource already exists or is missing:** LocalStack and the Terraform state file disagree (for example, the state was deleted while LocalStack kept running). Run `scripts/local_check.sh down`, delete `infra/terraform/envs/local/terraform.tfstate*`, and run `full` again.

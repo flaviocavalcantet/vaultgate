@@ -24,6 +24,8 @@ ports:
     nodeFilters: [server:0:direct]
   - port: 127.0.0.1:8025:30025 # Mailpit UI and API
     nodeFilters: [server:0:direct]
+  - port: 127.0.0.1:8200:30820 # OpenBao (TLS), for the PKI ceremony and its check
+    nodeFilters: [server:0:direct]
   # Observability (deploy/k3d/observability, kube-prometheus-stack)
   - port: 127.0.0.1:3000:30300 # Grafana
     nodeFilters: [server:0:direct]

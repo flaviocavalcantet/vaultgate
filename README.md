@@ -184,7 +184,7 @@ scanner/        Go PII scanner
 deploy/
   helm/         Helm chart for the API, gateway and scanner worker
   argocd/       Argo CD applications: an example for a real cluster, the local app of apps
-  k3d/          Local cluster: k3d config, Argo CD install, in-cluster dependencies and observability
+  k3d/          Local cluster: k3d config, Argo CD install, in-cluster dependencies, OpenBao and observability
 infra/
   terraform/
     modules/    Reusable modules (storage: S3 + KMS)
@@ -430,24 +430,27 @@ CI lints the chart and checks the rendered manifests against the Kubernetes sche
 
 1. k3d creates the cluster `vaultgate` (`deploy/k3d/cluster.yaml`), with its own image registry at `localhost:5050`.
 2. The API, gateway and scanner images are built from your working tree and pushed there.
-3. Argo CD is installed (`deploy/k3d/argocd`), and a root application hands it this repo at `VAULTGATE_REVISION` (default: the current branch, which must be pushed). From then on Argo CD syncs everything from git:
+3. The root CA is created, unless you have one ([ADR 0012](docs/adr/0012-pki-and-key-management.md)). It is kept in `~/.vaultgate/pki`, outside the cluster, with its key encrypted by a passphrase: `k3d-up` asks for it, or reads `VAULTGATE_PKI_PASSPHRASE`. The root signs OpenBao's TLS certificate, which goes into the cluster as a Secret next to OpenBao's seal key.
+4. Argo CD is installed (`deploy/k3d/argocd`), and a root application hands it this repo at `VAULTGATE_REVISION` (default: the current branch, which must be pushed). From then on Argo CD syncs everything from git:
    - the dependencies (`deploy/k3d/deps`: PostgreSQL, LocalStack, Keycloak, Mailpit) into `vaultgate-deps`;
+   - OpenBao (`deploy/k3d/openbao`), the certificate authority and secret store, into `openbao`; it configures itself on first start;
    - the observability ([ADR 0010](docs/adr/0010-cluster-observability.md)) into `monitoring`:
      - kube-prometheus-stack, the upstream chart at a pinned version, with `deploy/k3d/kube-prometheus-stack.yaml`: the Prometheus Operator, Prometheus, Alertmanager and Grafana;
      - `deploy/k3d/observability`: Loki, Tempo and Alloy, and VaultGate's alert rules, dashboards and data sources, all from the files compose uses;
    - then the chart with `values-k3d.yaml` into `vaultgate`, with ServiceMonitors and traces to Alloy.
-4. Terraform creates the bucket, key and queues in the cluster's LocalStack, and the local access policy is seeded.
+5. The PKI ceremony installs the intermediate CA (`scripts/pki.py intermediate`). OpenBao generates the key, which never leaves it, and a CSR. The root signs the CSR on your machine, and OpenBao installs the certificate.
+6. Terraform creates the bucket, key and queues in the cluster's LocalStack, and the local access policy is seeded.
 
 Everything answers where compose does:
 
 - the API on http://localhost:8000, the gateway on 8888, Keycloak on 8080, LocalStack on 4566 and Mailpit on 8025;
 - Grafana on 3000 (admin / admin), Prometheus on 9090, Loki on 3100 and Tempo on 3200;
-- and, new on the cluster, Alertmanager on 9093.
+- and, new on the cluster, Alertmanager on 9093 and OpenBao on https://localhost:8200 (its certificate verifies against `~/.vaultgate/pki/root-ca.crt`).
 
 Alertmanager routes every alert by email to Mailpit: `oncall@vaultgate.local` for the alerts, `heartbeat@vaultgate.local` for Watchdog, which always fires and so shows the whole path works. Then:
 
 ```bash
-make k3d-check     # vault e2e against the cluster, traces included; Argo CD synced, autoscaler, network policy, scrape targets, dashboards, Alertmanager mail
+make k3d-check     # vault e2e against the cluster, traces included; Argo CD synced, OpenBao and its CA, autoscaler, network policy, scrape targets, dashboards, Alertmanager mail
 make k3d-images    # after a code change: rebuild, push, restart the pods
 make k3d-down      # delete the cluster
 kubectl -n argocd port-forward svc/argocd-server 8081:80   # Argo CD UI on http://localhost:8081, user admin, password below
@@ -536,7 +539,10 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
 - [x] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
   - [x] Scenarios for transfers, the API control plane and scanner throughput; local-only load users; a smoke run with thresholds in CI ([ADR 0011](docs/adr/0011-load-testing.md))
   - [x] Published report ([docs/load-testing.md](docs/load-testing.md)): the full run on the cluster, with throughput, latency, scan times, gateway memory and autoscaling
-- [ ] **M9 — PKI and key management:** establish a certificate authority, store private keys securely, and distribute keys and certificates securely (scope to be defined)
+- [ ] **M9 — PKI and key management:** a certificate authority with an offline root, private keys kept in OpenBao, certificates and secrets delivered to the services
+  - [ ] OpenBao in the cluster, self-initialized from git, auto-unsealed; the offline root CA and the ceremony that installs the intermediate, whose key OpenBao generates and keeps ([ADR 0012](docs/adr/0012-pki-and-key-management.md))
+  - [ ] TLS on every hop: cert-manager issuing short-lived certificates from OpenBao, trust-manager distributing the root, the API, gateway, Keycloak, PostgreSQL and the ingress serving TLS, every client verifying
+  - [ ] Secrets from OpenBao: the services' credentials delivered at start, nothing secret in git or Helm values, dynamic PostgreSQL credentials per pod
 - [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined)
 - [ ] **M11 — Delivery and scaling:** builds on M7 and the M8 load tests
   - [ ] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them, replacing the local registry
