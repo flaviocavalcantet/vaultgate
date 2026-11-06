@@ -432,7 +432,7 @@ CI lints the chart and checks the rendered manifests against the Kubernetes sche
 2. The API, gateway and scanner images are built from your working tree and pushed there.
 3. The root CA is created, unless you have one ([ADR 0012](docs/adr/0012-pki-and-key-management.md)). It is kept in `~/.vaultgate/pki`, outside the cluster, with its key encrypted by a passphrase: `k3d-up` asks for it, or reads `VAULTGATE_PKI_PASSPHRASE`. The root signs OpenBao's TLS certificate, which goes into the cluster as a Secret next to OpenBao's seal key.
 4. Argo CD is installed (`deploy/k3d/argocd`), and a root application hands it this repo at `VAULTGATE_REVISION` (default: the current branch, which must be pushed). From then on Argo CD syncs everything from git:
-   - the dependencies (`deploy/k3d/deps`: PostgreSQL, LocalStack, Keycloak, Mailpit) into `vaultgate-deps`;
+   - the dependencies (`deploy/k3d/deps`: PostgreSQL, LocalStack, Keycloak, Mailpit) into `vaultgate-deps`, PostgreSQL and Keycloak serving TLS only;
    - OpenBao (`deploy/k3d/openbao`), the certificate authority and secret store, into `openbao`; it configures itself on first start;
    - cert-manager and trust-manager, the upstream charts at pinned versions, and `deploy/k3d/pki`: the `vaultgate-ca` issuer, which signs through OpenBao, and the trust bundle with the root, in every namespace;
    - the observability ([ADR 0010](docs/adr/0010-cluster-observability.md)) into `monitoring`:
@@ -444,7 +444,7 @@ CI lints the chart and checks the rendered manifests against the Kubernetes sche
 
 Everything answers where compose does:
 
-- the API on https://localhost:8000 and the gateway on https://localhost:8888, over TLS that verifies against `~/.vaultgate/pki/root-ca.crt` (`curl --cacert`, or `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`); Keycloak on 8080, LocalStack on 4566 and Mailpit on 8025;
+- the API on https://localhost:8000, the gateway on https://localhost:8888 and Keycloak on https://localhost:8080, over TLS that verifies against `~/.vaultgate/pki/root-ca.crt` (`curl --cacert`, or `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`); LocalStack on 4566 and Mailpit on 8025;
 - Grafana on 3000 (admin / admin), Prometheus on 9090, Loki on 3100 and Tempo on 3200;
 - and, new on the cluster, Alertmanager on 9093 and OpenBao on https://localhost:8200 (its certificate verifies against `~/.vaultgate/pki/root-ca.crt`).
 

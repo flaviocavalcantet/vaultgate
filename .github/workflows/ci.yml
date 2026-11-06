@@ -158,8 +158,10 @@ jobs:
                 -schema-location "$CRDS/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" -
           done
           # The cluster's dependencies (kustomize; the realm comes from infra/keycloak).
+          # Their Certificates (M9) against cert-manager's CRDs.
           kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/k3d/deps |
-            docker run -i --rm "$KUBECONFORM" -strict -summary -kubernetes-version 1.31.0 -
+            docker run -i --rm "$KUBECONFORM" -strict -summary -kubernetes-version 1.31.0 \
+              -schema-location default -schema-location "$CRDS/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" -
           # OpenBao, and the certificate issuer and trust bundle (M9), against the
           # cert-manager and trust-manager CRDs too.
           for dir in deploy/k3d/openbao deploy/k3d/pki; do

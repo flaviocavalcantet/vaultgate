@@ -19,7 +19,7 @@ throwaway stack (the k3d cluster, `make k3d-down` afterwards).
 
 Settings, from the environment (defaults: the local stack's ports):
 
-    VAULTGATE_KEYCLOAK     http://localhost:8080
+    VAULTGATE_KEYCLOAK     http://localhost:8080 (https on the cluster: the make targets)
     VAULTGATE_LOAD_USERS   how many load users exist (50; see loadtest/make_users.py)
     VAULTGATE_SCAN_TIMEOUT seconds to wait for a verdict before counting a failure (300)
     VAULTGATE_LOAD_MAX_MIB largest Transfers upload, in MiB (128; the smoke run uses 32)
@@ -30,9 +30,10 @@ Settings, from the environment (defaults: the local stack's ports):
     VAULTGATE_S3, VAULTGATE_BUCKET  where those objects are (http://localhost:4566,
                            vaultgate-local-vault)
 
-    VAULTGATE_CA_BUNDLE    the CA certificates to verify the API and the gateway with: the
-                           cluster's root CA (the make targets set it). Locust's clients
-                           ignore REQUESTS_CA_BUNDLE (they don't read the environment)
+    VAULTGATE_CA_BUNDLE    the CA certificates to verify the API, the gateway and Keycloak
+                           with: the cluster's root CA (the make targets set it). Locust's
+                           clients ignore REQUESTS_CA_BUNDLE (they don't read the
+                           environment)
 
 The API is Locust's --host (https://localhost:8000 on the cluster); the gateway's address
 comes from the intents the API hands out.
