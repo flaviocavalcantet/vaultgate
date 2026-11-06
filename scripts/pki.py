@@ -286,7 +286,10 @@ def intermediate() -> None:
     try:
         install_intermediate(token)
     finally:
-        bao("POST", "auth/token/revoke-self", token)
+        try:  # never hides an error from the ceremony itself
+            bao("POST", "auth/token/revoke-self", token)
+        except (Failure, OSError) as e:
+            print(f"warn the ceremony token was not revoked (expires in 10 minutes): {e}")
 
 
 def install_intermediate(token: str) -> None:

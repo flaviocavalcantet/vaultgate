@@ -47,7 +47,7 @@ audit "file" "stdout" {
 # - Kubernetes logins, and the one role the ceremony needs (scripts/pki.py intermediate):
 #   a short-lived token for the `pki-ceremony` service account, allowed to have the
 #   intermediate's CSR generated, its signed certificate installed and made the default
-#   issuer, nothing else.
+#   issuer, and the token revoked when done; nothing else (no `default` policy).
 initialize "pki" {
   request "mount" {
     operation = "update"
@@ -92,6 +92,7 @@ path "pki/intermediate/set-signed" { capabilities = ["update"] }
 path "pki/issuers" { capabilities = ["list"] }
 path "pki/issuer/+" { capabilities = ["read"] }
 path "pki/config/issuers" { capabilities = ["update"] }
+path "auth/token/revoke-self" { capabilities = ["update"] }
 EOT
     }
   }
