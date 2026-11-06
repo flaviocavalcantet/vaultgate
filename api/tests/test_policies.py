@@ -215,7 +215,7 @@ def test_windows_follow_daylight_saving_time(at, allowed) -> None:
 
 def test_request_time_must_be_aware() -> None:
     with pytest.raises(ValueError):
-        AccessRequest.of("read", (), "10.0.0.1", datetime(2026, 11, 4, 15, 0))  # noqa: DTZ001 -- naive on purpose
+        AccessRequest.of("read", (), "10.0.0.1", datetime(2026, 11, 4, 15, 0))
 
 
 # --- conditions combine; broken policies fail closed -------------------------------
