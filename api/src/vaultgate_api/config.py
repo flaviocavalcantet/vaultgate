@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     database_echo: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
+    # TLS on the public and the internal port (M9, ADR 0012): a PEM certificate (with
+    # its chain) and key. Both unset means plain HTTP, as under docker compose. Renewed
+    # files are loaded without a restart, checked every tls_reload_interval_seconds.
+    tls_cert_file: str | None = None
+    tls_key_file: str | None = None
+    tls_reload_interval_seconds: int = 60
     # Reverse proxies whose X-Forwarded-For is believed, as a comma-separated list of
     # networks ("10.0.0.0/8, 192.0.2.10/32"). Proxy addresses only, never client
     # networks; empty means the TCP peer is the client (see vaultgate_api.clientip).

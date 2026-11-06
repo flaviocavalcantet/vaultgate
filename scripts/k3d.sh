@@ -39,6 +39,11 @@ REVISION=${VAULTGATE_REVISION:-$(git rev-parse --abbrev-ref HEAD)}
 if [[ -n ${CI:-} ]]; then
   export VAULTGATE_PKI_DIR=${VAULTGATE_PKI_DIR:-${RUNNER_TEMP:-/tmp}/vaultgate-pki}
 fi
+ROOT_CA=${VAULTGATE_PKI_DIR:-$HOME/.vaultgate/pki}/root-ca.crt
+# The API and the gateway serve TLS from the cluster's CA: the host's scripts trust the
+# root (Python's ssl reads SSL_CERT_FILE, Python's requests REQUESTS_CA_BUNDLE).
+API=https://localhost:8000
+host_trust() { SSL_CERT_FILE=$ROOT_CA REQUESTS_CA_BUNDLE=$ROOT_CA "$@"; }
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -95,6 +100,16 @@ pki_ceremony() {
   if [[ -n ${CI:-} ]]; then
     rm -f "$VAULTGATE_PKI_DIR/root-ca.key" # nothing else will ever be signed by this root
   fi
+  # Only now, with the intermediate installed, the root goes to cert-manager: its issuer
+  # stays not ready until then, so certificate requests wait instead of failing (a
+  # failed one is retried an hour later), and to trust-manager, which hands it out.
+  kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n cert-manager create secret generic vaultgate-root-ca --from-file=ca.crt="$ROOT_CA" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  # If the issuer already exists, have cert-manager look at it now rather than after its
+  # retry backoff (up to five minutes).
+  kubectl annotate clusterissuer vaultgate-ca --overwrite \
+    "vaultgate.io/root-ca-installed=$(date +%s)" >/dev/null 2>&1 || true
 }
 
 app_ready() { # Synced and Healthy
@@ -136,16 +151,20 @@ up() {
     kubectl apply -f -
 
   log "waiting for Argo CD to sync the dependencies and VaultGate"
-  for app in vaultgate-deps vaultgate-openbao kube-prometheus-stack vaultgate-observability vaultgate; do
+  # OpenBao first: the ceremony gives it the intermediate CA that VaultGate's
+  # certificates come from, and the pods wait for those.
+  wait_for 900 "vaultgate-openbao to be synced and healthy" app_ready vaultgate-openbao
+  pki_ceremony
+  for app in vaultgate-deps cert-manager kube-prometheus-stack trust-manager \
+    vaultgate-observability vaultgate-pki vaultgate; do
     wait_for 900 "$app to be synced and healthy" app_ready "$app"
   done
-  pki_ceremony
 
   log "Terraform against the in-cluster LocalStack"
   wait_for 120 "LocalStack" curl -sf http://localhost:4566/_localstack/health
   make tf-local
-  python3 scripts/seed_policies.py
-  log "ready: OpenBao https://localhost:8200 (root CA in ${VAULTGATE_PKI_DIR:-~/.vaultgate/pki}), API http://localhost:8000, gateway http://localhost:8888, Keycloak http://localhost:8080, Mailpit http://localhost:8025, Grafana http://localhost:3000 (admin/admin), Prometheus http://localhost:9090, Alertmanager http://localhost:9093"
+  host_trust python3 scripts/seed_policies.py --api "$API"
+  log "ready: OpenBao https://localhost:8200, API $API, gateway https://localhost:8888 (TLS: trust $ROOT_CA), Keycloak http://localhost:8080, Mailpit http://localhost:8025, Grafana http://localhost:3000 (admin/admin), Prometheus http://localhost:9090, Alertmanager http://localhost:9093"
 }
 
 restart() {
@@ -155,8 +174,8 @@ restart() {
 
 check_cluster() {
   log "Argo CD: every application synced and healthy"
-  for app in vaultgate-local vaultgate-deps vaultgate-openbao kube-prometheus-stack \
-    vaultgate-observability vaultgate; do
+  for app in vaultgate-local vaultgate-deps vaultgate-openbao cert-manager trust-manager \
+    vaultgate-pki kube-prometheus-stack vaultgate-observability vaultgate; do
     app_ready "$app" || {
       kubectl -n argocd get application "$app" -o yaml >&2
       return 1
@@ -174,9 +193,10 @@ check_cluster() {
   local probe=(kubectl -n vaultgate run "netpol-probe-$RANDOM" --rm -i --restart=Never --quiet
     --image=curlimages/curl:8.11.1 --command --)
   # The public port first: it proves the probe itself works, so a refusal below is the
-  # policy's and not a probe that never ran.
-  "${probe[@]}" curl -sf -m 5 -o /dev/null http://vaultgate-api:8000/healthz
-  if "${probe[@]}" curl -s -m 5 -o /dev/null http://vaultgate-api:8001/healthz; then
+  # policy's and not a probe that never ran. Reachability only, hence -k (the probe pod
+  # has no trust bundle); the TLS checks are check_pki's.
+  "${probe[@]}" curl -sfk -m 5 -o /dev/null https://vaultgate-api.vaultgate.svc:8000/healthz
+  if "${probe[@]}" curl -sk -m 5 -o /dev/null https://vaultgate-api.vaultgate.svc:8001/healthz; then
     echo "another pod reached the API's internal port" >&2
     return 1
   fi
@@ -197,6 +217,16 @@ check_observability() {
 check_pki() {
   log "PKI: OpenBao unsealed, its TLS and its intermediate CA chained to the root"
   python3 scripts/pki.py check
+  log "TLS: the API and the gateway serve certificates from the cluster's CA, and nothing in plain HTTP"
+  kubectl -n vaultgate wait --for=condition=Ready certificate --all --timeout=120s
+  for url in "$API/healthz" https://localhost:8888/healthz; do
+    curl -sf --cacert "$ROOT_CA" -o /dev/null "$url"
+    if curl -s -m 5 -o /dev/null "${url/https:/http:}"; then
+      echo "${url/https:/http:} answered in plain HTTP" >&2
+      return 1
+    fi
+  done
+  python3 scripts/pki.py check-service localhost:8000 localhost:8888
 }
 
 check() {
@@ -204,7 +234,7 @@ check() {
   check_pki
   check_observability
   log "vault end to end, against the cluster"
-  python3 scripts/vault_e2e.py
+  host_trust python3 scripts/vault_e2e.py --api "$API"
 }
 
 case ${1:-} in

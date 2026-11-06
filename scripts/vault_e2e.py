@@ -103,7 +103,11 @@ def remove_e2e_policies(api: str, admin: str) -> None:
 
 
 def _connection(url: str) -> tuple[http.client.HTTPConnection, str]:
+    """A connection for the gateway URL in an intent: https on the cluster (verified
+    against the default trust store, which SSL_CERT_FILE replaces), http under compose."""
     parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "https":
+        return http.client.HTTPSConnection(parts.hostname, parts.port, timeout=60), parts.path
     return http.client.HTTPConnection(parts.hostname, parts.port, timeout=60), parts.path
 
 

@@ -11,6 +11,7 @@ import base64
 import hashlib
 import logging
 import os
+import ssl
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -41,6 +42,7 @@ from vaultgate_gateway.storage import (
     StorageUnavailable,
     s3_client,
 )
+from vaultgate_gateway.tls import CertificateReloader
 
 access_logger = logging.getLogger("vaultgate.access")
 logger = logging.getLogger("vaultgate.gateway")
@@ -599,12 +601,28 @@ async def main() -> None:
         raise SystemExit("VAULTGATE_INTERNAL_TOKEN is required")
     metrics.BUILD_INFO.info({"service": "gateway", "version": "0.1.0"})
     start_http_server(settings.metrics_port)
+    if bool(settings.tls_cert_file) != bool(settings.tls_key_file):
+        raise SystemExit("set both VAULTGATE_TLS_CERT_FILE and VAULTGATE_TLS_KEY_FILE, or neither")
+    ssl_context = None
+    if settings.tls_cert_file and settings.tls_key_file:
+        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ssl_context.load_cert_chain(settings.tls_cert_file, settings.tls_key_file)
+        reloader = CertificateReloader(settings.tls_cert_file, settings.tls_key_file, [ssl_context])
+        # Kept referenced for as long as main() runs, which is forever.
+        reloading = asyncio.get_running_loop().create_task(  # noqa: F841
+            reloader.run(settings.tls_reload_interval_seconds)
+        )
     # xheaders stays off: client addresses come from clientip, against trusted_proxies.
     make_app(services_from_settings(), settings.trusted_proxies).listen(
-        settings.port, max_body_size=settings.max_upload_bytes
+        settings.port, max_body_size=settings.max_upload_bytes, ssl_options=ssl_context
     )
     logger.info(
-        "gateway listening", extra={"port": settings.port, "metrics_port": settings.metrics_port}
+        "gateway listening",
+        extra={
+            "port": settings.port,
+            "metrics_port": settings.metrics_port,
+            "tls": ssl_context is not None,
+        },
     )
     await asyncio.Event().wait()
 

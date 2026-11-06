@@ -1,6 +1,7 @@
-# The dependencies, OpenBao and the Prometheus Operator first (sync wave 0), then the
-# observability that needs the operator's CRDs (wave 1), then VaultGate (wave 2), whose
-# ServiceMonitors need them too. A sync that runs before what it needs is ready fails
+# The dependencies, OpenBao, cert-manager and the Prometheus Operator first (sync wave
+# 0), then what needs their CRDs: the observability and trust-manager (wave 1), the
+# cluster's certificate issuer and trust bundle (wave 2), then VaultGate (wave 3), whose
+# ServiceMonitors and Certificates need them. A sync that runs before what it needs is ready fails
 # and is retried; the API waits for PostgreSQL by restarting until its migrations run.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -55,7 +56,7 @@ metadata:
   name: vaultgate
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-wave: "3"
   finalizers: [resources-finalizer.argocd.argoproj.io]
 spec:
   project: default
@@ -124,6 +125,86 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: ["CreateNamespace=true"]
+    retry: { limit: 10, backoff: { duration: 15s, factor: 2, maxDuration: 5m } }
+---
+# cert-manager (M9, ADR 0012): the upstream chart at a pinned version, with its CRDs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: {{ .Values.certManager }}
+    helm:
+      releaseName: cert-manager
+      valuesObject:
+        crds: { enabled: true }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: ["CreateNamespace=true", "ServerSideApply=true"]
+    retry: { limit: 10, backoff: { duration: 15s, factor: 2, maxDuration: 5m } }
+---
+# trust-manager: copies the trust bundle into every namespace. Its webhook's certificate
+# comes from cert-manager, hence wave 1. Its trust namespace is cert-manager's, where
+# the root's Secret is.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: trust-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: trust-manager
+    targetRevision: {{ .Values.trustManager }}
+    helm:
+      releaseName: trust-manager
+      valuesObject:
+        app:
+          trust: { namespace: cert-manager }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: ["CreateNamespace=true", "ServerSideApply=true"]
+    retry: { limit: 10, backoff: { duration: 15s, factor: 2, maxDuration: 5m } }
+---
+# The cluster's certificate issuer (through OpenBao) and trust bundle (deploy/k3d/pki).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vaultgate-pki
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  source:
+    repoURL: {{ .Values.repoURL }}
+    targetRevision: {{ .Values.revision }}
+    path: deploy/k3d/pki
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     syncOptions: ["CreateNamespace=true"]

@@ -13,12 +13,19 @@ def _env(name: str, default: str | None = None) -> str | None:
 @dataclass(frozen=True)
 class Settings:
     port: int = int(_env("GATEWAY_PORT", "8888"))
+    # TLS (M9, ADR 0012): a PEM certificate (with its chain) and key; both unset means
+    # plain HTTP, as under docker compose. Renewed files are loaded without a restart.
+    tls_cert_file: str | None = _env("TLS_CERT_FILE")
+    tls_key_file: str | None = _env("TLS_KEY_FILE")
+    tls_reload_interval_seconds: int = int(_env("TLS_RELOAD_INTERVAL_SECONDS", "60"))
     metrics_port: int = int(_env("METRICS_PORT", "9100"))
     max_upload_bytes: int = int(_env("MAX_UPLOAD_BYTES", str(5 * 1024**3)))
     # Reverse proxies whose X-Forwarded-For is believed, comma-separated networks.
     # Proxy addresses only, never client networks (see vaultgate_gateway.clientip).
     trusted_proxies: tuple[IPNetwork, ...] = tuple(parse_networks(_env("TRUSTED_PROXIES", "")))
     # The API's internal endpoint (never the public one) and the shared secret for it.
+    # Over https, the API's certificate is verified against the system's trust store,
+    # which SSL_CERT_FILE replaces (the cluster's trust bundle).
     api_internal_url: str = _env("API_INTERNAL_URL", "http://localhost:8001")
     internal_token: str | None = field(default=_env("INTERNAL_TOKEN"), repr=False)
     # Object storage and KMS. An endpoint URL points both at LocalStack locally.

@@ -434,23 +434,24 @@ CI lints the chart and checks the rendered manifests against the Kubernetes sche
 4. Argo CD is installed (`deploy/k3d/argocd`), and a root application hands it this repo at `VAULTGATE_REVISION` (default: the current branch, which must be pushed). From then on Argo CD syncs everything from git:
    - the dependencies (`deploy/k3d/deps`: PostgreSQL, LocalStack, Keycloak, Mailpit) into `vaultgate-deps`;
    - OpenBao (`deploy/k3d/openbao`), the certificate authority and secret store, into `openbao`; it configures itself on first start;
+   - cert-manager and trust-manager, the upstream charts at pinned versions, and `deploy/k3d/pki`: the `vaultgate-ca` issuer, which signs through OpenBao, and the trust bundle with the root, in every namespace;
    - the observability ([ADR 0010](docs/adr/0010-cluster-observability.md)) into `monitoring`:
      - kube-prometheus-stack, the upstream chart at a pinned version, with `deploy/k3d/kube-prometheus-stack.yaml`: the Prometheus Operator, Prometheus, Alertmanager and Grafana;
      - `deploy/k3d/observability`: Loki, Tempo and Alloy, and VaultGate's alert rules, dashboards and data sources, all from the files compose uses;
-   - then the chart with `values-k3d.yaml` into `vaultgate`, with ServiceMonitors and traces to Alloy.
-5. The PKI ceremony installs the intermediate CA (`scripts/pki.py intermediate`). OpenBao generates the key, which never leaves it, and a CSR. The root signs the CSR on your machine, and OpenBao installs the certificate.
+   - then the chart with `values-k3d.yaml` into `vaultgate`, with ServiceMonitors, traces to Alloy, and TLS: day-long certificates from `vaultgate-ca` for the API and the gateway, renewed and reloaded as they run.
+5. The PKI ceremony installs the intermediate CA (`scripts/pki.py intermediate`) as soon as OpenBao is up. OpenBao generates the key, which never leaves it, and a CSR. The root signs the CSR on your machine, and OpenBao installs the certificate. Then the root's certificate goes to cert-manager, whose issuer can sign from then on.
 6. Terraform creates the bucket, key and queues in the cluster's LocalStack, and the local access policy is seeded.
 
 Everything answers where compose does:
 
-- the API on http://localhost:8000, the gateway on 8888, Keycloak on 8080, LocalStack on 4566 and Mailpit on 8025;
+- the API on https://localhost:8000 and the gateway on https://localhost:8888, over TLS that verifies against `~/.vaultgate/pki/root-ca.crt` (`curl --cacert`, or `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`); Keycloak on 8080, LocalStack on 4566 and Mailpit on 8025;
 - Grafana on 3000 (admin / admin), Prometheus on 9090, Loki on 3100 and Tempo on 3200;
 - and, new on the cluster, Alertmanager on 9093 and OpenBao on https://localhost:8200 (its certificate verifies against `~/.vaultgate/pki/root-ca.crt`).
 
 Alertmanager routes every alert by email to Mailpit: `oncall@vaultgate.local` for the alerts, `heartbeat@vaultgate.local` for Watchdog, which always fires and so shows the whole path works. Then:
 
 ```bash
-make k3d-check     # vault e2e against the cluster, traces included; Argo CD synced, OpenBao and its CA, autoscaler, network policy, scrape targets, dashboards, Alertmanager mail
+make k3d-check     # vault e2e against the cluster, traces included; Argo CD synced, OpenBao and its CA, TLS, autoscaler, network policy, scrape targets, dashboards, Alertmanager mail
 make k3d-images    # after a code change: rebuild, push, restart the pods
 make k3d-down      # delete the cluster
 kubectl -n argocd port-forward svc/argocd-server 8081:80   # Argo CD UI on http://localhost:8081, user admin, password below

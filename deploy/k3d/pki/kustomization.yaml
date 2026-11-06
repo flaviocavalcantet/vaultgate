@@ -1,0 +1,10 @@
+# The cluster's certificate issuer and trust bundle (M9, ADR 0012), on top of
+# cert-manager and trust-manager. Synced by Argo CD (deploy/argocd/local).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cert-manager
+resources:
+  - pki.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: vaultgate-pki

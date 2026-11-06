@@ -127,7 +127,8 @@ jobs:
           kubectl get applications -n argocd -o wide || true
           kubectl get pods,hpa,networkpolicy -A -o wide || true
           kubectl -n argocd get applications -o yaml | grep -A20 "conditions:\|operationState:" || true
-          for ns in vaultgate vaultgate-deps openbao monitoring; do kubectl -n $ns logs --all-containers --prefix --tail=200 --max-log-requests=30 -l app.kubernetes.io/name || true; done
+          kubectl get certificates,certificaterequests,clusterissuers,bundles -A -o wide || true
+          for ns in vaultgate vaultgate-deps openbao cert-manager monitoring; do kubectl -n $ns logs --all-containers --prefix --tail=200 --max-log-requests=30 -l app.kubernetes.io/name || true; done
 
   helm:
     runs-on: ubuntu-latest
@@ -159,6 +160,10 @@ jobs:
           # The cluster's dependencies (kustomize; the realm comes from infra/keycloak).
           kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/k3d/deps |
             docker run -i --rm "$KUBECONFORM" -strict -summary -kubernetes-version 1.31.0 -
-          # OpenBao (M9).
-          kubectl kustomize deploy/k3d/openbao |
-            docker run -i --rm "$KUBECONFORM" -strict -summary -kubernetes-version 1.31.0 -
+          # OpenBao, and the certificate issuer and trust bundle (M9), against the
+          # cert-manager and trust-manager CRDs too.
+          for dir in deploy/k3d/openbao deploy/k3d/pki; do
+            kubectl kustomize "$dir" |
+              docker run -i --rm "$KUBECONFORM" -strict -summary -kubernetes-version 1.31.0 \
+                -schema-location default -schema-location "$CRDS/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" -
+          done

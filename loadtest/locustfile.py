@@ -30,8 +30,12 @@ Settings, from the environment (defaults: the local stack's ports):
     VAULTGATE_S3, VAULTGATE_BUCKET  where those objects are (http://localhost:4566,
                            vaultgate-local-vault)
 
-The API is Locust's --host (http://localhost:8000); the gateway's address comes from
-the intents the API hands out.
+    VAULTGATE_CA_BUNDLE    the CA certificates to verify the API and the gateway with: the
+                           cluster's root CA (the make targets set it). Locust's clients
+                           ignore REQUESTS_CA_BUNDLE (they don't read the environment)
+
+The API is Locust's --host (https://localhost:8000 on the cluster); the gateway's address
+comes from the intents the API hands out.
 """
 
 import itertools
@@ -53,6 +57,7 @@ LOAD_USERS = int(os.getenv("VAULTGATE_LOAD_USERS", "50"))
 SCAN_TIMEOUT = float(os.getenv("VAULTGATE_SCAN_TIMEOUT", "300"))
 CLEANUP = os.getenv("VAULTGATE_LOAD_CLEANUP") == "1"
 S3 = os.getenv("VAULTGATE_S3", "http://localhost:4566").rstrip("/")
+CA_BUNDLE = os.getenv("VAULTGATE_CA_BUNDLE")
 BUCKET = os.getenv("VAULTGATE_BUCKET", "vaultgate-local-vault")
 
 MiB = 1024 * 1024
@@ -115,6 +120,8 @@ class VaultUser(HttpUser):
     abstract = True
 
     def on_start(self) -> None:
+        if CA_BUNDLE:
+            self.client.verify = CA_BUNDLE
         self.username = next_username()
         self._login({"grant_type": "password", "username": self.username, "password": PASSWORD})
 
