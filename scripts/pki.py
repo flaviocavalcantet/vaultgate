@@ -38,6 +38,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -266,7 +267,15 @@ def intermediate() -> None:
     jwt = os.getenv("VAULTGATE_OPENBAO_JWT")
     if not jwt:
         raise Failure("VAULTGATE_OPENBAO_JWT is not set (a pki-ceremony service account token)")
-    login = bao("POST", "auth/kubernetes/login", body={"role": "pki-ceremony", "jwt": jwt})
+    # Ready can come a moment before self-initialization has created the role: retry.
+    for attempt in range(12):
+        try:
+            login = bao("POST", "auth/kubernetes/login", body={"role": "pki-ceremony", "jwt": jwt})
+            break
+        except Failure:
+            if attempt == 11:
+                raise
+            time.sleep(5)
     token = login["auth"]["client_token"]
     try:
         install_intermediate(token)
