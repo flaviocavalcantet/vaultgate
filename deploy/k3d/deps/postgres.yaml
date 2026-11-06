@@ -1,6 +1,9 @@
 # PostgreSQL for the API, over TLS only (M9, ADR 0012): its certificate comes from the
 # cluster's CA, pg_hba refuses any connection without TLS, and the API verifies the
-# server's name and chain (sslmode verify-full).
+# server's name and chain (sslmode verify-full). No password is in git: `make k3d-up`
+# creates the Secret postgres-credentials with random ones (the superuser's, and
+# OpenBao's first one, which OpenBao rotates at once), and the API logs in with
+# short-lived credentials of its own from OpenBao's database engine.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -27,6 +30,27 @@ data:
     hostssl   all  all  all   scram-sha-256
     hostnossl all  all  all   reject
 ---
+# Run once, on an empty data directory: the schema belongs to vaultgate_owner, a role
+# nobody logs in as. OpenBao's login may create roles and hand out vaultgate_owner: each
+# credential it issues is a login that acts as vaultgate_owner (owning nothing itself, so
+# it can be dropped when its lease ends), and it may end such a login's sessions.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+data:
+  10-vaultgate.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    psql -v ON_ERROR_STOP=1 -U postgres -d vaultgate -v openbao_password="$OPENBAO_PASSWORD" <<'SQL'
+    CREATE ROLE vaultgate_owner NOLOGIN;
+    ALTER DATABASE vaultgate OWNER TO vaultgate_owner;
+    ALTER SCHEMA public OWNER TO vaultgate_owner;
+    CREATE ROLE openbao LOGIN CREATEROLE PASSWORD :'openbao_password';
+    GRANT vaultgate_owner TO openbao WITH ADMIN OPTION;
+    GRANT pg_signal_backend TO openbao;
+    SQL
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -52,21 +76,23 @@ spec:
             - -c
             - |
               (while sleep 3600; do
-                psql -h /var/run/postgresql -U vaultgate -d vaultgate -qAt -c 'select pg_reload_conf()' >/dev/null
+                psql -h /var/run/postgresql -U postgres -d vaultgate -qAt -c 'select pg_reload_conf()' >/dev/null
               done) &
               exec docker-entrypoint.sh postgres \
                 -c ssl=on -c ssl_min_protocol_version=TLSv1.3 \
                 -c ssl_cert_file=/etc/postgres/tls/tls.crt -c ssl_key_file=/etc/postgres/tls/tls.key \
                 -c hba_file=/etc/postgres/hba/pg_hba.conf
           env:
-            - { name: POSTGRES_USER, value: vaultgate }
-            - { name: POSTGRES_PASSWORD, value: vaultgate }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: superuser-password } }
+            - name: OPENBAO_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: openbao-password } }
             - { name: POSTGRES_DB, value: vaultgate }
             - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
           ports:
             - { name: postgres, containerPort: 5432 }
           readinessProbe:
-            exec: { command: ["pg_isready", "-U", "vaultgate"] }
+            exec: { command: ["pg_isready", "-U", "postgres"] }
             periodSeconds: 5
           resources:
             requests: { cpu: 50m, memory: 128Mi }
@@ -75,11 +101,14 @@ spec:
             - { name: data, mountPath: /var/lib/postgresql/data }
             - { name: tls, mountPath: /etc/postgres/tls, readOnly: true }
             - { name: hba, mountPath: /etc/postgres/hba, readOnly: true }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
       volumes:
         - name: tls
           secret: { secretName: postgres-tls, defaultMode: 0440 }
         - name: hba
           configMap: { name: postgres-hba }
+        - name: init
+          configMap: { name: postgres-init, defaultMode: 0555 }
   # k3s's local-path provisioner: the data survives pod restarts, not `make k3d-down`.
   volumeClaimTemplates:
     - metadata:

@@ -540,10 +540,10 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
 - [x] **M8 — Load testing:** Locust scenarios with published results (concurrent uploads, gateway memory under load)
   - [x] Scenarios for transfers, the API control plane and scanner throughput; local-only load users; a smoke run with thresholds in CI ([ADR 0011](docs/adr/0011-load-testing.md))
   - [x] Published report ([docs/load-testing.md](docs/load-testing.md)): the full run on the cluster, with throughput, latency, scan times, gateway memory and autoscaling
-- [ ] **M9 — PKI and key management:** a certificate authority with an offline root, private keys kept in OpenBao, certificates and secrets delivered to the services
+- [x] **M9 — PKI and key management:** a certificate authority with an offline root, private keys kept in OpenBao, certificates and secrets delivered to the services
   - [x] OpenBao in the cluster, self-initialized from git, auto-unsealed; the offline root CA and the ceremony that installs the intermediate, whose key OpenBao generates and keeps ([ADR 0012](docs/adr/0012-pki-and-key-management.md))
   - [x] TLS on every hop: cert-manager issuing short-lived certificates from OpenBao, trust-manager distributing the root, the API, gateway, Keycloak, PostgreSQL, the metrics and traces endpoints and the ingress serving TLS, every client verifying
-  - [ ] Secrets from OpenBao: the services' credentials delivered at start, nothing secret in git or Helm values, dynamic PostgreSQL credentials per pod
+  - [x] Secrets from OpenBao: the services' credentials delivered at start, nothing secret in git or Helm values, dynamic PostgreSQL credentials per pod
 - [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined; enrolling external nodes is M11)
 - [ ] **M11 — Node enrollment:** certificates for external nodes through VaultGate's API, built on the M9 PKI, with a choice of first-trust methods
   - [ ] A second intermediate CA for nodes, from the offline root, limited to node identities; short-lived certificates, revocation (CRL and OCSP)

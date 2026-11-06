@@ -17,6 +17,57 @@ metadata:
   name: {{ include "vaultgate.fullname" $ctx }}-openbao-agent
   labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
 data:
+  {{- if eq $name "api" }}
+  agent.hcl: |- {{- include "vaultgate.apiAgentConfig" $ | nindent 4 }}
+  {{- else }}
   agent.hcl: |- {{- $.Files.Get (printf "files/openbao-agent/%s.hcl" $name) | nindent 4 }}
+  {{- end }}
 {{- end }}
+{{- end }}
+
+{{/* The API's agent configuration (files/openbao-agent/ holds the others'): a template
+here, for the database's address. {{ "{{" }}...{{ "}}" }} below reaches the agent as its own
+template syntax. */}}
+{{- define "vaultgate.apiAgentConfig" -}}
+{{- $db := .Values.openbao.database -}}
+# OpenBao agent for the API (M9, ADR 0012), a native sidecar: it logs in as the pod's
+# service account (vaultgate-api, a projected token for OpenBao's audience), writes the
+# API's secrets as files to a memory-backed volume, and keeps running. The database
+# credentials are the pod's own and short-lived: the agent renews their lease, and once
+# it can't, writes new ones before the old expire; the API logs in with the file's
+# credentials at each new connection. OpenBao's address and CA: BAO_ADDR, BAO_CACERT.
+
+auto_auth {
+  method "kubernetes" {
+    mount_path = "auth/kubernetes"
+    config = {
+      role       = "vaultgate-api"
+      token_path = "/var/run/secrets/openbao/token"
+    }
+  }
+}
+
+template {
+  destination = "/run/secrets/vaultgate/vaultgate_database_url"
+  perms       = "0400"
+  contents    = "{{ "{{" }} with secret \"database/creds/{{ $db.role }}\" {{ "}}" }}postgresql+asyncpg://{{ "{{" }} .Data.username | urlquery {{ "}}" }}:{{ "{{" }} .Data.password | urlquery {{ "}}" }}@{{ $db.host }}:{{ $db.port }}/{{ $db.name }}?ssl=verify-full{{ "{{" }} end {{ "}}" }}"
+}
+
+template {
+  destination = "/run/secrets/vaultgate/vaultgate_internal_token"
+  perms       = "0400"
+  contents    = "{{ "{{" }} with secret \"secret/data/vaultgate/internal-token\" {{ "}}" }}{{ "{{" }} .Data.data.value {{ "}}" }}{{ "{{" }} end {{ "}}" }}"
+}
+
+template {
+  destination = "/run/secrets/vaultgate/vaultgate_scanner_token"
+  perms       = "0400"
+  contents    = "{{ "{{" }} with secret \"secret/data/vaultgate/scanner-token\" {{ "}}" }}{{ "{{" }} .Data.data.value {{ "}}" }}{{ "{{" }} end {{ "}}" }}"
+}
+
+template {
+  destination = "/run/secrets/vaultgate/aws-credentials"
+  perms       = "0400"
+  contents    = "{{ "{{" }} with secret \"secret/data/vaultgate/aws\" {{ "}}" }}{{ "{{" }} .Data.data.value {{ "}}" }}{{ "{{" }} end {{ "}}" }}"
+}
 {{- end }}

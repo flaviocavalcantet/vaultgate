@@ -62,6 +62,11 @@ spec:
         - name: openbao
           image: openbao/openbao:2.7.1
           command: [bao, server, -config=/openbao/config/openbao.hcl]
+          env:
+            # Its first PostgreSQL password, used once by self-initialization and rotated
+            # by `make k3d-up` (scripts/service_secrets.py seed).
+            - name: OPENBAO_POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: openbao-postgres, key: password } }
           ports:
             - { name: https, containerPort: 8200 }
           # Ready once initialized, unsealed and active: /sys/health answers 200 then only.
@@ -84,6 +89,10 @@ spec:
             - { name: tls, mountPath: /openbao/tls, readOnly: true }
             - { name: unseal, mountPath: /openbao/unseal, readOnly: true }
             - { name: data, mountPath: /openbao/data }
+            # The cluster's trust bundle, to verify PostgreSQL. trust-manager writes it
+            # only after the PKI ceremony, which needs OpenBao up: optional, and filled
+            # in when it appears.
+            - { name: trust, mountPath: /openbao/trust, readOnly: true }
             - { name: tmp, mountPath: /tmp }
       volumes:
         - name: config
@@ -97,6 +106,8 @@ spec:
             items: [{ key: key, path: key }]
         - name: tmp
           emptyDir: {}
+        - name: trust
+          configMap: { name: vaultgate-ca, optional: true }
   volumeClaimTemplates:
     - metadata:
         name: data

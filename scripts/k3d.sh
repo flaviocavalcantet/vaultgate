@@ -90,6 +90,19 @@ pki_bootstrap() {
     kubectl -n openbao create secret tls openbao-tls --cert="$tmp/tls.crt" --key="$tmp/tls.key"
   fi
   rm -rf "$tmp"
+  # PostgreSQL's passwords, random (deploy/k3d/deps/postgres.yaml): the superuser's, and
+  # OpenBao's first one, which OpenBao reads at its first start and rotates once
+  # PostgreSQL is up (secrets_rotate below). The API's credentials are OpenBao's to issue.
+  if ! kubectl -n vaultgate-deps get secret postgres-credentials >/dev/null 2>&1; then
+    local openbao_password
+    openbao_password=$(openssl rand -hex 24)
+    kubectl create namespace vaultgate-deps --dry-run=client -o yaml | kubectl apply -f -
+    kubectl -n vaultgate-deps create secret generic postgres-credentials \
+      --from-literal=superuser-password="$(openssl rand -hex 24)" \
+      --from-literal=openbao-password="$openbao_password"
+    kubectl -n openbao create secret generic openbao-postgres --from-literal=password="$openbao_password" \
+      --dry-run=client -o yaml | kubectl apply -f -
+  fi
 }
 
 # The intermediate CA, once OpenBao is up: it generates the key and a CSR, the root
@@ -120,6 +133,22 @@ secrets_seed() {
   log "the services' credentials, in OpenBao"
   VAULTGATE_OPENBAO_JWT=$(kubectl -n openbao create token secrets-seed --audience openbao --duration 10m) \
     python3 scripts/service_secrets.py seed
+}
+
+# Once PostgreSQL is up: OpenBao changes its own password there, so the first one (in the
+# Secrets above) opens nothing any more.
+secrets_rotate() {
+  log "OpenBao's PostgreSQL password, rotated"
+  # OpenBao verifies PostgreSQL with the trust bundle, which trust-manager writes and
+  # kubelet then copies into OpenBao's pod, up to a minute after PostgreSQL is ready:
+  # retried until it can (a failed attempt changes nothing).
+  local jwt
+  jwt=$(kubectl -n openbao create token secrets-seed --audience openbao --duration 10m)
+  # The last try in the open, so a failure says why.
+  wait_for 300 "OpenBao to reach PostgreSQL over TLS" \
+    env VAULTGATE_OPENBAO_JWT="$jwt" python3 scripts/service_secrets.py rotate-db ||
+    VAULTGATE_OPENBAO_JWT="$jwt" python3 scripts/service_secrets.py rotate-db
+  echo "ok  OpenBao's PostgreSQL password rotated: only OpenBao knows it"
 }
 
 app_ready() { # Synced and Healthy
@@ -166,8 +195,10 @@ up() {
   wait_for 900 "vaultgate-openbao to be synced and healthy" app_ready vaultgate-openbao
   pki_ceremony
   secrets_seed
-  for app in vaultgate-deps cert-manager kube-prometheus-stack trust-manager \
-    vaultgate-observability vaultgate-pki vaultgate; do
+  wait_for 900 "vaultgate-deps to be synced and healthy" app_ready vaultgate-deps
+  secrets_rotate
+  for app in cert-manager kube-prometheus-stack trust-manager vaultgate-observability \
+    vaultgate-pki vaultgate; do
     wait_for 900 "$app to be synced and healthy" app_ready "$app"
   done
 
@@ -239,7 +270,7 @@ check_pki() {
     fi
   done
   python3 scripts/pki.py check-service localhost:8000 localhost:8888 localhost:8080
-  log "TLS: the API's connections to PostgreSQL are TLS, verified; without TLS PostgreSQL refuses"
+  log "PostgreSQL: the API logs in with its own short-lived credentials, over TLS, verified; without TLS PostgreSQL refuses"
   kubectl -n vaultgate exec -i deploy/vaultgate-api -c api -- python - <scripts/postgres_tls_check.py
 }
 

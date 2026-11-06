@@ -165,7 +165,8 @@ EOT
 # never pass through git or Helm values. `make k3d-up` seeds them with random values
 # (scripts/service_secrets.py seed) as the secrets-seed service account, which may create a
 # secret and see whether one exists (its metadata), but not read or change one: a seeded
-# value is never overwritten.
+# value is never overwritten. It also rotates OpenBao's own database password once
+# PostgreSQL is up, after which nobody but OpenBao knows it.
 initialize "secrets" {
   request "mount" {
     operation = "update"
@@ -183,6 +184,7 @@ initialize "secrets" {
       policy = <<EOT
 path "secret/data/vaultgate/*" { capabilities = ["create"] }
 path "secret/metadata/vaultgate/*" { capabilities = ["read"] }
+path "database/rotate-root/vaultgate" { capabilities = ["update"] }
 path "auth/token/revoke-self" { capabilities = ["update"] }
 EOT
     }
@@ -205,7 +207,7 @@ EOT
     path      = "sys/policies/acl/vaultgate-api"
     data = {
       policy = <<EOT
-path "secret/data/vaultgate/database-url" { capabilities = ["read"] }
+path "database/creds/vaultgate-api" { capabilities = ["read"] }
 path "secret/data/vaultgate/internal-token" { capabilities = ["read"] }
 path "secret/data/vaultgate/scanner-token" { capabilities = ["read"] }
 path "secret/data/vaultgate/aws" { capabilities = ["read"] }
@@ -268,6 +270,50 @@ EOT
       token_policies                   = ["vaultgate-scanner"]
       token_ttl                        = "10m"
       token_max_ttl                    = "1h"
+    }
+  }
+}
+
+# The API's database credentials (M9, ADR 0012): short-lived, one set per pod, from the
+# database engine. Each is a PostgreSQL login that acts as vaultgate_owner (the schema's
+# owner, which nobody logs in as) and owns nothing itself: when its lease ends OpenBao
+# ends its sessions and drops it. OpenBao logs in as `openbao`, over TLS verified with
+# the cluster's trust bundle; its first password comes from the environment (a Secret
+# `make k3d-up` creates) and is rotated right after, so only OpenBao knows it. The
+# connection is not checked here: PostgreSQL may not be up yet.
+initialize "database" {
+  request "mount" {
+    operation = "update"
+    path      = "sys/mounts/database"
+    data      = { type = "database" }
+  }
+  request "connection" {
+    operation = "update"
+    path      = "database/config/vaultgate"
+    data = {
+      plugin_name       = "postgresql-database-plugin"
+      connection_url    = "postgresql://{{username}}:{{password}}@postgres.vaultgate-deps.svc:5432/vaultgate?sslmode=verify-full&sslrootcert=/openbao/trust/ca-certificates.crt"
+      username          = "openbao"
+      password          = { eval_type = "string", eval_source = "env", env_var = "OPENBAO_POSTGRES_PASSWORD", require_present = true }
+      verify_connection = false
+      allowed_roles     = ["vaultgate-api"]
+    }
+  }
+  request "api-role" {
+    operation = "update"
+    path      = "database/roles/vaultgate-api"
+    data = {
+      db_name = "vaultgate"
+      creation_statements = [
+        "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}' IN ROLE vaultgate_owner;",
+        "ALTER ROLE \"{{name}}\" SET role = 'vaultgate_owner';",
+      ]
+      revocation_statements = [
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '{{name}}';",
+        "DROP ROLE IF EXISTS \"{{name}}\";",
+      ]
+      default_ttl = "1h"
+      max_ttl     = "24h"
     }
   }
 }
