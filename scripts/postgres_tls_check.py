@@ -1,16 +1,17 @@
 """PostgreSQL over TLS (M9, ADR 0012), from the API's pod: scripts/k3d.sh check runs it with
 `kubectl exec deploy/vaultgate-api -- python - < scripts/postgres_tls_check.py`.
 
-With the API's own database URL and trust store (PGSSLROOTCERT): a connection that
-verifies the server's name and chain is TLS, and one without TLS is refused.
+With the API's own database URL (from its settings, so from OpenBao's file on the
+cluster) and trust store (PGSSLROOTCERT): a connection that verifies the server's name
+and chain is TLS, and one without TLS is refused.
 """
 
 import asyncio
-import os
 
 import asyncpg
+from vaultgate_api.config import settings
 
-URL = os.environ["VAULTGATE_DATABASE_URL"].replace("+asyncpg", "").split("?")[0]
+URL = settings.database_url.replace("+asyncpg", "").split("?")[0]
 
 
 async def main() -> None:

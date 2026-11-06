@@ -8,6 +8,8 @@
 //	VAULTGATE_SCAN_QUEUE_URL         SQS queue of scan requests (required)
 //	VAULTGATE_API_INTERNAL_URL       the API's internal port (default http://localhost:8001)
 //	VAULTGATE_SCANNER_TOKEN          secret for the internal scanner routes (required)
+//	VAULTGATE_SECRETS_DIR            where credentials may come from instead, as files named
+//	                                 after their variables in lower case (vaultgate_scanner_token)
 //	VAULTGATE_BUCKET                 vault bucket (default vaultgate-local-vault)
 //	VAULTGATE_AWS_REGION             default ap-northeast-1
 //	VAULTGATE_AWS_ENDPOINT_URL       LocalStack locally; unset in AWS
@@ -34,7 +36,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -65,7 +69,7 @@ func main() {
 
 func run(logger *slog.Logger) error {
 	queueURL := os.Getenv("VAULTGATE_SCAN_QUEUE_URL")
-	token := os.Getenv("VAULTGATE_SCANNER_TOKEN")
+	token := secret("VAULTGATE_SCANNER_TOKEN")
 	if queueURL == "" || token == "" {
 		return errors.New("VAULTGATE_SCAN_QUEUE_URL and VAULTGATE_SCANNER_TOKEN are required")
 	}
@@ -184,6 +188,24 @@ func env(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// secret is a credential: the variable, or else the file named after it in lower case
+// in VAULTGATE_SECRETS_DIR, where credentials arrive from OpenBao on the cluster (M9, ADR
+// 0012) on a memory-backed volume rather than in the environment.
+func secret(name string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	dir := os.Getenv("VAULTGATE_SECRETS_DIR")
+	if dir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(dir, strings.ToLower(name)))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func intEnv(name string, fallback int) (int, error) {

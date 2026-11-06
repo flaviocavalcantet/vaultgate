@@ -40,6 +40,18 @@ secrets:
   awsAccessKeyId: ""
   awsSecretAccessKey: ""
 
+# The services' credentials from OpenBao instead of the Secret above (M9, ADR 0012).
+# Each pod runs the OpenBao agent first, as an init container: it logs in as the pod's
+# own service account (<release>-api, -gateway, -scanner, which OpenBao's roles of the
+# same names expect), writes that service's secrets as files to a memory-backed volume,
+# and exits. The services read them through VAULTGATE_SECRETS_DIR, and the AWS SDKs
+# through AWS_SHARED_CREDENTIALS_FILE. Needs tls.enabled: OpenBao is verified with the
+# trust bundle. The agent's configuration: files/openbao-agent/<service>.hcl.
+openbao:
+  enabled: false
+  address: https://openbao.openbao.svc:8200
+  image: openbao/openbao:2.7.1
+
 api:
   replicas: 2
   port: 8000

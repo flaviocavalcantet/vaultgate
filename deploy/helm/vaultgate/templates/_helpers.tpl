@@ -122,8 +122,78 @@ certificate carries). */}}
 - name: VAULTGATE_AWS_ENDPOINT_URL
   value: {{ . | quote }}
 {{- end }}
+{{- if .Values.openbao.enabled }}
+# Credentials from OpenBao, as files (see vaultgate.openbaoInit).
+- name: VAULTGATE_SECRETS_DIR
+  value: /run/secrets/vaultgate
+- name: AWS_SHARED_CREDENTIALS_FILE
+  value: /run/secrets/vaultgate/aws-credentials
+{{- else }}
 {{ include "vaultgate.secretEnv" (dict "root" . "env" "AWS_ACCESS_KEY_ID" "key" "aws-access-key-id" "optional" true) }}
 {{ include "vaultgate.secretEnv" (dict "root" . "env" "AWS_SECRET_ACCESS_KEY" "key" "aws-secret-access-key" "optional" true) }}
+{{- end }}
+{{- end }}
+
+{{/* A credential from the chart's Secret, unless they come from OpenBao. */}}
+{{- define "vaultgate.credentialEnv" -}}
+{{- if not .root.Values.openbao.enabled }}
+{{ include "vaultgate.secretEnv" . }}
+{{- end }}
+{{- end }}
+
+{{/* With OpenBao: the agent that writes the component's secrets before it starts. */}}
+{{- define "vaultgate.openbaoInit" -}}
+{{- $root := .root }}
+{{- if $root.Values.openbao.enabled }}
+{{- if not $root.Values.tls.enabled }}
+{{- fail "openbao.enabled needs tls.enabled (OpenBao is verified with the trust bundle)" }}
+{{- end }}
+initContainers:
+  - name: openbao-agent
+    image: {{ $root.Values.openbao.image }}
+    command: [bao, agent, -config=/etc/openbao-agent/agent.hcl]
+    env:
+      - { name: BAO_ADDR, value: {{ $root.Values.openbao.address | quote }} }
+      - { name: BAO_CACERT, value: /etc/vaultgate/trust/{{ $root.Values.tls.trustBundle.key }} }
+      - { name: HOME, value: /tmp }
+    securityContext: {{- include "vaultgate.containerSecurityContext" $root | nindent 6 }}
+    resources:
+      requests: { cpu: 10m, memory: 32Mi }
+      limits: { memory: 64Mi }
+    volumeMounts:
+      - { name: openbao-agent, mountPath: /etc/openbao-agent, readOnly: true }
+      - { name: openbao-token, mountPath: /var/run/secrets/openbao, readOnly: true }
+      - { name: trust, mountPath: /etc/vaultgate/trust, readOnly: true }
+      - { name: secrets, mountPath: /run/secrets/vaultgate }
+      - { name: tmp, mountPath: /tmp }
+{{- end }}
+{{- end }}
+
+{{- define "vaultgate.openbaoMount" -}}
+{{- if .root.Values.openbao.enabled }}
+- { name: secrets, mountPath: /run/secrets/vaultgate, readOnly: true }
+{{- end }}
+{{- end }}
+
+{{- define "vaultgate.openbaoVolumes" -}}
+{{- if .root.Values.openbao.enabled }}
+- name: openbao-agent
+  configMap: { name: {{ include "vaultgate.fullname" . }}-openbao-agent }
+# A token for OpenBao's audience only, for the agent (the containers get none).
+- name: openbao-token
+  projected:
+    sources:
+      - serviceAccountToken: { path: token, audience: openbao, expirationSeconds: 600 }
+# The secrets, in memory: never on the node's disk.
+- name: secrets
+  emptyDir: { medium: Memory, sizeLimit: 1Mi }
+{{- end }}
+{{- end }}
+
+{{- define "vaultgate.serviceAccount" -}}
+{{- if .root.Values.openbao.enabled }}
+serviceAccountName: {{ include "vaultgate.fullname" . }}
+{{- end }}
 {{- end }}
 
 {{/* Extra NAME: value settings of one component. */}}

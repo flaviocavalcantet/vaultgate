@@ -30,6 +30,14 @@ metadata:
   name: pki-ceremony
 automountServiceAccountToken: false
 ---
+# Seeds the services' credentials (scripts/service_secrets.py seed), likewise only through tokens
+# the operator mints: OpenBao's secrets-seed role may create a secret, never read one.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: secrets-seed
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

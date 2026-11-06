@@ -10,6 +10,20 @@ def _env(name: str, default: str | None = None) -> str | None:
     return os.getenv(f"VAULTGATE_{name}", default)
 
 
+def _secret(name: str) -> str | None:
+    """A credential: VAULTGATE_<name>, or else the file vaultgate_<name> in
+    VAULTGATE_SECRETS_DIR, where they arrive from OpenBao on the cluster (M9, ADR 0012)
+    on a memory-backed volume rather than in the environment."""
+    value = _env(name)
+    directory = _env("SECRETS_DIR")
+    if value is None and directory:
+        path = os.path.join(directory, f"vaultgate_{name.lower()}")
+        if os.path.isfile(path):
+            with open(path) as f:
+                value = f.read().strip()
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     port: int = int(_env("GATEWAY_PORT", "8888"))
@@ -27,7 +41,7 @@ class Settings:
     # Over https, the API's certificate is verified against the system's trust store,
     # which SSL_CERT_FILE replaces (the cluster's trust bundle).
     api_internal_url: str = _env("API_INTERNAL_URL", "http://localhost:8001")
-    internal_token: str | None = field(default=_env("INTERNAL_TOKEN"), repr=False)
+    internal_token: str | None = field(default=_secret("INTERNAL_TOKEN"), repr=False)
     # Object storage and KMS. An endpoint URL points both at LocalStack locally.
     bucket: str = _env("BUCKET", "vaultgate-local-vault")
     kms_key_id: str = _env("KMS_KEY_ID", "alias/vaultgate-local")

@@ -1,7 +1,7 @@
 # The local k3d cluster (deploy/k3d): images from the cluster's own registry, the
 # dependencies in the vaultgate-deps namespace, and the public ports on the same host
-# ports as docker compose (8000 for the API, 8888 for the gateway). Development values
-# only: the credentials below are the compose stack's local ones.
+# ports as docker compose (8000 for the API, 8888 for the gateway). No credentials here:
+# they come from OpenBao.
 image:
   # The cluster's registry, as its nodes reach it (deploy/k3d/cluster.yaml).
   registry: vaultgate-registry.localhost:5000
@@ -15,14 +15,12 @@ scanQueueUrl: http://localstack.vaultgate-deps:4566/000000000000/vaultgate-local
 # No proxy in front (NodePorts): the address the services see, the node's after
 # kube-proxy, is the client's, so no X-Forwarded-For is trusted.
 
+# The credentials come from OpenBao (M9, ADR 0012): `make k3d-up` seeds them there with
+# random values (scripts/service_secrets.py), and no Secret holds them.
 secrets:
-  create: true
-  # TLS, with the server's name and chain verified against the trust bundle.
-  databaseUrl: postgresql+asyncpg://vaultgate:vaultgate@postgres.vaultgate-deps.svc:5432/vaultgate?ssl=verify-full
-  internalToken: dev-internal-token-change-me
-  scannerToken: dev-scanner-token-change-me
-  awsAccessKeyId: test
-  awsSecretAccessKey: test
+  create: false
+openbao:
+  enabled: true
 
 # TLS on the API and the gateway (M9, ADR 0012): certificates from OpenBao's
 # intermediate through cert-manager, and the root in trust-manager's bundle
