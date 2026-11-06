@@ -201,7 +201,7 @@ func secret(name string) string {
 	if dir == "" {
 		return ""
 	}
-	data, err := os.ReadFile(filepath.Join(dir, strings.ToLower(name)))
+	data, err := os.ReadFile(filepath.Join(dir, strings.ToLower(name))) // #nosec G304 G703 -- the operator's directory, a fixed name
 	if err != nil {
 		return ""
 	}

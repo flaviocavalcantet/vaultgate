@@ -57,7 +57,7 @@ func main() {
 }
 
 func scanFile(name string, out io.Writer, logger *slog.Logger) error {
-	f, err := os.Open(name)
+	f, err := os.Open(name) // #nosec G304 G703 -- the file the CLI's user named
 	if err != nil {
 		return err
 	}

@@ -92,8 +92,8 @@ type SQSQueue struct {
 func (q *SQSQueue) Receive(ctx context.Context, max int) ([]Delivery, error) {
 	out, err := q.Client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 		QueueUrl:            &q.URL,
-		MaxNumberOfMessages: int32(max),
-		WaitTimeSeconds:     20, // long polling: an idle worker makes few requests
+		MaxNumberOfMessages: int32(min(max, 10)), // #nosec G115 -- at most 10, SQS's own limit
+		WaitTimeSeconds:     20,                  // long polling: an idle worker makes few requests
 		// The API's trace context (internal/tracing).
 		MessageAttributeNames: tracing.Propagator.Fields(),
 	})

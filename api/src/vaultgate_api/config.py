@@ -23,7 +23,8 @@ class Settings(BaseSettings):
     # SQLAlchemy URL; the asyncpg driver is required because the API is fully async.
     database_url: str = "postgresql+asyncpg://vaultgate:vaultgate@localhost:5432/vaultgate"
     database_echo: bool = False
-    host: str = "0.0.0.0"
+    # All of the container's own interfaces: the pod network is its boundary.
+    host: str = "0.0.0.0"  # nosec B104
     port: int = 8000
     # TLS on the public and the internal port (M9, ADR 0012): a PEM certificate (with
     # its chain) and key. Both unset means plain HTTP, as under docker compose. Renewed
