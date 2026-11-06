@@ -14,8 +14,8 @@ Until M9, VaultGate has keys but no PKI:
 
 M9 adds a certificate authority whose private keys are kept safe, certificates on every
 hop, and the services' secrets delivered from a secret store instead of from values. M10
-then builds service identity (client certificates) and the first trust between nodes on
-top of it.
+then builds service identity (client certificates) and the trust between nodes on top of
+it, and M11 enrolls external nodes through VaultGate's API, with a second intermediate.
 
 ## Decision
 

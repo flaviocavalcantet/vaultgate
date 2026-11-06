@@ -540,34 +540,42 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Scenarios for transfers, the API control plane and scanner throughput; local-only load users; a smoke run with thresholds in CI ([ADR 0011](docs/adr/0011-load-testing.md))
   - [x] Published report ([docs/load-testing.md](docs/load-testing.md)): the full run on the cluster, with throughput, latency, scan times, gateway memory and autoscaling
 - [ ] **M9 — PKI and key management:** a certificate authority with an offline root, private keys kept in OpenBao, certificates and secrets delivered to the services
-  - [ ] OpenBao in the cluster, self-initialized from git, auto-unsealed; the offline root CA and the ceremony that installs the intermediate, whose key OpenBao generates and keeps ([ADR 0012](docs/adr/0012-pki-and-key-management.md))
+  - [x] OpenBao in the cluster, self-initialized from git, auto-unsealed; the offline root CA and the ceremony that installs the intermediate, whose key OpenBao generates and keeps ([ADR 0012](docs/adr/0012-pki-and-key-management.md))
   - [ ] TLS on every hop: cert-manager issuing short-lived certificates from OpenBao, trust-manager distributing the root, the API, gateway, Keycloak, PostgreSQL and the ingress serving TLS, every client verifying
   - [ ] Secrets from OpenBao: the services' credentials delivered at start, nothing secret in git or Helm values, dynamic PostgreSQL credentials per pod
-- [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined)
-- [ ] **M11 — Delivery and scaling:** builds on M7 and the M8 load tests
+- [ ] **M10 — Security auditing and node trust:** security audit of the system, and trust establishment between the nodes, including how first trust is established (scope to be defined; enrolling external nodes is M11)
+- [ ] **M11 — Node enrollment:** certificates for external nodes through VaultGate's API, built on the M9 PKI, with a choice of first-trust methods
+  - [ ] A second intermediate CA for nodes, from the offline root, limited to node identities; short-lived certificates, revocation (CRL and OCSP)
+  - [ ] Enrollment API: a node sends a CSR for a key it generated itself, and VaultGate signs it through OpenBao once the node passes its first-trust check; under the access policies and in the audit log; renewal over mTLS with the current certificate, so the first credential is used once
+  - [ ] First trust by admin approval: the request waits, the admin confirms the node's key fingerprint and approves, and a one-time code passed to the node completes the enrollment for that key only
+  - [ ] First trust by a Keycloak client: one confidential client per node, authenticated with a signed JWT (`private_key_jwt`), its enrollment role removed once the node has its certificate
+  - [ ] First trust by an admin enrollment token: single use, short-lived, limited to one node identity
+  - [ ] First trust by TPM attestation: the node's key proven to be held by its TPM
+  - [ ] First trust by cloud instance identity: the cloud's signed instance identity document (AWS first; GCP and Azure alike)
+- [ ] **M12 — Delivery and scaling:** builds on M7 and the M8 load tests
   - [ ] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them, replacing the local registry
   - [ ] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests
-- [ ] **M12 — Agent baseline and evaluation:** a single-agent invoice reviewer and a reproducible benchmark that scores task success and safety separately
+- [ ] **M13 — Agent baseline and evaluation:** a single-agent invoice reviewer and a reproducible benchmark that scores task success and safety separately
   - [ ] Japanese PII detectors (My Number, corporate number) and qualified-invoice registration numbers, validated by check digit
   - [ ] Synthetic dataset: invoices and purchase orders with discrepancies, prompt-injection documents, unauthorized requests
   - [ ] Baseline agent and `make agent-eval`: deterministic scoring, safety violations counted apart from task failures
   - [ ] CI gate on recorded model responses; live evaluation on a schedule, optionally against a local open model
-- [ ] **M13 — Durable agent runtime:** long-running agent jobs that survive worker crashes
+- [ ] **M14 — Durable agent runtime:** long-running agent jobs that survive worker crashes
   - [ ] Job lifecycle in PostgreSQL (queued, running, retry, awaiting approval, done, failed, cancelled, timed out), dispatched over SQS
   - [ ] Leases and heartbeats, checkpoints at tool-call boundaries, idempotency keys, cancellation and timeouts, dead-letter queue
   - [ ] Crash-recovery test: kill the worker mid-job, resume, no duplicated side effects
   - [ ] ADR: at-least-once delivery and idempotent effects; building the runtime compared with Temporal or DBOS
-- [ ] **M14 — Agent tools and governance:** the model proposes, VaultGate decides
+- [ ] **M15 — Agent tools and governance:** the model proposes, VaultGate decides
   - [ ] MCP server with strict schemas; the user's identity comes from the job, never from the model
   - [ ] Tools go through access policies and intents; parsers run in the WebAssembly sandbox
   - [ ] Agent reads count as sharing: pending, quarantined and unscannable content never reaches the model, whatever the quarantine scope; agents see only the verdict and the kinds and counts, and a release must name the agent purpose
   - [ ] Human approval as a job state, re-checked when the approved action runs
   - [ ] Security benchmark: prompt injection inside real documents, other users' files, malicious tool arguments
-- [ ] **M15 — Agent observability and cost:** builds on the M6 traces
+- [ ] **M16 — Agent observability and cost:** builds on the M6 traces
   - [ ] OpenTelemetry spans for model and tool calls, with PII masked by the scanner's detectors
   - [ ] Per-job token and cost budgets, step limits
   - [ ] Model routing judged on the benchmark by cost per successful task
-- [ ] **M16 — Evidence:** builds on the M8 load tests
+- [ ] **M17 — Evidence:** builds on the M8 load tests
   - [ ] Load scenarios for agent jobs with a mocked model; a small real-model benchmark with a fixed budget
   - [ ] Failure scenarios: slow or unavailable model, redelivery, worker crash, budget exhaustion
   - [ ] Published report with measured results and known limits, threat model for agents, demo recording, case study

@@ -72,7 +72,7 @@ Sharing and the owner's downloads are decided separately:
 - **Releases name their purpose** (`download` or `share`), each with its reason and
   admin, and each covers the current scan only. A release for download does not make a
   file shareable.
-- **Agents (M14)** count as sharing: what a tool reads goes into a model's context, often
+- **Agents (M15)** count as sharing: what a tool reads goes into a model's context, often
   at an outside provider. Pending, quarantined and unscannable content never reaches a
   model, whatever the scope; agents see only the verdict and the kinds and counts.
 
