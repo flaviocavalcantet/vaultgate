@@ -17,7 +17,8 @@ scanQueueUrl: http://localstack.vaultgate-deps:4566/000000000000/vaultgate-local
 
 secrets:
   create: true
-  databaseUrl: postgresql+asyncpg://vaultgate:vaultgate@postgres.vaultgate-deps:5432/vaultgate
+  # TLS, with the server's name and chain verified against the trust bundle.
+  databaseUrl: postgresql+asyncpg://vaultgate:vaultgate@postgres.vaultgate-deps.svc:5432/vaultgate?ssl=verify-full
   internalToken: dev-internal-token-change-me
   scannerToken: dev-scanner-token-change-me
   awsAccessKeyId: test
@@ -36,9 +37,10 @@ api:
   publicUrl: https://localhost:8000
   gatewayPublicUrl: https://localhost:8888
   oidc:
-    # Tokens carry iss=http://localhost:8080/realms/vaultgate (Keycloak's KC_HOSTNAME),
-    # as with compose; the API fetches discovery and keys from the Service.
-    discoveryUrl: http://keycloak.vaultgate-deps:8080/realms/vaultgate/.well-known/openid-configuration
+    # Tokens carry iss=https://localhost:8080/realms/vaultgate (Keycloak's KC_HOSTNAME);
+    # the API fetches discovery and keys from the Service, over TLS too.
+    issuer: https://localhost:8080/realms/vaultgate
+    discoveryUrl: https://keycloak.vaultgate-deps.svc:8080/realms/vaultgate/.well-known/openid-configuration
   smtp:
     host: mailpit.vaultgate-deps
     port: 1025

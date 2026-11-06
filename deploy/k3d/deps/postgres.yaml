@@ -1,3 +1,32 @@
+# PostgreSQL for the API, over TLS only (M9, ADR 0012): its certificate comes from the
+# cluster's CA, pg_hba refuses any connection without TLS, and the API verifies the
+# server's name and chain (sslmode verify-full).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: postgres
+spec:
+  secretName: postgres-tls
+  issuerRef: { kind: ClusterIssuer, name: vaultgate-ca }
+  duration: 24h
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  usages: [digital signature, server auth]
+  dnsNames:
+    - postgres.vaultgate-deps.svc
+    - postgres.vaultgate-deps.svc.cluster.local
+---
+# Over the network only TLS, and only with a password (scram); the socket inside the pod
+# is for the image's own setup and the reload below.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-hba
+data:
+  pg_hba.conf: |
+    local     all  all        trust
+    hostssl   all  all  all   scram-sha-256
+    hostnossl all  all  all   reject
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -11,9 +40,24 @@ spec:
     metadata:
       labels: { app.kubernetes.io/name: postgres }
     spec:
+      securityContext:
+        fsGroup: 999 # the image's postgres group: it may read the key (0440, root's)
       containers:
         - name: postgres
           image: postgres:16
+          # PostgreSQL reads its certificate at start and on a reload: an hourly reload
+          # picks up cert-manager's renewals (day-long certificates, renewed 8h early).
+          command:
+            - bash
+            - -c
+            - |
+              (while sleep 3600; do
+                psql -h /var/run/postgresql -U vaultgate -d vaultgate -qAt -c 'select pg_reload_conf()' >/dev/null
+              done) &
+              exec docker-entrypoint.sh postgres \
+                -c ssl=on -c ssl_min_protocol_version=TLSv1.3 \
+                -c ssl_cert_file=/etc/postgres/tls/tls.crt -c ssl_key_file=/etc/postgres/tls/tls.key \
+                -c hba_file=/etc/postgres/hba/pg_hba.conf
           env:
             - { name: POSTGRES_USER, value: vaultgate }
             - { name: POSTGRES_PASSWORD, value: vaultgate }
@@ -29,6 +73,13 @@ spec:
             limits: { memory: 512Mi }
           volumeMounts:
             - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: tls, mountPath: /etc/postgres/tls, readOnly: true }
+            - { name: hba, mountPath: /etc/postgres/hba, readOnly: true }
+      volumes:
+        - name: tls
+          secret: { secretName: postgres-tls, defaultMode: 0440 }
+        - name: hba
+          configMap: { name: postgres-hba }
   # k3s's local-path provisioner: the data survives pod restarts, not `make k3d-down`.
   volumeClaimTemplates:
     - metadata:

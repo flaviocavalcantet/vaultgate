@@ -1,5 +1,21 @@
 # OIDC provider with the vaultgate realm (clients, groups, seed users), imported on every
-# start; dev mode keeps no state between restarts.
+# start; dev mode keeps no state between restarts. HTTPS only (M9, ADR 0012), with a
+# certificate from the cluster's CA that also names localhost, for the host's port 8080.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak
+spec:
+  secretName: keycloak-tls
+  issuerRef: { kind: ClusterIssuer, name: vaultgate-ca }
+  duration: 24h
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  usages: [digital signature, server auth]
+  dnsNames:
+    - keycloak.vaultgate-deps.svc
+    - keycloak.vaultgate-deps.svc.cluster.local
+    - localhost
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,6 +28,8 @@ spec:
     metadata:
       labels: { app.kubernetes.io/name: keycloak }
     spec:
+      securityContext:
+        fsGroup: 1000 # the image's keycloak user: it may read the key (0440)
       containers:
         - name: keycloak
           image: quay.io/keycloak/keycloak:26.0.7
@@ -19,20 +37,27 @@ spec:
           env:
             - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: admin }
             - { name: KC_BOOTSTRAP_ADMIN_PASSWORD, value: admin }
-            # As in compose: tokens carry iss=http://localhost:8080/realms/vaultgate,
-            # whether Keycloak is reached from the host (localhost:8080) or from pods
-            # (keycloak.vaultgate-deps:8080); back-channel URLs follow the caller.
-            - { name: KC_HOSTNAME, value: "http://localhost:8080" }
+            # Tokens carry iss=https://localhost:8080/realms/vaultgate, whether Keycloak is
+            # reached from the host (localhost:8080) or from pods
+            # (keycloak.vaultgate-deps.svc:8080); back-channel URLs follow the caller.
+            - { name: KC_HOSTNAME, value: "https://localhost:8080" }
             - { name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC, value: "true" }
             - { name: KC_HEALTH_ENABLED, value: "true" }
+            # TLS 1.3 only, no plain HTTP, the management port (health) over TLS too; a
+            # renewed certificate is read again within the hour.
+            - { name: KC_HTTP_ENABLED, value: "false" }
+            - { name: KC_HTTPS_PROTOCOLS, value: TLSv1.3 }
+            - { name: KC_HTTPS_CERTIFICATE_FILE, value: /etc/keycloak/tls/tls.crt }
+            - { name: KC_HTTPS_CERTIFICATE_KEY_FILE, value: /etc/keycloak/tls/tls.key }
+            - { name: KC_HTTPS_CERTIFICATES_RELOAD_PERIOD, value: 1h }
           ports:
-            - { name: http, containerPort: 8080 }
+            - { name: https, containerPort: 8443 }
             - { name: management, containerPort: 9000 }
           readinessProbe:
-            httpGet: { path: /health/ready, port: management }
+            httpGet: { path: /health/ready, port: management, scheme: HTTPS }
             periodSeconds: 5
           startupProbe:
-            httpGet: { path: /health/started, port: management }
+            httpGet: { path: /health/started, port: management, scheme: HTTPS }
             periodSeconds: 5
             failureThreshold: 60
           resources:
@@ -40,9 +65,12 @@ spec:
             limits: { memory: 1Gi }
           volumeMounts:
             - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+            - { name: tls, mountPath: /etc/keycloak/tls, readOnly: true }
       volumes:
         - name: realm
           configMap: { name: keycloak-realm }
+        - name: tls
+          secret: { secretName: keycloak-tls, defaultMode: 0440 }
 ---
 apiVersion: v1
 kind: Service
@@ -52,4 +80,5 @@ spec:
   type: NodePort
   selector: { app.kubernetes.io/name: keycloak }
   ports:
-    - { name: http, port: 8080, targetPort: http, nodePort: 30080 }
+    # https on 8080, as compose has http there: the host's scripts keep the port.
+    - { name: https, port: 8080, targetPort: https, nodePort: 30080 }

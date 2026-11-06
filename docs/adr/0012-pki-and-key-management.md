@@ -129,15 +129,24 @@ load renewed certificates as they run.**
   - The public and the internal ports both speak TLS only, with probes over HTTPS.
   - The metrics port stays plain HTTP for now.
   - Off, the chart serves plain HTTP as before.
-- **The API and the gateway come first.** Keycloak, PostgreSQL, the ingress, and the
-  metrics and traces endpoints follow (below).
+- **The dependencies:**
+  - **PostgreSQL** serves TLS 1.3 with its own day-long certificate, and its `pg_hba`
+    rejects any connection without TLS. It reads a renewed certificate on a reload, which
+    the pod triggers every hour.
+  - **The API** connects with `ssl=verify-full`, checking the server's name and chain.
+    asyncpg reads the trust bundle from `PGSSLROOTCERT`.
+  - **Keycloak** serves TLS 1.3 only, on its public port and its management port
+    (health), and reloads its certificate every hour. Its issuer becomes
+    `https://localhost:8080/realms/vaultgate`, and the API fetches discovery and keys
+    from `keycloak.vaultgate-deps.svc` over TLS.
+- **Not yet:** the ingress, and the metrics and traces endpoints (below).
 - **What a production cluster would change:** this role lets any namespace's Certificate
   name any Service. A shared cluster would give each namespace its own role, limited to
   `*.<namespace>.svc`, or add cert-manager's approver-policy.
 
 ### Next in M9
 
-- TLS for Keycloak, PostgreSQL, the ingress, and the metrics and traces endpoints.
+- TLS for the ingress, and the metrics and traces endpoints.
 - The services' credentials come from OpenBao, with database credentials per pod.
 
 ## Consequences
@@ -156,6 +165,6 @@ load renewed certificates as they run.**
   editing the file on a running one.
 - Compose stays as it is: plain HTTP, with its secrets in environment variables. It is
   the quick development stack, and the PKI is a property of the cluster.
-- On the cluster, the API and the gateway answer on https only. The scripts, the load
+- On the cluster, the API, the gateway and Keycloak answer on https only. The scripts, the load
   tests and `curl` need the root: `--cacert ~/.vaultgate/pki/root-ca.crt`, or
   `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE`.

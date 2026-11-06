@@ -97,8 +97,11 @@ certificate carries). */}}
 {{/* Settings every service reads: metrics port, traces, AWS, trust store. */}}
 {{- define "vaultgate.commonEnv" -}}
 {{- if .Values.tls.enabled }}
-# What the services' clients trust (Python's ssl and Go's crypto/x509 both read it).
+# What the services' clients trust (Python's ssl and Go's crypto/x509 both read it), and
+# asyncpg for PostgreSQL (with ?ssl=verify-full in the database URL).
 - name: SSL_CERT_FILE
+  value: /etc/vaultgate/trust/{{ .Values.tls.trustBundle.key }}
+- name: PGSSLROOTCERT
   value: /etc/vaultgate/trust/{{ .Values.tls.trustBundle.key }}
 {{- end }}
 - name: VAULTGATE_METRICS_PORT

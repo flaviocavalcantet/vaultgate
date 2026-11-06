@@ -11,7 +11,8 @@
 #   scripts/k3d.sh images  rebuild and push the images, and restart the pods to pull them
 #   scripts/k3d.sh check   the vault end-to-end check against the cluster (traces in
 #                          Tempo and logs in Loki included), plus cluster checks: Argo CD
-#                          in sync, OpenBao unsealed with its CA chained to the root, the
+#                          in sync, OpenBao unsealed with its CA chained to the root, TLS on
+#                          the API, gateway, Keycloak and PostgreSQL, the
 #                          gateway's autoscaler reading CPU, the network policy closing the
 #                          API's internal port, Prometheus scraping every service,
 #                          Grafana's dashboards, and Alertmanager's mail
@@ -43,6 +44,7 @@ ROOT_CA=${VAULTGATE_PKI_DIR:-$HOME/.vaultgate/pki}/root-ca.crt
 # The API and the gateway serve TLS from the cluster's CA: the host's scripts trust the
 # root (Python's ssl reads SSL_CERT_FILE, Python's requests REQUESTS_CA_BUNDLE).
 API=https://localhost:8000
+KEYCLOAK=https://localhost:8080
 host_trust() { SSL_CERT_FILE=$ROOT_CA REQUESTS_CA_BUNDLE=$ROOT_CA "$@"; }
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -163,8 +165,8 @@ up() {
   log "Terraform against the in-cluster LocalStack"
   wait_for 120 "LocalStack" curl -sf http://localhost:4566/_localstack/health
   make tf-local
-  host_trust python3 scripts/seed_policies.py --api "$API"
-  log "ready: OpenBao https://localhost:8200, API $API, gateway https://localhost:8888 (TLS: trust $ROOT_CA), Keycloak http://localhost:8080, Mailpit http://localhost:8025, Grafana http://localhost:3000 (admin/admin), Prometheus http://localhost:9090, Alertmanager http://localhost:9093"
+  host_trust python3 scripts/seed_policies.py --api "$API" --keycloak "$KEYCLOAK"
+  log "ready: OpenBao https://localhost:8200, API $API, gateway https://localhost:8888 (TLS: trust $ROOT_CA), Keycloak $KEYCLOAK, Mailpit http://localhost:8025, Grafana http://localhost:3000 (admin/admin), Prometheus http://localhost:9090, Alertmanager http://localhost:9093"
 }
 
 restart() {
@@ -217,16 +219,19 @@ check_observability() {
 check_pki() {
   log "PKI: OpenBao unsealed, its TLS and its intermediate CA chained to the root"
   python3 scripts/pki.py check
-  log "TLS: the API and the gateway serve certificates from the cluster's CA, and nothing in plain HTTP"
+  log "TLS: the API, the gateway and Keycloak serve certificates from the cluster's CA, and nothing in plain HTTP"
   kubectl -n vaultgate wait --for=condition=Ready certificate --all --timeout=120s
-  for url in "$API/healthz" https://localhost:8888/healthz; do
+  kubectl -n vaultgate-deps wait --for=condition=Ready certificate --all --timeout=120s
+  for url in "$API/healthz" https://localhost:8888/healthz "$KEYCLOAK/realms/vaultgate"; do
     curl -sf --cacert "$ROOT_CA" -o /dev/null "$url"
     if curl -s -m 5 -o /dev/null "${url/https:/http:}"; then
       echo "${url/https:/http:} answered in plain HTTP" >&2
       return 1
     fi
   done
-  python3 scripts/pki.py check-service localhost:8000 localhost:8888
+  python3 scripts/pki.py check-service localhost:8000 localhost:8888 localhost:8080
+  log "TLS: the API's connections to PostgreSQL are TLS, verified; without TLS PostgreSQL refuses"
+  kubectl -n vaultgate exec -i deploy/vaultgate-api -c api -- python - <scripts/postgres_tls_check.py
 }
 
 check() {
@@ -234,7 +239,7 @@ check() {
   check_pki
   check_observability
   log "vault end to end, against the cluster"
-  host_trust python3 scripts/vault_e2e.py --api "$API"
+  host_trust python3 scripts/vault_e2e.py --api "$API" --keycloak "$KEYCLOAK"
 }
 
 case ${1:-} in
