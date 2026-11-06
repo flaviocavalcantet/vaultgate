@@ -1,4 +1,4 @@
-# The dependencies and the Prometheus Operator first (sync wave 0), then the
+# The dependencies, OpenBao and the Prometheus Operator first (sync wave 0), then the
 # observability that needs the operator's CRDs (wave 1), then VaultGate (wave 2), whose
 # ServiceMonitors need them too. A sync that runs before what it needs is ready fails
 # and is retried; the API waits for PostgreSQL by restarting until its migrations run.
@@ -19,6 +19,31 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: vaultgate-deps
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: ["CreateNamespace=true"]
+    retry: { limit: 10, backoff: { duration: 15s, factor: 2, maxDuration: 5m } }
+---
+# OpenBao, the certificate authority and secret store (M9, ADR 0012). Its TLS certificate
+# and seal key are Secrets that `make k3d-up` creates first; the intermediate CA is
+# installed by the ceremony once it runs (scripts/pki.py).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vaultgate-openbao
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  source:
+    repoURL: {{ .Values.repoURL }}
+    targetRevision: {{ .Values.revision }}
+    path: deploy/k3d/openbao
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openbao
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     syncOptions: ["CreateNamespace=true"]

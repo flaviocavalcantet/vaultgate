@@ -1,0 +1,119 @@
+# OpenBao in the local cluster (M9, ADR 0012): one pod, integrated storage on a volume,
+# configured by openbao.hcl. Two Secrets come from `make k3d-up` (scripts/k3d.sh), never
+# from git: openbao-tls, its server certificate signed by the offline root, and
+# openbao-unseal, the static seal key.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openbao
+---
+# OpenBao checks Kubernetes logins with the TokenReview API, as its own service account.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openbao-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: openbao
+    namespace: openbao
+---
+# The intermediate CA ceremony's identity (scripts/pki.py intermediate): no Kubernetes
+# permissions, and no pod runs as it. The operator mints a 10-minute token for it, which
+# OpenBao's pki-ceremony role trades for a 10-minute OpenBao token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pki-ceremony
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openbao
+spec:
+  serviceName: openbao
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: openbao }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: openbao }
+    spec:
+      serviceAccountName: openbao
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100 # the image's openbao user
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: openbao
+          image: openbao/openbao:2.7.1
+          command: [bao, server, -config=/openbao/config/openbao.hcl]
+          ports:
+            - { name: https, containerPort: 8200 }
+          # Ready once initialized, unsealed and active: /sys/health answers 200 then only.
+          readinessProbe:
+            httpGet: { path: /v1/sys/health, port: https, scheme: HTTPS }
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: https }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: config, mountPath: /openbao/config, readOnly: true }
+            - { name: tls, mountPath: /openbao/tls, readOnly: true }
+            - { name: unseal, mountPath: /openbao/unseal, readOnly: true }
+            - { name: data, mountPath: /openbao/data }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap: { name: openbao-config }
+        - name: tls
+          secret: { secretName: openbao-tls, defaultMode: 0440 }
+        - name: unseal
+          secret:
+            secretName: openbao-unseal
+            defaultMode: 0440
+            items: [{ key: key, path: key }]
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openbao
+spec:
+  selector: { app.kubernetes.io/name: openbao }
+  ports:
+    - { name: https, port: 8200, targetPort: https }
+---
+# The ceremony and the checks reach OpenBao from the host (localhost:8200), over TLS that
+# its certificate's localhost name lets them verify against the root.
+apiVersion: v1
+kind: Service
+metadata:
+  name: openbao-host
+spec:
+  type: NodePort
+  selector: { app.kubernetes.io/name: openbao }
+  ports:
+    - { name: https, port: 8200, targetPort: https, nodePort: 30820 }

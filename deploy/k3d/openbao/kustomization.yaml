@@ -1,0 +1,16 @@
+# OpenBao, VaultGate's certificate authority and secret store, for the local cluster
+# (M9, ADR 0012). Synced by Argo CD (deploy/argocd/local) into the openbao namespace.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: openbao
+resources:
+  - openbao.yaml
+configMapGenerator:
+  # A changed configuration restarts the pod (the name carries its hash). Note that the
+  # `initialize` blocks run on empty storage only.
+  - name: openbao-config
+    files:
+      - openbao.hcl
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: vaultgate-openbao
