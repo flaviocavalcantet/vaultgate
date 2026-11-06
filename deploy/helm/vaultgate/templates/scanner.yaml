@@ -30,6 +30,7 @@ spec:
           command: ["/worker"]
           env:
             {{- include "vaultgate.commonEnv" . | nindent 12 }}
+            {{- include "vaultgate.tlsEnv" $ctx | nindent 12 }}
             # Without it the worker exits at once and says so in its log.
             {{- with .Values.scanQueueUrl }}
             - name: VAULTGATE_SCAN_QUEUE_URL
@@ -45,14 +46,16 @@ spec:
             {{- include "vaultgate.extraEnv" $sc.env | nindent 12 }}
           ports:
             - { name: metrics, containerPort: {{ .Values.metrics.port }} }
-          livenessProbe: { httpGet: { path: /healthz, port: metrics } }
+          livenessProbe: { httpGet: { path: /healthz, port: metrics, scheme: {{ ternary "HTTPS" "HTTP" .Values.tls.enabled }} } }
           securityContext: {{- include "vaultgate.containerSecurityContext" . | nindent 12 }}
           resources: {{- toYaml $sc.resources | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            {{- include "vaultgate.tlsMount" $ctx | nindent 12 }}
             {{- include "vaultgate.trustMount" . | nindent 12 }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+        {{- include "vaultgate.tlsVolume" $ctx | nindent 8 }}
         {{- include "vaultgate.trustVolume" . | nindent 8 }}
 ---
 apiVersion: v1

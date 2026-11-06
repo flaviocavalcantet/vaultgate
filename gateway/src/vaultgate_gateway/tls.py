@@ -12,6 +12,8 @@ import logging
 import os
 import ssl
 
+from prometheus_client import start_http_server
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,3 +57,15 @@ class CertificateReloader:
         while True:
             await asyncio.sleep(interval_seconds)
             self.check()
+
+
+def start_metrics_server(
+    port: int, cert_file: str | None, key_file: str | None
+) -> ssl.SSLContext | None:
+    """/metrics on its own port, in a thread. With a certificate it speaks TLS only, and
+    its SSLContext is returned for the reloader to renew."""
+    if not (cert_file and key_file):
+        start_http_server(port)
+        return None
+    server, _ = start_http_server(port, certfile=cert_file, keyfile=key_file)
+    return server.socket.context

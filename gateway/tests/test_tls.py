@@ -6,6 +6,7 @@ certificate only: it succeeds only if the server presents that certificate.
 
 import datetime
 import os
+import socket
 import ssl
 
 import pytest
@@ -14,7 +15,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from vaultgate_gateway.tls import CertificateReloader
+from vaultgate_gateway.tls import CertificateReloader, start_metrics_server
 
 
 def self_signed(name: str) -> tuple[bytes, bytes]:
@@ -122,3 +123,42 @@ def test_missing_files_keep_the_loaded_certificate(pair):
     cert_file.unlink()
     assert reloader.check() is False
     assert handshake(context, first[0])
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def served_certificate(port: int, trusted_cert: bytes) -> bool:
+    """A real TLS connection to the metrics port, trusting one certificate only."""
+    client = ssl.create_default_context(cadata=trusted_cert.decode())
+    try:
+        with (
+            socket.create_connection(("127.0.0.1", port), timeout=5) as sock,
+            client.wrap_socket(sock, server_hostname="localhost") as tls,
+        ):
+            tls.sendall(b"GET /metrics HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            return tls.recv(12).startswith(b"HTTP/1.0 200")
+    except ssl.SSLError:
+        return False
+
+
+def test_metrics_server_without_a_certificate_is_plain_http():
+    assert start_metrics_server(free_port(), None, None) is None
+
+
+def test_metrics_server_speaks_tls_and_renews(pair):
+    cert_file, key_file, _, first = pair
+    port = free_port()
+    context = start_metrics_server(port, str(cert_file), str(key_file))
+    reloader = CertificateReloader(str(cert_file), str(key_file), [context])
+    assert served_certificate(port, first[0])
+
+    second = self_signed("second")
+    write(cert_file, second[0], 2_000_000_000)
+    write(key_file, second[1], 2_000_000_000)
+    assert reloader.check() is True
+    assert served_certificate(port, second[0])
+    assert not served_certificate(port, first[0])

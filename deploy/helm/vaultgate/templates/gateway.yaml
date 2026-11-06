@@ -66,6 +66,11 @@ kind: Service
 metadata:
   name: {{ include "vaultgate.fullname" $ctx }}
   labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+  {{- if .Values.ingress.enabled }}
+  {{- with .Values.ingress.serviceAnnotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
 spec:
   selector: {{- include "vaultgate.selector" $ctx | nindent 4 }}
   ports:

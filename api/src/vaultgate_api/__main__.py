@@ -5,20 +5,21 @@ in the same JSON format as the application's instead of its default text format.
 Two servers run in one process: the public API and, on its own port, the internal
 API the gateway and the scanner use; next to them, a periodic sweep of abandoned
 uploads and the resender of stuck scan requests. With a TLS certificate configured, both
-servers speak TLS only, and a renewed certificate is loaded without a restart.
+servers and the metrics port speak TLS only, and a renewed certificate is loaded without a
+restart.
 """
 
 import asyncio
+import ssl
 
 import uvicorn
-from prometheus_client import start_http_server
 
 from vaultgate_api.audit import run_anchor
 from vaultgate_api.config import settings
 from vaultgate_api.db import get_sessionmaker
 from vaultgate_api.logs import configure_logging
 from vaultgate_api.scans import get_scan_queue, run_resender
-from vaultgate_api.tls import CertificateReloader
+from vaultgate_api.tls import CertificateReloader, start_metrics_server
 from vaultgate_api.tracing import configure_tracing
 from vaultgate_api.uploads import run_sweeper
 
@@ -40,7 +41,7 @@ def _server(app: str, port: int) -> uvicorn.Server:
     return uvicorn.Server(config)
 
 
-async def serve() -> None:
+async def serve(metrics_context: ssl.SSLContext | None = None) -> None:
     if bool(settings.tls_cert_file) != bool(settings.tls_key_file):
         raise SystemExit("set both VAULTGATE_TLS_CERT_FILE and VAULTGATE_TLS_KEY_FILE, or neither")
     public = _server("vaultgate_api.main:app", settings.port)
@@ -50,7 +51,7 @@ async def serve() -> None:
         reloader = CertificateReloader(
             settings.tls_cert_file,
             settings.tls_key_file,
-            [public.config.ssl, internal.config.ssl],
+            [public.config.ssl, internal.config.ssl, *filter(None, [metrics_context])],
         )
         tasks.append(reloader.run(settings.tls_reload_interval_seconds))
     if settings.upload_sweep_interval_seconds > 0:
@@ -69,8 +70,10 @@ async def serve() -> None:
 def main() -> None:
     configure_logging(settings.log_level, settings.log_format)
     configure_tracing()
-    start_http_server(settings.metrics_port)
-    asyncio.run(serve())
+    metrics_context = start_metrics_server(
+        settings.metrics_port, settings.tls_cert_file, settings.tls_key_file
+    )
+    asyncio.run(serve(metrics_context))
 
 
 if __name__ == "__main__":

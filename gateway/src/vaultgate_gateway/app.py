@@ -22,7 +22,6 @@ import tornado.iostream
 import tornado.web
 from opentelemetry import context, trace
 from opentelemetry.trace import SpanKind, StatusCode
-from prometheus_client import start_http_server
 
 from vaultgate_gateway import metrics, tracing
 from vaultgate_gateway.api_client import ApiUnavailable, IntentRefused, InternalApi, UploadGrant
@@ -42,7 +41,7 @@ from vaultgate_gateway.storage import (
     StorageUnavailable,
     s3_client,
 )
-from vaultgate_gateway.tls import CertificateReloader
+from vaultgate_gateway.tls import CertificateReloader, start_metrics_server
 
 access_logger = logging.getLogger("vaultgate.access")
 logger = logging.getLogger("vaultgate.gateway")
@@ -600,14 +599,20 @@ async def main() -> None:
     if not settings.internal_token:
         raise SystemExit("VAULTGATE_INTERNAL_TOKEN is required")
     metrics.BUILD_INFO.info({"service": "gateway", "version": "0.1.0"})
-    start_http_server(settings.metrics_port)
+    metrics_context = start_metrics_server(
+        settings.metrics_port, settings.tls_cert_file, settings.tls_key_file
+    )
     if bool(settings.tls_cert_file) != bool(settings.tls_key_file):
         raise SystemExit("set both VAULTGATE_TLS_CERT_FILE and VAULTGATE_TLS_KEY_FILE, or neither")
     ssl_context = None
     if settings.tls_cert_file and settings.tls_key_file:
         ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ssl_context.load_cert_chain(settings.tls_cert_file, settings.tls_key_file)
-        reloader = CertificateReloader(settings.tls_cert_file, settings.tls_key_file, [ssl_context])
+        reloader = CertificateReloader(
+            settings.tls_cert_file,
+            settings.tls_key_file,
+            [ssl_context, *filter(None, [metrics_context])],
+        )
         # Kept referenced for as long as main() runs, which is forever.
         reloading = asyncio.get_running_loop().create_task(  # noqa: F841
             reloader.run(settings.tls_reload_interval_seconds)

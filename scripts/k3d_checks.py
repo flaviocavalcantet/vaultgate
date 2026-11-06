@@ -22,6 +22,8 @@ GRAFANA = "http://localhost:3000"
 MAILPIT = "http://localhost:8025"
 
 JOBS = {"api", "gateway", "scanner", "loki", "tempo", "alloy"}
+# VaultGate's own metrics ports serve TLS (M9): scraped over https, verified with the bundle.
+TLS_JOBS = {"api", "gateway", "scanner"}
 DASHBOARDS = {"VaultGate / Service overview", "VaultGate / Gateway uploads"}
 DATASOURCES = {"prometheus", "loki", "tempo"}  # UIDs, as the dashboards reference them
 
@@ -34,16 +36,23 @@ def get(url: str, headers: dict | None = None):
 
 def targets() -> str:
     active = get(f"{PROMETHEUS}/api/v1/targets?state=active")["data"]["activeTargets"]
-    health = {}
+    health, plain = {}, set()
     for target in active:
         job = target["labels"].get("job")
         if job in JOBS:
             health.setdefault(job, set()).add(target["health"])
+            if job in TLS_JOBS and not target["scrapeUrl"].startswith("https://"):
+                plain.add(job)
     missing = sorted(JOBS - health.keys())
     down = sorted(job for job, states in health.items() if states != {"up"})
-    if missing or down:
-        raise AssertionError(f"targets missing: {missing}, not up: {down}")
-    return f"Prometheus scrapes {', '.join(sorted(JOBS))}, all up"
+    if missing or down or plain:
+        raise AssertionError(
+            f"targets missing: {missing}, not up: {down}, not over TLS: {sorted(plain)}"
+        )
+    return (
+        f"Prometheus scrapes {', '.join(sorted(JOBS))}, all up; "
+        f"{', '.join(sorted(TLS_JOBS))} over TLS, verified"
+    )
 
 
 def grafana() -> str:

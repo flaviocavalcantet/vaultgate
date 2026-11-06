@@ -23,5 +23,12 @@ spec:
     - port: metrics
       path: /metrics
       interval: {{ $.Values.metrics.serviceMonitor.interval }}
+      {{- if $.Values.tls.enabled }}
+      # The metrics port speaks TLS too: Prometheus verifies it with the trust bundle.
+      scheme: https
+      tlsConfig:
+        ca: { configMap: { name: {{ $.Values.tls.trustBundle.configMap }}, key: {{ $.Values.tls.trustBundle.key }} } }
+        serverName: {{ $.Release.Name }}-{{ $name }}.{{ $.Release.Namespace }}.svc
+      {{- end }}
 {{- end }}
 {{- end }}
