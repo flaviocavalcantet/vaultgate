@@ -40,7 +40,9 @@ def query_range(prometheus: str, promql: str, start: int, end: int, step: int = 
         result = json.loads(r.read())["data"]["result"]
     series = {}
     for item in result:
-        label = item["metric"].get("pod") or item["metric"].get("job") or "total"
+        pod = item["metric"].get("pod")
+        # Pods by their own suffix: the deployment's prefix is the same for every one.
+        label = f"pod {pod.rsplit('-', 1)[-1]}" if pod else item["metric"].get("job", "total")
         series[label] = [(float(t), float(v)) for t, v in item["values"]]
     return series
 
@@ -110,6 +112,8 @@ def line_chart(title: str, series: dict, unit: str, start: float, ceiling: float
         color = COLORS[i % len(COLORS)]
         path = " ".join(f"{x(t):.1f},{y(v):.1f}" for t, v in values)
         out.append(f'<polyline fill="none" stroke="{color}" stroke-width="1.5" points="{path}"/>')
+        if len(series) == 1:  # the title names a single series
+            continue
         ly = top + 14 * i + 6
         out.append(
             f'<rect x="{left + plot_w + 12}" y="{ly - 8}" width="10" height="3" fill="{color}"/>'
@@ -120,6 +124,8 @@ def line_chart(title: str, series: dict, unit: str, start: float, ceiling: float
 
 
 # --- the report ------------------------------------------------------------------------
+
+SCANNER_CONCURRENCY = 2  # deploy/helm/vaultgate/values.yaml, scanner.concurrency
 
 CHARTS = [
     # file, title, unit, promql, scale, ceiling
@@ -147,8 +153,8 @@ CHARTS = [
         "Gateway pods (autoscaler on CPU, 1 to 3)",
         "pods",
         (
-            'kube_deployment_status_replicas_available{namespace="vaultgate",'
-            'deployment="vaultgate-gateway"}'
+            'sum(kube_deployment_status_replicas_available{namespace="vaultgate",'
+            'deployment="vaultgate-gateway"})'
         ),
         1,
         None,
@@ -167,7 +173,7 @@ CHARTS = [
     ),
     (
         "scanner",
-        "Scans in progress (one scanner pod, two at once)",
+        f"Scans in progress (one scanner pod, {SCANNER_CONCURRENCY} at once)",
         "scans",
         "sum(vaultgate_scanner_jobs_in_progress)",
         1,
@@ -256,6 +262,11 @@ def main(argv: list[str]) -> int:
         series = query_range(args.prometheus, promql, start, end)
         scaled = {k: [(t, v * scale) for t, v in vs] for k, vs in series.items()}
         peaks[name] = max((v for vs in scaled.values() for _, v in vs), default=0)
+        if name == "scanner":
+            samples = [v for vs in scaled.values() for _, v in vs]
+            peaks["scanner-busy"] = sum(v >= SCANNER_CONCURRENCY for v in samples) / max(
+                len(samples), 1
+            )
         if name == "throughput":
             peaks["uploads"] = max((v for _, v in scaled.get("uploads", [])), default=0)
         (charts_dir / f"{name}.svg").write_text(line_chart(title, scaled, unit, start, ceiling))
@@ -323,7 +334,16 @@ def main(argv: list[str]) -> int:
                 else "the autoscaler did not scale out at this load."
             )
         ),
-        f"- **Up to {peaks['scanner']:.0f} scans ran at once** in the one scanner pod.",
+        (
+            f"- **Up to {peaks['scanner']:.0f} scans ran at once** in the one scanner pod "
+            f"(its limit is {SCANNER_CONCURRENCY}), "
+            + (
+                f"at that limit for {peaks['scanner-busy']:.0%} of the run: the scanner was the "
+                "bottleneck, and most of the time to a verdict was spent in its queue."
+                if peaks["scanner-busy"] >= 0.5
+                else f"at that limit for {peaks['scanner-busy']:.0%} of the run."
+            )
+        ),
         "",
         "## Requests",
         "",
