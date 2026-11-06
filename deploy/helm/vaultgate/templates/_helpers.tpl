@@ -74,6 +74,16 @@ certificate carries). */}}
 {{- end }}
 
 {{/* With TLS: the certificate a server presents (cert-manager's Secret). */}}
+{{/* A component's identity on the API's internal port (mutual TLS, ADR 0013): the URI
+in its client certificate. */}}
+{{- define "vaultgate.identity" -}}
+spiffe://{{ .root.Values.mtls.trustDomain }}/ns/{{ .root.Release.Namespace }}/sa/{{ include "vaultgate.fullname" . }}
+{{- end }}
+
+{{- define "vaultgate.mtls" -}}
+{{- if and .root.Values.tls.enabled .root.Values.mtls.enabled }}true{{ end }}
+{{- end }}
+
 {{- define "vaultgate.tlsEnv" -}}
 {{- if .root.Values.tls.enabled }}
 - name: VAULTGATE_TLS_CERT_FILE
@@ -81,11 +91,34 @@ certificate carries). */}}
 - name: VAULTGATE_TLS_KEY_FILE
   value: /etc/vaultgate/tls/tls.key
 {{- end }}
+{{- if include "vaultgate.mtls" . }}
+{{- if eq .name "api" }}
+# The internal port wants a client certificate from the root, and these identities.
+- name: VAULTGATE_INTERNAL_CLIENT_CA_FILE
+  value: /etc/vaultgate/client-ca/ca.crt
+- name: VAULTGATE_INTERNAL_GATEWAY_IDENTITY
+  value: {{ include "vaultgate.identity" (dict "root" .root "name" "gateway") | quote }}
+- name: VAULTGATE_INTERNAL_SCANNER_IDENTITY
+  value: {{ include "vaultgate.identity" (dict "root" .root "name" "scanner") | quote }}
+{{- else }}
+- name: VAULTGATE_API_CLIENT_CERT_FILE
+  value: /etc/vaultgate/client-tls/tls.crt
+- name: VAULTGATE_API_CLIENT_KEY_FILE
+  value: /etc/vaultgate/client-tls/tls.key
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{- define "vaultgate.tlsMount" -}}
 {{- if .root.Values.tls.enabled }}
 - { name: tls, mountPath: /etc/vaultgate/tls, readOnly: true }
+{{- end }}
+{{- if include "vaultgate.mtls" . }}
+{{- if eq .name "api" }}
+- { name: client-ca, mountPath: /etc/vaultgate/client-ca, readOnly: true }
+{{- else }}
+- { name: client-tls, mountPath: /etc/vaultgate/client-tls, readOnly: true }
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -93,6 +126,15 @@ certificate carries). */}}
 {{- if .root.Values.tls.enabled }}
 - name: tls
   secret: { secretName: {{ include "vaultgate.fullname" . }}-tls, defaultMode: 0440 }
+{{- end }}
+{{- if include "vaultgate.mtls" . }}
+{{- if eq .name "api" }}
+- name: client-ca
+  secret: { secretName: {{ .root.Values.mtls.rootSecret }}, items: [{ key: ca.crt, path: ca.crt }] }
+{{- else }}
+- name: client-tls
+  secret: { secretName: {{ include "vaultgate.fullname" . }}-client-tls, defaultMode: 0440 }
+{{- end }}
 {{- end }}
 {{- end }}
 

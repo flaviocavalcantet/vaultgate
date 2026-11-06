@@ -157,3 +157,62 @@ func TestNewFailsWithoutAPair(t *testing.T) {
 		t.Fatal("New succeeded without files")
 	}
 }
+
+// presents reports the common name of the client certificate a server that requires
+// one receives from a client with this reloader.
+func presents(t *testing.T, r *Reloader) string {
+	t.Helper()
+	serverPair, err := tls.X509KeyPair(selfSigned(t, "server"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{serverPair},
+		ClientAuth:   tls.RequireAnyClientCert,
+		MinVersion:   tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	got := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			got <- ""
+			return
+		}
+		defer conn.Close()
+		tc := conn.(*tls.Conn)
+		if tc.Handshake() != nil || len(tc.ConnectionState().PeerCertificates) == 0 {
+			got <- ""
+			return
+		}
+		got <- tc.ConnectionState().PeerCertificates[0].Subject.CommonName
+	}()
+	config := r.ClientConfig()
+	config.InsecureSkipVerify = true // #nosec G402 -- the test is about the client's side
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", ln.Addr().String(), config)
+	if err == nil {
+		_ = conn.Handshake()
+		conn.Close()
+	}
+	return <-got
+}
+
+func TestClientPresentsTheRenewedCertificate(t *testing.T) {
+	r, certFile, keyFile, _ := setup(t)
+	if name := presents(t, r); name != "first" {
+		t.Fatalf("presented %q, want first", name)
+	}
+	cert, key := selfSigned(t, "second")
+	later := time.Unix(2_000_000_000, 0)
+	write(t, certFile, cert, later)
+	write(t, keyFile, key, later)
+	if !r.Check() {
+		t.Fatal("did not reload")
+	}
+	if name := presents(t, r); name != "second" {
+		t.Fatalf("presented %q, want second", name)
+	}
+}

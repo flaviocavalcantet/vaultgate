@@ -6,7 +6,8 @@ Two servers run in one process: the public API and, on its own port, the interna
 API the gateway and the scanner use; next to them, a periodic sweep of abandoned
 uploads and the resender of stuck scan requests. With a TLS certificate configured, both
 servers and the metrics port speak TLS only, and a renewed certificate is loaded without a
-restart.
+restart. With a client CA as well, the internal server wants a client certificate from it
+(mutual TLS, vaultgate_api.mtls).
 """
 
 import asyncio
@@ -18,13 +19,14 @@ from vaultgate_api.audit import run_anchor
 from vaultgate_api.config import settings
 from vaultgate_api.db import get_sessionmaker
 from vaultgate_api.logs import configure_logging
+from vaultgate_api.mtls import ClientIdentityProtocol
 from vaultgate_api.scans import get_scan_queue, run_resender
 from vaultgate_api.tls import CertificateReloader, start_metrics_server
 from vaultgate_api.tracing import configure_tracing
 from vaultgate_api.uploads import run_sweeper
 
 
-def _server(app: str, port: int) -> uvicorn.Server:
+def _server(app: str, port: int, **mtls) -> uvicorn.Server:
     config = uvicorn.Config(
         app,
         host=settings.host,
@@ -36,6 +38,7 @@ def _server(app: str, port: int) -> uvicorn.Server:
         proxy_headers=False,
         ssl_certfile=settings.tls_cert_file,
         ssl_keyfile=settings.tls_key_file,
+        **mtls,
     )
     config.load()  # builds the SSLContext now, so the reloader can renew it in place
     return uvicorn.Server(config)
@@ -44,8 +47,17 @@ def _server(app: str, port: int) -> uvicorn.Server:
 async def serve(metrics_context: ssl.SSLContext | None = None) -> None:
     if bool(settings.tls_cert_file) != bool(settings.tls_key_file):
         raise SystemExit("set both VAULTGATE_TLS_CERT_FILE and VAULTGATE_TLS_KEY_FILE, or neither")
+    mtls = {}
+    if settings.internal_client_ca_file:
+        if not settings.tls_cert_file:
+            raise SystemExit("VAULTGATE_INTERNAL_CLIENT_CA_FILE needs TLS on (a certificate)")
+        mtls = {
+            "ssl_ca_certs": settings.internal_client_ca_file,
+            "ssl_cert_reqs": ssl.CERT_REQUIRED,
+            "http": ClientIdentityProtocol,
+        }
     public = _server("vaultgate_api.main:app", settings.port)
-    internal = _server("vaultgate_api.internal:internal_app", settings.internal_port)
+    internal = _server("vaultgate_api.internal:internal_app", settings.internal_port, **mtls)
     tasks = [public.serve(), internal.serve()]
     if settings.tls_cert_file and settings.tls_key_file:
         reloader = CertificateReloader(

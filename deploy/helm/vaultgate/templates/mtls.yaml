@@ -1,0 +1,78 @@
+{{- if .Values.mtls.enabled }}
+{{- if not .Values.tls.enabled }}
+{{- fail "mtls.enabled needs tls.enabled" }}
+{{- end }}
+{{- $issuer := printf "%s-client-issuer" .Release.Name }}
+# Client certificates for the API's internal port (M10, ADR 0013). The Issuer is this
+# namespace's own: only Certificates in it can be signed, and OpenBao's role signs only
+# identities in this namespace (spiffe://<trust domain>/ns/<namespace>/sa/...).
+#
+# The Issuer's login to OpenBao: a service account no pod runs as, whose tokens
+# cert-manager mints for this Issuer's audience (vault://<namespace>/<issuer>).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $issuer }}
+  labels: {{- include "vaultgate.labels" (dict "root" . "name" "client-issuer") | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $issuer }}-token
+  labels: {{- include "vaultgate.labels" (dict "root" . "name" "client-issuer") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    resourceNames: [{{ $issuer }}]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $issuer }}-token
+  labels: {{- include "vaultgate.labels" (dict "root" . "name" "client-issuer") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $issuer }}-token
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.mtls.certManager.serviceAccount }}
+    namespace: {{ .Values.mtls.certManager.namespace }}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ .Release.Name }}-clients
+  labels: {{- include "vaultgate.labels" (dict "root" . "name" "client-issuer") | nindent 4 }}
+spec:
+  vault:
+    server: {{ .Values.openbao.address }}
+    path: {{ .Values.mtls.signPath }}
+    caBundleSecretRef: { name: {{ .Values.mtls.rootSecret }}, key: ca.crt }
+    auth:
+      kubernetes:
+        role: {{ .Values.mtls.openbaoRole }}
+        serviceAccountRef: { name: {{ $issuer }} }
+{{- range $name := list "gateway" "scanner" }}
+{{- $ctx := dict "root" $ "name" $name }}
+{{- $fullname := include "vaultgate.fullname" $ctx }}
+---
+# The {{ $name }}'s client certificate: its identity as a URI, nothing else (no names it
+# could serve under). Renewed like the server certificates, and reloaded as it runs.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fullname }}-client
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  secretName: {{ $fullname }}-client-tls
+  issuerRef: { kind: Issuer, name: {{ $.Release.Name }}-clients }
+  duration: {{ $.Values.tls.duration }}
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  usages: [digital signature, client auth]
+  uris:
+    - {{ include "vaultgate.identity" $ctx }}
+{{- end }}
+{{- end }}

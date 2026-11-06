@@ -29,6 +29,10 @@ tls:
   enabled: true
   extraDnsNames: [localhost]
 
+# Client certificates for the gateway and the scanner on the API's internal port.
+mtls:
+  enabled: true
+
 api:
   replicas: 1
   nodePort: 30800

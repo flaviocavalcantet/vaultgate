@@ -109,3 +109,18 @@ func (r *Reloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error
 func (r *Reloader) ServerConfig() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: r.GetCertificate}
 }
+
+// GetClientCertificate is for a client's tls.Config: the pair loaded last, presented
+// to any server that asks for a client certificate.
+func (r *Reloader) GetClientCertificate(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cert, nil
+}
+
+// ClientConfig is a TLS 1.2+ client configuration presenting the reloaded certificate
+// (mutual TLS); servers are verified against the system's roots, which SSL_CERT_FILE
+// replaces.
+func (r *Reloader) ClientConfig() *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12, GetClientCertificate: r.GetClientCertificate}
+}

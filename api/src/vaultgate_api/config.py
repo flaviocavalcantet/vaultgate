@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     # carry this shared secret. Unset means the internal API refuses everything.
     internal_port: int = 8001
     internal_token: SecretStr | None = None
+    # Mutual TLS on the internal port (M10, ADR 0013), with TLS on: a client must present
+    # a certificate from this CA (a PEM file: VaultGate's root, never a public bundle),
+    # and each route wants its caller's identity, a URI in the certificate, besides its
+    # token. Unset means no client certificates (as under docker compose); set, an
+    # identity left unset refuses its routes everything.
+    internal_client_ca_file: str | None = None
+    internal_gateway_identity: str | None = None
+    internal_scanner_identity: str | None = None
 
     # Files
     gateway_public_url: str = "http://localhost:8888"
