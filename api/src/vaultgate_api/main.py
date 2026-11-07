@@ -55,7 +55,18 @@ class _API(FastAPI):
         return SecurityHeadersMiddleware(super().build_middleware_stack())
 
 
+def docs_urls() -> dict:
+    """Where FastAPI serves the documentation, or None for each when it is off."""
+    on = settings.docs_enabled
+    return {
+        "docs_url": "/docs" if on else None,
+        "redoc_url": "/redoc" if on else None,
+        "openapi_url": "/openapi.json" if on else None,
+    }
+
+
 app = _API(
+    **docs_urls(),
     title="VaultGate API",
     version="0.1.0",
     description="Identity, access policies, file metadata, share links and audit log.",

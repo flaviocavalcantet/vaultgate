@@ -252,7 +252,14 @@ check_cluster() {
     echo "another pod reached the API's internal port" >&2
     return 1
   fi
-  echo "ok  another pod reaches the public port, not the internal one"
+  # Metrics only from Prometheus' namespace (TM-5); the Prometheus check below scrapes them.
+  if "${probe[@]}" curl -sk -m 5 -o /dev/null https://vaultgate-api.vaultgate.svc:9100/metrics; then
+    echo "another pod reached the API's metrics port" >&2
+    return 1
+  fi
+  echo "ok  another pod reaches the public port, not the internal or the metrics one"
+  log "network policy: each component connects only where its policy lets it (TM-1)"
+  kubectl -n vaultgate exec -i deploy/vaultgate-api -c api -- python - <scripts/egress_check.py
 }
 
 check_observability() {

@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # carry this shared secret. Unset means the internal API refuses everything.
     internal_port: int = 8001
     internal_token: SecretStr | None = None
+    # The interactive documentation (/docs, /redoc) and the OpenAPI document
+    # (/openapi.json) on the public port (M10, TM-6). On by default for development; the
+    # Helm chart turns them off unless asked, so a deployment doesn't map its routes for
+    # anyone.
+    docs_enabled: bool = True
     # Rate limits on the public API (vaultgate_api.ratelimit); 0 turns one off. Per user:
     # starting transfers, and every other request. Per client address: the share
     # recipients' routes, and failed authentication (then 429 for its failing requests

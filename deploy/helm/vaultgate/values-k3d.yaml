@@ -35,6 +35,7 @@ mtls:
 
 api:
   replicas: 1
+  docs: true
   nodePort: 30800
   publicUrl: https://localhost:8000
   gatewayPublicUrl: https://localhost:8888
@@ -58,8 +59,41 @@ gateway:
     minReplicas: 1
     maxReplicas: 3
 
+# Where each component may connect besides DNS and the API's internal port: the local
+# cluster's dependencies, by namespace and pod, on their pods' ports.
 networkPolicy:
   enabled: true
+  egress:
+    api:
+      - &openbao
+        to:
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: openbao } }
+            podSelector: { matchLabels: { app.kubernetes.io/name: openbao } }
+        ports: [{ port: 8200 }]
+      - &alloy
+        to:
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+            podSelector: { matchLabels: { app.kubernetes.io/name: alloy } }
+        ports: [{ port: 4318 }]
+      - &localstack # S3, KMS and SQS
+        to:
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vaultgate-deps } }
+            podSelector: { matchLabels: { app.kubernetes.io/name: localstack } }
+        ports: [{ port: 4566 }]
+      - to:
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vaultgate-deps } }
+            podSelector: { matchLabels: { app.kubernetes.io/name: postgres } }
+        ports: [{ port: 5432 }]
+      - to: # Keycloak's discovery and keys (its Service's 8080 is the pod's 8443)
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vaultgate-deps } }
+            podSelector: { matchLabels: { app.kubernetes.io/name: keycloak } }
+        ports: [{ port: 8443 }]
+      - to: # Mailpit, for share codes
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vaultgate-deps } }
+            podSelector: { matchLabels: { app.kubernetes.io/name: mailpit } }
+        ports: [{ port: 1025 }]
+    gateway: [*openbao, *alloy, *localstack]
+    scanner: [*openbao, *alloy, *localstack]
 
 # Prometheus (kube-prometheus-stack) finds the services through ServiceMonitors, and
 # traces go to Alloy in the monitoring namespace (deploy/k3d/observability).
