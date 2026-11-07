@@ -431,7 +431,10 @@ Security events are recorded in `audit_events` ([ADR 0007](docs/adr/0007-audit-l
 - **Credentials** come from one Secret (`secrets.name`) with the keys `database-url`, `internal-token`, `scanner-token` and, unless the pods have an AWS identity of their own, `aws-access-key-id` and `aws-secret-access-key`. Create it out of band (External Secrets, Sealed Secrets, Vault). `secrets.create=true` makes the chart create it from values, for local clusters only.
 - **Ingress** (`ingress.enabled`): the API's and the gateway's public ports, on `ingress.apiHost` and `ingress.gatewayHost`. Set `api.publicUrl` and `api.gatewayPublicUrl` to those addresses, since links and intents carry them, and `trustedProxies` to the ingress controller's pod range. Outside a local cluster, set `ingress.tls` (Ingress `spec.tls`, e.g. with cert-manager): bearer tokens and files must not travel over plain HTTP. The API's internal port and the metrics ports stay in-cluster.
 - **Autoscaling** (`gateway.autoscaling.enabled`): a HorizontalPodAutoscaler scales the gateway on CPU (70% of its request, 2 to 6 pods), which follows the bytes it encrypts and decrypts. It scales down one pod a minute after five quiet minutes, and a stopping pod gets two minutes to finish its transfers.
-- **Network policies** (`networkPolicy.enabled`): only the gateway and the scanner may reach the API's internal port, which hands out storage keys and wrapped data keys. The public and metrics ports stay open.
+- **Network policies** (`networkPolicy.enabled`), in both directions (M10):
+  - **In:** only the gateway and the scanner may reach the API's internal port, which hands out storage keys and wrapped data keys. Only Prometheus' namespace (`networkPolicy.metricsNamespace`) may reach the metrics ports. The public ports stay open.
+  - **Out:** each component may connect only to DNS, the API's internal port (the gateway and the scanner), and the dependencies listed for it under `networkPolicy.egress`, as the chart's values describe. Enabling the policies without listing them cuts the services off from their database and storage.
+- **Interactive API docs** (`api.docs`): off unless set, so a deployment doesn't publish `/docs`, `/redoc` and `/openapi.json`; the local cluster turns them on.
 - **Hardening, always on:** non-root, read-only root filesystem, no capabilities, no service account token, and a disruption budget of one pod at a time for the API and the gateway.
 
 CI lints the chart and checks the rendered manifests against the Kubernetes schemas with the default values, the local cluster's (`values-k3d.yaml`) and every option on.
@@ -463,7 +466,7 @@ Everything answers where compose does:
 Alertmanager routes every alert by email to Mailpit: `oncall@vaultgate.local` for the alerts, `heartbeat@vaultgate.local` for Watchdog, which always fires and so shows the whole path works. Then:
 
 ```bash
-make k3d-check     # vault e2e against the cluster, traces included; Argo CD synced, OpenBao and its CA, TLS, autoscaler, network policy, scrape targets, dashboards, Alertmanager mail
+make k3d-check     # vault e2e against the cluster, traces included; Argo CD synced, OpenBao and its CA, TLS, autoscaler, network policies (in and out), scrape targets, dashboards, Alertmanager mail
 make k3d-images    # after a code change: rebuild, push, restart the pods
 make k3d-down      # delete the cluster
 kubectl -n argocd port-forward svc/argocd-server 8081:80   # Argo CD UI on http://localhost:8081, user admin, password below

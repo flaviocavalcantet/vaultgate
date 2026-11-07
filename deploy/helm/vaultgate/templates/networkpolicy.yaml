@@ -1,30 +1,15 @@
 {{- if .Values.networkPolicy.enabled }}
-{{- $api := dict "root" . "name" "api" }}
-# Ingress rules only: what may connect to each component. The API's internal port,
-# which hands out storage keys and wrapped data keys, accepts only the gateway and the
-# scanner. Public ports accept anyone (the ingress controller); metrics ports accept
-# any pod (Prometheus).
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ include "vaultgate.fullname" $api }}
-  labels: {{- include "vaultgate.labels" $api | nindent 4 }}
-spec:
-  podSelector:
-    matchLabels: {{- include "vaultgate.selector" $api | nindent 6 }}
-  policyTypes: [Ingress]
-  ingress:
-    - ports:
-        - { port: http }
-        - { port: metrics }
-    - ports:
-        - { port: internal }
-      from:
-        - podSelector:
-            matchLabels: {{- include "vaultgate.selector" (dict "root" . "name" "gateway") | nindent 14 }}
-        - podSelector:
-            matchLabels: {{- include "vaultgate.selector" (dict "root" . "name" "scanner") | nindent 14 }}
-{{- range $name := list "gateway" "scanner" }}
+{{- $np := .Values.networkPolicy }}
+# What may connect to each component, and where each may connect (M10, TM-1 and TM-5 in
+# docs/threat-model.md):
+# - in: the public ports from anyone (the ingress controller), the metrics ports from
+#   Prometheus' namespace only, and the API's internal port, which hands out storage
+#   keys and wrapped data keys, from the gateway and the scanner only;
+# - out: DNS, the API's internal port for the gateway and the scanner, and whatever
+#   networkPolicy.egress lists for the component (its database, object storage, KMS,
+#   OpenBao, tracing). Nothing else: a compromised component can't send what it holds
+#   anywhere it likes.
+{{- range $name := list "api" "gateway" "scanner" }}
 {{- $ctx := dict "root" $ "name" $name }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -35,12 +20,46 @@ metadata:
 spec:
   podSelector:
     matchLabels: {{- include "vaultgate.selector" $ctx | nindent 6 }}
-  policyTypes: [Ingress]
+  policyTypes: [Ingress, Egress]
   ingress:
+    {{- if ne $name "scanner" }}
     - ports:
-        {{- if eq $name "gateway" }}
         - { port: http }
-        {{- end }}
+    {{- end }}
+    - ports:
         - { port: metrics }
+      from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ $np.metricsNamespace }} }
+    {{- if eq $name "api" }}
+    - ports:
+        - { port: internal }
+      from:
+        - podSelector:
+            matchLabels: {{- include "vaultgate.selector" (dict "root" $ "name" "gateway") | nindent 14 }}
+        - podSelector:
+            matchLabels: {{- include "vaultgate.selector" (dict "root" $ "name" "scanner") | nindent 14 }}
+    {{- end }}
+  egress:
+    # DNS, from the cluster's resolver.
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    {{- if ne $name "api" }}
+    # The API's internal port (its pods' port).
+    - to:
+        - podSelector:
+            matchLabels: {{- include "vaultgate.selector" (dict "root" $ "name" "api") | nindent 14 }}
+      ports:
+        - { port: {{ $.Values.api.internalPort }} }
+    {{- end }}
+    {{- with index $np.egress $name }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}
 {{- end }}

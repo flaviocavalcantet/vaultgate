@@ -79,3 +79,15 @@ def test_servers_speak_tls_13_only_and_name_no_server(tmp_path, monkeypatch) -> 
     server = entry._server("vaultgate_api.main:app", 0)
     assert server.config.ssl.minimum_version == ssl.TLSVersion.TLSv1_3
     assert server.config.server_header is False
+
+
+def test_the_documentation_can_be_turned_off(monkeypatch) -> None:
+    from vaultgate_api.main import docs_urls
+
+    assert docs_urls() == {
+        "docs_url": "/docs",
+        "redoc_url": "/redoc",
+        "openapi_url": "/openapi.json",
+    }
+    monkeypatch.setattr(settings, "docs_enabled", False)
+    assert docs_urls() == {"docs_url": None, "redoc_url": None, "openapi_url": None}

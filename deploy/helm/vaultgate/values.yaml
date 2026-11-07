@@ -86,6 +86,10 @@ api:
   internalPort: 8001
   # /readyz also checks the database, so a pod without one receives no traffic.
   readinessPath: /readyz
+  # The interactive documentation and the OpenAPI document on the public port (/docs,
+  # /redoc, /openapi.json): off, so a deployment doesn't map its routes for anyone (M10,
+  # TM-6). The local cluster turns them on: ZAP scans from the OpenAPI document.
+  docs: false
   # Set to also publish the public port on every node at this port (an extra NodePort
   # Service with that port only), as the local k3d cluster does; empty behind an Ingress.
   nodePort: ""
@@ -185,10 +189,25 @@ ingress:
   # backend-protocol HTTPS, proxy-ssl-verify "on", proxy-ssl-secret.)
   serviceAnnotations: {}
 
-# NetworkPolicies: the API's internal port only from the gateway and scanner pods; the
-# public ports and the metrics port stay open. Needs a CNI that enforces them (k3s does).
+# NetworkPolicies (templates/networkpolicy.yaml). Needs a CNI that enforces them (k3s
+# does). In: the public ports from anyone, the metrics ports from metricsNamespace only,
+# the API's internal port from the gateway and the scanner only. Out: DNS, the API's
+# internal port for the gateway and the scanner, and the rules under egress, nothing
+# else. List there everything a component reaches, as NetworkPolicy egress rules with
+# the pods' own ports, not the Services':
+# - the API: PostgreSQL, the identity provider (discovery and keys), SQS, SMTP,
+#   OpenBao and the tracing endpoint when used;
+# - the gateway: S3 and KMS, OpenBao, tracing;
+# - the scanner: S3, KMS and SQS, OpenBao, tracing.
+# AWS's endpoints are outside the cluster: an ipBlock with port 443, ideally narrowed to
+# VPC endpoints. values-k3d.yaml has the local cluster's.
 networkPolicy:
   enabled: false
+  metricsNamespace: monitoring
+  egress:
+    api: []
+    gateway: []
+    scanner: []
 
 # Voluntary disruptions (node drains, upgrades) take down one API or gateway pod at a time.
 podDisruptionBudget:

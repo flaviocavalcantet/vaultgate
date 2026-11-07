@@ -133,11 +133,11 @@ Each row is a threat to an element or flow. The **status** is one of:
 | Another user's file or its metadata | The owner check answers 404, as for a file that doesn't exist; the negative tests check it for bob | mitigated |
 | A browser rendering or caching a response, or another site embedding it | `nosniff`, `default-src 'none'`, CORP `same-origin`, `no-store`, HSTS on every response (M10); downloads are attachments with a sandbox CSP | mitigated |
 | Version banners and error details | No `Server` header; errors are short JSON (M10); ZAP's disclosure rules pass | mitigated |
-| The API's interactive documentation is public | `/docs`, `/redoc` and `/openapi.json` describe every route to anyone; they show nothing a client can't reach, but they map it | open (TM-6) |
+| The API's interactive documentation is public | A setting, off in the Helm chart unless asked for; on for development and the local cluster, whose ZAP scan reads `/openapi.json` (M10) | mitigated (TM-6, fixed) |
 | A process listening on the network reads traffic | TLS 1.3 on every hop, no plain HTTP (M9, M10) | mitigated |
 | Secrets in git, images or environment variables | gitleaks over the whole history; credentials come from OpenBao as files, never environment variables (`make k3d-check` checks the deployments) | mitigated |
-| Metrics ports reachable from every pod | `/metrics` carries counts and route names, no secrets, but any pod in the cluster may read it | open (TM-5) |
-| A compromised scanner (it parses untrusted files) sends what it decrypts elsewhere | PDFs are parsed in a WebAssembly sandbox with memory and time limits, and the image is distroless. But nothing limits where a VaultGate pod connects out | open (TM-1) |
+| Metrics ports reachable from every pod | Only Prometheus' namespace may reach the metrics ports (M10); `make k3d-check` checks another pod can't | mitigated (TM-5, fixed) |
+| A compromised scanner (it parses untrusted files) sends what it decrypts elsewhere | PDFs are parsed in a WebAssembly sandbox with memory and time limits, and the image is distroless. Egress network policies let each component reach only DNS, the API's internal port and the dependencies listed for it (M10); `make k3d-check` checks the API reaches nothing else | mitigated (TM-1, fixed) |
 | One service's AWS credentials used for another's work | API, gateway and scanner share one AWS credential, so the scanner, which only reads, can also write and delete objects | open (TM-2) |
 | Known vulnerabilities in the images | Trivy gates on fixable HIGH and CRITICAL; the Python images still carry Debian packages with unfixed CVEs | open (TM-7) |
 
@@ -171,27 +171,12 @@ Each row is a threat to an element or flow. The **status** is one of:
 
 ### Open: fixed in M10's last step
 
-- **TM-1. No egress network policies.**
-  - **Problem.** The network policies say who may connect to each component, but not
-    where a component may connect. A scanner made to run code by a crafted file could
-    send what it decrypts anywhere.
-  - **Fix.** Egress policies: each service may reach its own dependencies only (the
-    API, PostgreSQL, OpenBao, AWS's endpoints, DNS, Alloy).
 - **TM-2. One AWS credential for three services.**
   - **Problem.** The API sends scan requests, the gateway writes and reads objects, and
     the scanner reads objects and unwraps keys, but all three hold the same
     credential, and so the union of their rights.
   - **Fix.** One IAM identity per service in Terraform, each with its own least-privilege
     policy, and one OpenBao secret per service.
-- **TM-5. Metrics ports reachable from every pod.**
-  - **Problem.** The network policies let any pod in the cluster read every service's
-    `/metrics`.
-  - **Fix.** Limit those ports to the monitoring namespace (Prometheus).
-- **TM-6. The API's interactive documentation is public.**
-  - **Problem.** `/docs`, `/redoc` and `/openapi.json` map every route for anyone, and
-    the docs pages load third-party scripts.
-  - **Fix.** Make them a setting, off by default in the chart and on locally (ZAP reads
-    `/openapi.json`).
 - **TM-7. Unfixed vulnerabilities in the Python images' base.**
   - **Problem.** `python:3.12-slim` carries Debian packages the services never run, with
     HIGH CVEs and no fix released (docs/security-scans.md).
@@ -199,6 +184,26 @@ Each row is a threat to an element or flow. The **status** is one of:
     the interpreter only).
 
 ### Fixed in M10's last step
+
+- **TM-1. No egress network policies.**
+  - **Problem.** The network policies said who may connect to each component, but not
+    where a component may connect. A scanner made to run code by a crafted file could
+    have sent what it decrypts anywhere.
+  - **Fix.** Each component may now connect out only to DNS, the API's internal port
+    (the gateway and the scanner), and the dependencies the chart's
+    `networkPolicy.egress` lists for it: on the local cluster, OpenBao, Alloy,
+    LocalStack, and for the API also PostgreSQL, Keycloak and Mailpit. In production,
+    AWS's endpoints get an ipBlock, ideally narrowed to VPC endpoints.
+- **TM-5. Metrics ports reachable from every pod.**
+  - **Problem.** Any pod in the cluster could read every service's `/metrics`.
+  - **Fix.** Only Prometheus' namespace (`networkPolicy.metricsNamespace`) may reach
+    them.
+- **TM-6. The API's interactive documentation was public.**
+  - **Problem.** `/docs`, `/redoc` and `/openapi.json` mapped every route for anyone,
+    and the docs pages load third-party scripts.
+  - **Fix.** A setting (`VAULTGATE_DOCS_ENABLED`), off in the Helm chart unless
+    `api.docs` asks for it; on for development and the local cluster, whose ZAP scan
+    reads `/openapi.json`.
 
 - **TM-3. No rate limits on the public API and the gateway.**
   - **Problem.** Floods were bounded only by the per-user caps on open uploads and

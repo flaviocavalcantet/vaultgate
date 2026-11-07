@@ -34,6 +34,8 @@ spec:
             {{- include "vaultgate.tlsEnv" $ctx | nindent 12 }}
             - name: VAULTGATE_PORT
               value: {{ $api.port | quote }}
+            - name: VAULTGATE_DOCS_ENABLED
+              value: {{ $api.docs | quote }}
             - name: VAULTGATE_INTERNAL_PORT
               value: {{ $api.internalPort | quote }}
             - name: VAULTGATE_PUBLIC_API_URL
