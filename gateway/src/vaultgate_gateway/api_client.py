@@ -25,6 +25,8 @@ class UploadGrant:
     file_id: uuid.UUID
     storage_key: str
     declared_size: int
+    # Whose transfer it is, for the per-user limits (vaultgate_gateway.limits).
+    limit_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class DownloadGrant:
     sha256: str
     wrapped_key: bytes = field(repr=False)
     kms_key_id: str
+    limit_key: str = ""
 
 
 class InternalApi:
@@ -117,6 +120,7 @@ class InternalApi:
             file_id=uuid.UUID(data["file_id"]),
             storage_key=data["storage_key"],
             declared_size=data["declared_size"],
+            limit_key=data.get("limit_key", ""),
         )
 
     async def consume_download(
@@ -133,6 +137,7 @@ class InternalApi:
                 sha256=data["sha256"],
                 wrapped_key=base64.b64decode(data["wrapped_key"]),
                 kms_key_id=data["kms_key_id"],
+                limit_key=data.get("limit_key", ""),
             )
         except (KeyError, TypeError, ValueError):
             raise ApiUnavailable("incomplete download grant") from None

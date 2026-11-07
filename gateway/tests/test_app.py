@@ -22,6 +22,7 @@ from vaultgate_gateway.app import Services, content_disposition, make_app
 from vaultgate_gateway.clientip import parse_networks
 from vaultgate_gateway.crypto import Decryptor, ciphertext_size
 from vaultgate_gateway.keys import KmsKeyProvider
+from vaultgate_gateway.limits import TransferLimits
 from vaultgate_gateway.logs import JsonFormatter
 
 BUCKET = "vault"
@@ -46,7 +47,7 @@ class FakeApi:
 
     def grant(self, size: int) -> uuid.UUID:
         file_id = uuid.uuid4()
-        self.grants[TOKEN] = UploadGrant(file_id, f"files/{file_id}", size)
+        self.grants[TOKEN] = UploadGrant(file_id, f"files/{file_id}", size, "user:alice")
         return file_id
 
     async def consume_upload(self, token: str, file_id: uuid.UUID, client_ip) -> UploadGrant:
@@ -86,6 +87,7 @@ class FakeApi:
             sha256=done["sha256"],
             wrapped_key=done["wrapped_key"],
             kms_key_id=done["kms_key_id"],
+            limit_key="user:alice",
         )
         if overrides:
             grant = self.download_grants[token]
@@ -500,3 +502,63 @@ def test_content_disposition_keeps_unicode_and_neutralises_quotes() -> None:
         'attachment; filename="relat_rio _final_.pdf"; '
         "filename*=UTF-8''relat%C3%B3rio%20%22final%22.pdf"
     )
+
+
+class TransferLimitTest(GatewayCase):
+    """The gateway's transfer limits (vaultgate_gateway.limits)."""
+
+    def get_app(self):
+        self.limits = TransferLimits(
+            uploads_per_user=1, downloads_per_user=1, transfers_per_client=2, refused_per_minute=2
+        )
+        services = Services(
+            api=self.api,
+            keys=self.keys,
+            s3=self.s3,
+            bucket=BUCKET,
+            part_size=5 * MiB,
+            limits=self.limits,
+        )
+        return make_app(services)
+
+    def get(self, file_id, token: str):
+        return self.fetch(f"/downloads/{file_id}", headers={"Authorization": f"Bearer {token}"})
+
+    def test_places_are_given_back_when_transfers_end(self) -> None:
+        for _ in range(3):  # more than either limit, one after another
+            file_id = self.api.grant(5)
+            assert self.put(file_id, b"hello").code == 201
+            assert self.get(file_id, self.api.grant_download(file_id)).code == 200
+        assert not self.limits._clients
+        assert not any(self.limits._users.values())
+
+    def test_a_client_over_its_limit_gets_429_before_its_intent_is_spent(self) -> None:
+        self.limits._clients["127.0.0.1"] = 2  # two transfers in progress
+        file_id = self.api.grant(5)
+        response = self.put(file_id, b"hello")
+        assert response.code == 429
+        assert int(response.headers["Retry-After"]) >= 1
+        assert TOKEN in self.api.grants  # still unspent
+        assert json.loads(response.body) == {"detail": "Too Many Requests"}
+
+    def test_a_user_over_their_limit_gets_429_and_the_upload_fails(self) -> None:
+        self.limits._users["upload"]["user:alice"] = 1  # one upload in progress
+        file_id = self.api.grant(5)
+        response = self.put(file_id, b"hello")
+        assert response.code == 429
+        assert self.api.failed == [file_id]  # its intent was spent: reported failed
+
+    def test_a_user_over_their_download_limit_gets_429(self) -> None:
+        file_id = self.api.grant(5)
+        assert self.put(file_id, b"hello").code == 201
+        self.limits._users["download"]["user:alice"] = 1
+        assert self.get(file_id, self.api.grant_download(file_id)).code == 429
+
+    def test_refused_intents_block_the_client_for_a_while(self) -> None:
+        for _ in range(3):
+            assert self.put(uuid.uuid4(), b"hello", token="unknown").code == 403
+        file_id = self.api.grant(5)
+        blocked = self.put(file_id, b"hello")
+        assert blocked.code == 429
+        assert int(blocked.headers["Retry-After"]) > 200
+        assert TOKEN in self.api.grants  # refused before its intent was spent

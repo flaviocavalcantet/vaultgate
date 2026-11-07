@@ -260,6 +260,19 @@ def build_validator(client: httpx.AsyncClient) -> TokenValidator:
 _bearer = HTTPBearer(auto_error=False, description="Access token from the identity provider")
 
 
+def _refuse(request: Request, reason: str) -> HTTPException:
+    """401, or 429 for an address that has failed authentication too often lately
+    (vaultgate_api.ratelimit); a valid token is never refused this way."""
+    from vaultgate_api import ratelimit  # it imports this module
+
+    key = ratelimit.client_key(request)
+    if wait := ratelimit.limits.auth.blocked(key):
+        AUTH_FAILURES.labels(reason).inc()
+        return ratelimit.too_many("auth_failures", wait)
+    ratelimit.limits.auth.failed(key)
+    return _unauthorized(reason)
+
+
 def _unauthorized(reason: str) -> HTTPException:
     AUTH_FAILURES.labels(reason).inc()
     header = 'Bearer realm="vaultgate"'
@@ -278,14 +291,14 @@ async def get_principal(
 ) -> Principal:
     """FastAPI dependency: the authenticated caller, or 401."""
     if credentials is None:
-        raise _unauthorized("missing_token")
+        raise _refuse(request, "missing_token")
     validator: TokenValidator = request.app.state.token_validator
     try:
         return await validator.validate(credentials.credentials)
     except TokenError as exc:
         # The reason is logged; the token itself never is.
         logger.info("token rejected", extra={"reason": exc.reason})
-        raise _unauthorized(exc.reason) from None
+        raise _refuse(request, exc.reason) from None
     except KeySetUnavailable:
         AUTH_FAILURES.labels("keys_unavailable").inc()
         logger.error("cannot validate tokens: identity provider keys unavailable")

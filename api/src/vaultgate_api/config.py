@@ -59,6 +59,19 @@ class Settings(BaseSettings):
     # carry this shared secret. Unset means the internal API refuses everything.
     internal_port: int = 8001
     internal_token: SecretStr | None = None
+    # Rate limits on the public API (vaultgate_api.ratelimit); 0 turns one off. Per user:
+    # starting transfers, and every other request. Per client address: the share
+    # recipients' routes, and failed authentication (then 429 for its failing requests
+    # for rate_limit_auth_block_seconds). The exempt users (usernames) skip the per-user
+    # limits: a security scanner, never people.
+    rate_limit_per_minute: int = 300
+    rate_limit_burst: int = 100
+    rate_limit_intents_per_minute: int = 60
+    rate_limit_intents_burst: int = 20
+    rate_limit_share_access_per_minute: int = 30
+    rate_limit_auth_failures_per_minute: int = 20
+    rate_limit_auth_block_seconds: int = 300
+    rate_limit_exempt_users: list[str] = []
     # Mutual TLS on the internal port (M10, ADR 0013), with TLS on: a client must present
     # a certificate from this CA (a PEM file: VaultGate's root, never a public bundle),
     # and each route wants its caller's identity, a URI in the certificate, besides its

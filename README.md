@@ -64,6 +64,12 @@ The threats VaultGate is built against, and what stands against each, are in the
 - **Encryption:** each file gets its own data key from KMS (wrapped key stored, bound to the file through the KMS encryption context) and is encrypted by the gateway as a stream of AES-256-GCM chunks that also detects reordering and truncation ([ADR 0003](docs/adr/0003-vault-object-encryption.md)). S3 server-side encryption and a public access block on top.
 - **PII handling:** every upload is scanned, and only a clean file (or one an admin released) can be downloaded ([ADR 0005](docs/adr/0005-pii-scanning-and-quarantine.md)). The worker decrypts files in memory only, and reports finding kinds and counts; matched values are never logged or stored.
 - **Containers:** non-root user, read-only root filesystem, all Linux capabilities dropped.
+- **Rate limits** (M10), answered with 429 and `Retry-After`:
+  - **API, per user:** starting transfers, 60 a minute (bursts of 20); every other request, 300 a minute (bursts of 100).
+  - **API, per client address:** the share recipients' routes, 30 a minute. After more than 20 failed authentications in a minute, that address's failing requests get 429 for 5 minutes, while valid tokens from it still work.
+  - **Gateway, transfers at once:** 4 uploads and 8 downloads per user (a share counts as the recipient's), and 16 per client address. After 10 refused intents in a minute, an address is blocked for 5 minutes.
+
+  The counters live in each pod. `VAULTGATE_RATE_LIMIT_*` (API) and `VAULTGATE_UPLOADS_PER_USER`, `VAULTGATE_DOWNLOADS_PER_USER`, `VAULTGATE_TRANSFERS_PER_CLIENT`, `VAULTGATE_REFUSED_INTENTS_*` (gateway) change them; 0 turns one off. The gateway also closes a connection that sends nothing for 60 seconds (`VAULTGATE_IDLE_CONNECTION_TIMEOUT_SECONDS`).
 - **Audit:** every security event (uploads, downloads, shares, policy changes, quarantine decisions, refusals) goes to an append-only, hash-chained table: a trigger refuses changes and deletions for every role, and admins can verify the chain ([ADR 0007](docs/adr/0007-audit-log.md)).
 
 ## Observability
@@ -239,6 +245,7 @@ Seed users, **for local development only**:
 | alice | `alice-dev-password` | `/finance` |
 | bob | `bob-dev-password` | `/legal` |
 | carol | `carol-dev-password` | `/engineering`, `/vaultgate-admins` |
+| zap-scanner | `zap-scanner-dev-password` | none: the user OWASP ZAP scans as (`make k3d-zap`), exempt from the per-user rate limits on the local cluster |
 
 `make auth-check` (also run in CI) starts Keycloak and the API, logs in as each user through the real PKCE flow, and checks the token's issuer, audience, lifetime and groups. It then calls the API's `GET /me` with the access token (accepted, returning the provisioned user) and the ID token (refused, wrong audience), checks that `/admin/users` is refused for alice and lists every user for carol, and checks that password grant, requests without PKCE and unknown redirect URIs are refused.
 

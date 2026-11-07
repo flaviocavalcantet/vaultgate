@@ -244,6 +244,8 @@ async def test_upload_lifecycle(clients, provider) -> None:
     assert consumed.status_code == 200
     assert consumed.json()["storage_key"] == f"files/{file_id}"
     assert consumed.json()["declared_size"] == 1234
+    # The gateway's per-user limits count the transfer against its user.
+    assert consumed.json()["limit_key"].startswith("user:")
     status = (await public.get(f"/files/{file_id}", headers=as_user(provider))).json()["status"]
     assert status == "uploading"
 

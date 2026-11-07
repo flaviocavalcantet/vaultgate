@@ -192,8 +192,11 @@ end-to-end check.
 
 - **OWASP ZAP** 2.17.0 (`make k3d-zap`, `scripts/k3d.sh zap`), passive and active
   scans:
-  - the API, every route from its OpenAPI document, as alice with a real Keycloak
-    login;
+  - the API, every route from its OpenAPI document, with a real Keycloak login as
+    `zap-scanner`. Since TM-3's fix, that local user is exempt from the per-user rate
+    limits, or ZAP would mostly scan the limiter. The share recipients' routes and the
+    gateway keep their per-address limits, so ZAP reaches them until those answer 429;
+    their unit tests cover the rest;
   - the gateway, from `security/zap/gateway-openapi.yaml` (it has no OpenAPI document
     of its own), with a token that isn't an intent, since a real one would be spent by
     the first request.
@@ -201,11 +204,16 @@ end-to-end check.
   Any warning fails the run unless `security/zap/<target>.conf` marks its rule as
   ignored, with the reason. Nothing is ignored.
 - **Negative tests** (`scripts/negative_checks.py`, in `make k3d-check`):
-  - Every protected route of the API (25) answers 401 to:
+  - Every protected route of the API (25) refuses each of these:
     - no token;
     - a token that isn't a JWT;
     - alice's token with its payload changed;
     - alice's claims re-signed with `alg: none`.
+
+    The answer is 401 until the address has failed more than 20 times in a minute,
+    then 429 with Retry-After (TM-3), while alice's valid token from the same address
+    still works.
+  - bob, asking as fast as he can, gets 429 with Retry-After once past his burst.
   - alice, not an administrator, gets 403 on every `/admin` route (15).
   - bob gets 404 on alice's file, its download and its shares, as if it didn't exist.
   - The gateway refuses:

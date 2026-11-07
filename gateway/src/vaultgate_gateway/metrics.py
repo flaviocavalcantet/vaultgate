@@ -56,6 +56,11 @@ DOWNLOAD_SIZE = Histogram(
     "Size of completed downloads",
     buckets=tuple(2**n for n in range(10, 34, 2)),  # 1 KiB .. 8 GiB
 )
+TRANSFERS_LIMITED = Counter(
+    "vaultgate_gateway_transfers_limited_total",
+    "Transfers refused with 429, by limit (client, user_upload, user_download, blocked)",
+    ["limit"],
+)
 DOWNLOAD_FAILURES = Counter(
     "vaultgate_gateway_download_failures_total",
     "Downloads that did not complete, by reason",

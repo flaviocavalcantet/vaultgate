@@ -56,6 +56,16 @@
       "emailVerified": true,
       "credentials": [{ "type": "password", "value": "carol-dev-password", "temporary": false }],
       "groups": ["/engineering", "/vaultgate-admins"]
+    },
+    {
+      "username": "zap-scanner",
+      "email": "zap-scanner@example.com",
+      "firstName": "ZAP",
+      "lastName": "Scanner",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "zap-scanner-dev-password", "temporary": false }],
+      "groups": []
     }
   ],
   "clients": [

@@ -109,6 +109,8 @@ async def test_a_recipient_proves_the_address_and_downloads(
     consumed = await consume_download(internal, file_id, intent.json()["token"])
     assert consumed.status_code == 200, consumed.text
     assert consumed.json()["name"] == "report.pdf"
+    # A recipient's downloads count against the share, not the owner.
+    assert consumed.json()["limit_key"] == f"share:{share_id}"
     assert REGISTRY.get_sample_value("vaultgate_api_share_downloads_total") == before + 1
     row = await session.get(Share, share_id)
     await session.refresh(row)

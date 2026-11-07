@@ -316,15 +316,18 @@ check() {
 }
 
 # OWASP ZAP (M10, docs/security-scans.md), from the host: the API's every route from its
-# OpenAPI document, as alice (a real Keycloak login), and the gateway's routes from
-# security/zap/gateway-openapi.yaml with a token that isn't an intent (one real intent
-# would be spent by the first request). Passive and active scans; any warning that
-# security/zap/<target>.conf doesn't mark as ignored fails the run. Its attacks create
-# files and shares as alice: run it on a cluster nothing else needs, last. alice's token
-# lasts 5 minutes (the realm's accessTokenLifespan) and is fetched right before the
-# API's scan, whose active part is capped at 3 (the whole scan takes about a minute).
-# The token must still be accepted once the scan is done, or the run fails: a scan that
-# went on unauthenticated would pass without testing what alice can reach.
+# OpenAPI document, as zap-scanner (a real Keycloak login; a user exempt from the
+# per-user rate limits on this cluster, or ZAP would mostly scan the limiter), and the
+# gateway's routes from security/zap/gateway-openapi.yaml with a token that isn't an
+# intent (one real intent would be spent by the first request). Passive and active
+# scans; any warning that security/zap/<target>.conf doesn't mark as ignored fails the
+# run. Its attacks create files and shares: run it on a cluster nothing else needs, last.
+# The token lasts 5 minutes (the realm's accessTokenLifespan) and is fetched right
+# before the API's scan, whose active part is capped at 3 (the whole scan takes about a
+# minute). The token must still be accepted once the scan is done, or the run fails: a
+# scan that went on unauthenticated would pass without testing what a user can reach.
+# The share recipients' routes and the gateway keep their per-address limits, so ZAP
+# reaches them until those answer 429 (their unit tests cover the rest).
 ZAP_IMAGE=zaproxy/zap-stable:2.17.0
 zap() {
   local out=${VAULTGATE_ZAP_DIR:-zap-reports} status=0 token
@@ -332,14 +335,14 @@ zap() {
   chmod 777 "$out" # ZAP runs as its own user
   cp security/zap/* "$out"/
   token=$(host_trust env PYTHONPATH=scripts python3 -c 'from keycloak_smoke import login, wait_for
-print(login(wait_for("'"$KEYCLOAK"'"), "alice", "alice-dev-password")["access_token"])')
-  log "ZAP: the API, from its OpenAPI document, as alice"
+print(login(wait_for("'"$KEYCLOAK"'"), "zap-scanner", "zap-scanner-dev-password")["access_token"])')
+  log "ZAP: the API, from its OpenAPI document, as zap-scanner"
   docker run --rm --network host -v "$PWD/$out:/zap/wrk:rw" -e ZAP_AUTH_HEADER=Authorization \
     -e ZAP_AUTH_HEADER_VALUE="Bearer $token" "$ZAP_IMAGE" zap-api-scan.py \
     -t "$API/openapi.json" -f openapi -c api.conf -r api.html -J api.json \
     -z "-config scanner.maxScanDurationInMins=3" || status=1
   if ! curl -sf --cacert "$ROOT_CA" -o /dev/null -H "Authorization: Bearer $token" "$API/me"; then
-    echo "alice's token expired during the API's scan: part of it ran unauthenticated" >&2
+    echo "zap-scanner's token expired during the API's scan: part of it ran unauthenticated" >&2
     status=1
   fi
   log "ZAP: the gateway"
