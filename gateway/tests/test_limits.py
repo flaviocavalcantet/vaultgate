@@ -46,3 +46,17 @@ def test_zero_means_no_limit() -> None:
     for _ in range(100):
         limits.refused("a")
     assert limits.blocked("a") == 0
+
+
+def test_addresses_are_forgotten_beyond_the_bound(monkeypatch) -> None:
+    from vaultgate_gateway import limits as module
+
+    monkeypatch.setattr(module, "MAX_KEYS", 3)
+    limits = TransferLimits(refused_per_minute=1, block_seconds=300)
+    for n in range(10):  # one refusal each from many addresses
+        limits.refused(f"10.0.0.{n}")
+    assert list(limits._refused) == ["10.0.0.7", "10.0.0.8", "10.0.0.9"]
+    for n in range(10):  # and blocks for many
+        limits.refused(f"10.0.1.{n}")
+        limits.refused(f"10.0.1.{n}")
+    assert len(limits._blocked) == 3

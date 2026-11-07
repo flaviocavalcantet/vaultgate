@@ -72,7 +72,7 @@ on every pull request, so a regression fails the build.
 | A-16 | No `Cross-Origin-Resource-Policy`: another site could embed responses | Low | ZAP (90004) | #58: `same-origin` |
 | A-17 | An unhandled exception's 500 went out without the security headers | Low | Code review of #58 | #58: the headers wrap the whole application |
 | TM-3 | No rate limits on the public API and the gateway | Medium | Threat model | #60: per-user request limits at the API (transfers started apart), per-address limits for the share recipients' routes and failed authentication, transfers at once per user and per address at the gateway; an ingress ceiling recommended in the chart |
-| TM-4 | The gateway's connection timeouts were Tornado's defaults (an hour idle) | Low | Threat model | #60: 60 seconds, never cutting a transfer in progress |
+| TM-4 | The gateway's connection timeouts were Tornado's defaults (an hour idle), and a stalled transfer held its places indefinitely | Low | Threat model | #60: idle connections closed after 60 seconds, transfers that move no bytes for 60 seconds aborted |
 
 ### Accepted
 

@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import ssl
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import NoReturn
 from urllib.parse import quote
 
+import tornado.ioloop
 import tornado.iostream
 import tornado.web
 from opentelemetry import context, trace
@@ -267,6 +269,9 @@ class Services:
     read_size: int = 256 * 1024
     max_upload_bytes: int = 5 * 1024**3
     limits: TransferLimits = field(default_factory=TransferLimits)
+    # A transfer that moves no bytes for this long is aborted (0: never), so a client
+    # can't hold its places by sending or reading nothing.
+    stall_timeout: float = 60
 
 
 @tornado.web.stream_request_body
@@ -355,9 +360,42 @@ class UploadHandler(BaseHandler):
                 "kms_unavailable" if isinstance(exc, KeyUnavailable) else "storage_unavailable"
             )
             raise tornado.web.HTTPError(503) from None
+        self._watch_stall()
+
+    _stall_timer: object | None = None
+    _last_data = 0.0
+
+    def _watch_stall(self) -> None:
+        """Aborts the upload if the body stops arriving for stall_timeout seconds."""
+        if self.services.stall_timeout <= 0:
+            return
+        self._last_data = time.monotonic()
+        self._stall_timer = tornado.ioloop.IOLoop.current().call_later(
+            self.services.stall_timeout, self._check_stall
+        )
+
+    def _check_stall(self) -> None:
+        self._stall_timer = None
+        if self._finished_ok or self._cleaned_up:
+            return
+        idle = time.monotonic() - self._last_data
+        if idle < self.services.stall_timeout:
+            self._stall_timer = tornado.ioloop.IOLoop.current().call_later(
+                self.services.stall_timeout - idle, self._check_stall
+            )
+            return
+        with self.in_request():
+            _background(self._fail("stalled"))  # marks the upload cleaned up at once
+        self.request.connection.close()
+
+    def _stop_stall_watch(self) -> None:
+        if self._stall_timer is not None:
+            tornado.ioloop.IOLoop.current().remove_timeout(self._stall_timer)
+            self._stall_timer = None
 
     async def data_received(self, chunk: bytes) -> None:
         # Tornado calls this from the connection's coroutine, not the request's.
+        self._last_data = time.monotonic()
         with self.in_request():
             await self._receive(chunk)
 
@@ -381,6 +419,7 @@ class UploadHandler(BaseHandler):
             self._error = tornado.web.HTTPError(503)
 
     async def put(self, upload_id: str) -> None:
+        self._stop_stall_watch()  # the whole body is in
         if self._error is not None:
             raise self._error
         if self._received != self._grant.declared_size:
@@ -481,6 +520,7 @@ class UploadHandler(BaseHandler):
         self.mark_failure(reason)
 
     def _end_upload(self) -> None:
+        self._stop_stall_watch()
         if self._in_progress:
             self._in_progress = False
             metrics.UPLOADS_IN_PROGRESS.dec()
@@ -572,6 +612,8 @@ class DownloadHandler(BaseHandler):
             return self._abort("storage_unavailable")
         except _ClientGone:
             return self._abort("client_disconnected")
+        except _Stalled:
+            return self._abort("stalled")
         if self._sent != grant.size:
             logger.error(
                 "stored object size differs from the recorded size",
@@ -588,10 +630,14 @@ class DownloadHandler(BaseHandler):
         self._sent += len(data)
         metrics.DOWNLOAD_BYTES.inc(len(data))
         self.write(data)
+        stall = self.application.settings["services"].stall_timeout
         try:
-            await self.flush()  # backpressure: wait until the client has taken it
+            # Backpressure: wait until the client has taken it, but not forever.
+            await asyncio.wait_for(self.flush(), stall or None)
         except tornado.iostream.StreamClosedError:
             raise _ClientGone() from None
+        except TimeoutError:
+            raise _Stalled() from None
 
     def _abort(self, reason: str) -> None:
         """Fail a response whose headers may already be out: close the connection so
@@ -620,6 +666,10 @@ class DownloadHandler(BaseHandler):
 
 
 class _ClientGone(Exception):
+    pass
+
+
+class _Stalled(Exception):
     pass
 
 
@@ -673,6 +723,7 @@ def services_from_settings(api_context: ssl.SSLContext | None = None) -> Service
             refused_per_minute=settings.refused_intents_per_minute,
             block_seconds=settings.refused_intents_block_seconds,
         ),
+        stall_timeout=settings.transfer_stall_timeout_seconds,
     )
 
 

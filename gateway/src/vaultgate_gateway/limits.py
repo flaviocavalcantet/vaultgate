@@ -17,11 +17,13 @@ this process's memory; 0 turns a limit off.
 """
 
 import time
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from vaultgate_gateway import metrics
+
+MAX_KEYS = 100_000  # addresses remembered at most: memory stays bounded
 
 
 @dataclass
@@ -56,8 +58,10 @@ class TransferLimits:
         self.clock = clock
         self._users: dict[str, Counter] = {"upload": Counter(), "download": Counter()}
         self._clients: Counter = Counter()
-        self._refused: dict[str, deque] = {}
-        self._blocked: dict[str, float] = {}
+        # Oldest first, each bounded by MAX_KEYS: an address seen once is forgotten in
+        # time, however many there are.
+        self._refused: OrderedDict[str, deque] = OrderedDict()
+        self._blocked: OrderedDict[str, float] = OrderedDict()
 
     def blocked(self, client: str) -> float:
         """Seconds the client's block has left, 0 if it has none."""
@@ -75,13 +79,17 @@ class TransferLimits:
         if self.refused_per_minute <= 0:
             return
         now = self.clock()
-        times = self._refused.setdefault(client, deque())
+        times = self._refused.pop(client, None) or deque()
         times.append(now)
         while times and times[0] <= now - 60:
             times.popleft()
         if len(times) > self.refused_per_minute and self.block_seconds > 0:
+            self._blocked.pop(client, None)
             self._blocked[client] = now + self.block_seconds
-            del self._refused[client]
+            _bound(self._blocked)
+            return
+        self._refused[client] = times  # now the newest
+        _bound(self._refused)
 
     def client_slot(self, client: str) -> Slot | None:
         """A transfer from `client`, or None if it has as many as it may."""
@@ -100,3 +108,8 @@ class TransferLimits:
         counter[key] += 1
         slot._counters.append((counter, key))
         return True
+
+
+def _bound(entries: OrderedDict) -> None:
+    while len(entries) > MAX_KEYS:
+        entries.popitem(last=False)

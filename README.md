@@ -69,7 +69,9 @@ The threats VaultGate is built against, and what stands against each, are in the
   - **API, per client address:** the share recipients' routes, 30 a minute. After more than 20 failed authentications in a minute, that address's failing requests get 429 for 5 minutes, while valid tokens from it still work.
   - **Gateway, transfers at once:** 4 uploads and 8 downloads per user (a share counts as the recipient's), and 16 per client address. After 10 refused intents in a minute, an address is blocked for 5 minutes.
 
-  The counters live in each pod. `VAULTGATE_RATE_LIMIT_*` (API) and `VAULTGATE_UPLOADS_PER_USER`, `VAULTGATE_DOWNLOADS_PER_USER`, `VAULTGATE_TRANSFERS_PER_CLIENT`, `VAULTGATE_REFUSED_INTENTS_*` (gateway) change them; 0 turns one off. The gateway also closes a connection that sends nothing for 60 seconds (`VAULTGATE_IDLE_CONNECTION_TIMEOUT_SECONDS`).
+  The counters live in each pod. `VAULTGATE_RATE_LIMIT_*` (API) and `VAULTGATE_UPLOADS_PER_USER`, `VAULTGATE_DOWNLOADS_PER_USER`, `VAULTGATE_TRANSFERS_PER_CLIENT`, `VAULTGATE_REFUSED_INTENTS_*` (gateway) change them; 0 turns one off. The gateway also closes a connection that sends nothing for 60 seconds (`VAULTGATE_IDLE_CONNECTION_TIMEOUT_SECONDS`), and aborts a transfer that moves no bytes for 60 seconds (`VAULTGATE_TRANSFER_STALL_TIMEOUT_SECONDS`).
+
+  Behind a reverse proxy or ingress, set the trusted proxies ([Client addresses behind a proxy](#client-addresses-behind-a-proxy)). Otherwise every client has the proxy's address and shares its per-address limits.
 - **Audit:** every security event (uploads, downloads, shares, policy changes, quarantine decisions, refusals) goes to an append-only, hash-chained table: a trigger refuses changes and deletions for every role, and admins can verify the chain ([ADR 0007](docs/adr/0007-audit-log.md)).
 
 ## Observability

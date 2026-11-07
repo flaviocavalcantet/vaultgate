@@ -42,8 +42,10 @@ class Settings:
     transfers_per_client: int = int(_env("TRANSFERS_PER_CLIENT", "16"))
     refused_intents_per_minute: int = int(_env("REFUSED_INTENTS_PER_MINUTE", "10"))
     refused_intents_block_seconds: int = int(_env("REFUSED_INTENTS_BLOCK_SECONDS", "300"))
-    # How long a connection may send nothing before it is closed (Tornado: an hour).
+    # How long a connection may send nothing before it is closed (Tornado: an hour), and
+    # how long a transfer may move no bytes before it is aborted (0: never).
     idle_connection_timeout_seconds: int = int(_env("IDLE_CONNECTION_TIMEOUT_SECONDS", "60"))
+    transfer_stall_timeout_seconds: int = int(_env("TRANSFER_STALL_TIMEOUT_SECONDS", "60"))
     # Reverse proxies whose X-Forwarded-For is believed, comma-separated networks.
     # Proxy addresses only, never client networks (see vaultgate_gateway.clientip).
     trusted_proxies: tuple[IPNetwork, ...] = tuple(parse_networks(_env("TRUSTED_PROXIES", "")))
