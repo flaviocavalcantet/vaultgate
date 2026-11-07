@@ -57,6 +57,8 @@ The scanner reads text out of PDFs, Word, Excel, PowerPoint, OpenDocument and RT
 
 ## Security model
 
+The threats VaultGate is built against, and what stands against each, are in the [threat model](docs/threat-model.md); M10's [audit report](docs/audit-report.md) lists every finding and what became of it.
+
 - **Authentication:** OIDC authorization code flow with PKCE. The API validates tokens against the issuer's JWKS and checks signature algorithm, issuer, audience and expiry on every request (see [Calling the API](#calling-the-api)).
 - **Authorization:** deny by default. Policies are evaluated on every request, not cached in the session.
 - **Encryption:** each file gets its own data key from KMS (wrapped key stored, bound to the file through the KMS encryption context) and is encrypted by the gateway as a stream of AES-256-GCM chunks that also detects reordering and truncation ([ADR 0003](docs/adr/0003-vault-object-encryption.md)). S3 server-side encryption and a public access block on top.
@@ -550,7 +552,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Image and cluster scans: the container images (Trivy), the Kubernetes manifests against hardening checks (Trivy config, kube-linter); the local cluster's dependencies hardened (non-root, no capabilities, seccomp, read-only root where they can)
   - [x] Service identity: client certificates from OpenBao for the gateway and the scanner; the API's internal port requires mutual TLS and authorizes by certificate identity, the shared tokens kept as a second factor ([ADR 0013](docs/adr/0013-service-identity.md))
   - [x] Running-system tests: OWASP ZAP against the API and the gateway on the cluster, and negative tests (authorization bypass, token reuse, TLS downgrade, plain HTTP); the API and the gateway now send security headers and no server banner, and every VaultGate service speaks TLS 1.3 only ([docs/security-scans.md](docs/security-scans.md#running-system-november-2026))
-  - [ ] Threat model (STRIDE over the data flows) and a published audit report: findings, their fixes, and what is accepted
+  - [x] Threat model (STRIDE over the data flows) and a published audit report: findings, their fixes, and what is accepted ([threat model](docs/threat-model.md), [audit report](docs/audit-report.md))
   - [ ] Fixes: the vulnerabilities and problems M10 found that its earlier steps didn't fix, the API's and the gateway's images on a slimmer Python base among them (the unfixed Debian packages of `python:3.12-slim`); each finding fixed, or accepted with its reason, and the report updated to match
 - [ ] **M11 — Node enrollment:** certificates for external nodes through VaultGate's API, built on the M9 PKI, with a choice of first-trust methods
   - [ ] A second intermediate CA for nodes, from the offline root, limited to node identities; short-lived certificates, revocation (CRL and OCSP)
