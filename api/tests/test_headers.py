@@ -28,6 +28,23 @@ def test_every_response_gets_the_headers() -> None:
         assert "server" not in response.headers
 
 
+def test_an_unhandled_error_gets_them_too() -> None:
+    async def fails() -> None:
+        raise RuntimeError("boom")
+
+    app.add_api_route("/test-fails", fails)
+    try:
+        response = TestClient(app, raise_server_exceptions=False).get("/test-fails")
+    finally:
+        app.router.routes = [
+            r for r in app.router.routes if getattr(r, "path", None) != "/test-fails"
+        ]
+    assert response.status_code == 500
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"].startswith("default-src 'none'")
+    assert response.headers["cache-control"] == "no-store"
+
+
 def test_https_gets_hsts() -> None:
     response = TestClient(app, base_url="https://testserver").get("/healthz")
     assert response.headers["strict-transport-security"] == "max-age=63072000"

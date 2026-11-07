@@ -45,7 +45,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
 
 
-app = FastAPI(
+class _API(FastAPI):
+    """FastAPI, with the security headers (vaultgate_api.headers) outside every layer:
+    Starlette's ServerErrorMiddleware, which answers an unhandled exception's 500 itself,
+    is outside every middleware add_middleware adds, so the headers go around it here."""
+
+    def build_middleware_stack(self):
+        return SecurityHeadersMiddleware(super().build_middleware_stack())
+
+
+app = _API(
     title="VaultGate API",
     version="0.1.0",
     description="Identity, access policies, file metadata, share links and audit log.",
@@ -59,7 +68,6 @@ BUILD_INFO.info({"service": "api", "version": app.version})
 # before anything reads it, the request's span is open before the access log line is
 # written (so the line carries its trace ID), and the request ID is assigned before
 # metrics and handlers.
-app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(MetricsMiddleware)
 app.add_middleware(RequestContextMiddleware)
 # Public: a client's own trace context is ignored (vaultgate_api.tracing).
