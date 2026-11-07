@@ -68,4 +68,6 @@ def start_metrics_server(
         start_http_server(port)
         return None
     server, _ = start_http_server(port, certfile=cert_file, keyfile=key_file)
-    return server.socket.context
+    context = server.socket.context
+    context.minimum_version = ssl.TLSVersion.TLSv1_3  # applies to each new connection
+    return context

@@ -1,0 +1,38 @@
+# The gateway's routes, for ZAP (M10, docs/security-scans.md): the gateway has no
+# OpenAPI of its own, so this describes them for the scan to reach each one.
+openapi: 3.0.3
+info:
+  title: VaultGate gateway
+  version: 0.1.0
+servers:
+  - url: https://localhost:8888
+components:
+  securitySchemes:
+    intent: { type: http, scheme: bearer }
+  parameters:
+    fileId:
+      name: file_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+security:
+  - intent: []
+paths:
+  /healthz:
+    get:
+      security: []
+      responses: { "200": { description: Up } }
+  /uploads/{file_id}:
+    put:
+      summary: Upload a file's bytes with an upload intent token
+      parameters: [{ $ref: "#/components/parameters/fileId" }]
+      requestBody:
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses: { "201": { description: Stored } }
+  /downloads/{file_id}:
+    get:
+      summary: Download a file with a download intent token
+      parameters: [{ $ref: "#/components/parameters/fileId" }]
+      responses: { "200": { description: The file } }

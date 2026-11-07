@@ -38,9 +38,13 @@ def _server(app: str, port: int, **mtls) -> uvicorn.Server:
         proxy_headers=False,
         ssl_certfile=settings.tls_cert_file,
         ssl_keyfile=settings.tls_key_file,
+        # No server name or version in the responses (M10, docs/security-scans.md).
+        server_header=False,
         **mtls,
     )
     config.load()  # builds the SSLContext now, so the reloader can renew it in place
+    if config.ssl is not None:
+        config.ssl.minimum_version = ssl.TLSVersion.TLSv1_3  # as every hop (ADR 0012)
     return uvicorn.Server(config)
 
 

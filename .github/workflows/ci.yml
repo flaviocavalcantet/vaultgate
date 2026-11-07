@@ -122,6 +122,9 @@ jobs:
           python-version: "3.12"
       - run: pip install -r loadtest/requirements.txt
       - run: make load-smoke
+      # OWASP ZAP against the API and the gateway (M10), last: its attacks leave files
+      # and shares behind. Each warning it reports is in the log.
+      - run: make k3d-zap
       - if: failure()
         run: |
           kubectl get applications -n argocd -o wide || true
