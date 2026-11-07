@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from vaultgate_api.auth import build_validator, get_principal
 from vaultgate_api.clientip import ClientAddressMiddleware
 from vaultgate_api.config import settings
+from vaultgate_api.headers import SecurityHeadersMiddleware
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
 from vaultgate_api.routers import (
@@ -44,7 +45,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
 
 
-app = FastAPI(
+class _API(FastAPI):
+    """FastAPI, with the security headers (vaultgate_api.headers) outside every layer:
+    Starlette's ServerErrorMiddleware, which answers an unhandled exception's 500 itself,
+    is outside every middleware add_middleware adds, so the headers go around it here."""
+
+    def build_middleware_stack(self):
+        return SecurityHeadersMiddleware(super().build_middleware_stack())
+
+
+app = _API(
     title="VaultGate API",
     version="0.1.0",
     description="Identity, access policies, file metadata, share links and audit log.",

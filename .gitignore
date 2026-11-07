@@ -231,3 +231,4 @@ __marimo__/
 
 # Load test results (make load-test, load-smoke)
 loadtest/results/
+zap-reports/

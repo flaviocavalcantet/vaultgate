@@ -15,7 +15,10 @@
 #                          the API, gateway, Keycloak and PostgreSQL, the
 #                          gateway's autoscaler reading CPU, the network policy closing the
 #                          API's internal port, Prometheus scraping every service,
-#                          Grafana's dashboards, and Alertmanager's mail
+#                          Grafana's dashboards, and Alertmanager's mail; then negative
+#                          tests: what the API, the gateway and the cluster must refuse
+#   scripts/k3d.sh zap     OWASP ZAP against the API and the gateway (passive and active
+#                          scans); its reports go to VAULTGATE_ZAP_DIR (zap-reports)
 #   scripts/k3d.sh down    delete the cluster (and its registry)
 #
 # Argo CD deploys what is in git, not the working tree: it syncs VAULTGATE_REVISION
@@ -308,12 +311,50 @@ check() {
   check_observability
   log "vault end to end, against the cluster"
   host_trust python3 scripts/vault_e2e.py --api "$API" --keycloak "$KEYCLOAK"
+  log "negative tests: what the API, the gateway and the cluster's services must refuse"
+  host_trust python3 scripts/negative_checks.py --api "$API" --keycloak "$KEYCLOAK"
+}
+
+# OWASP ZAP (M10, docs/security-scans.md), from the host: the API's every route from its
+# OpenAPI document, as alice (a real Keycloak login), and the gateway's routes from
+# security/zap/gateway-openapi.yaml with a token that isn't an intent (one real intent
+# would be spent by the first request). Passive and active scans; any warning that
+# security/zap/<target>.conf doesn't mark as ignored fails the run. Its attacks create
+# files and shares as alice: run it on a cluster nothing else needs, last. alice's token
+# lasts 5 minutes (the realm's accessTokenLifespan) and is fetched right before the
+# API's scan, whose active part is capped at 3 (the whole scan takes about a minute).
+# The token must still be accepted once the scan is done, or the run fails: a scan that
+# went on unauthenticated would pass without testing what alice can reach.
+ZAP_IMAGE=zaproxy/zap-stable:2.17.0
+zap() {
+  local out=${VAULTGATE_ZAP_DIR:-zap-reports} status=0 token
+  mkdir -p "$out"
+  chmod 777 "$out" # ZAP runs as its own user
+  cp security/zap/* "$out"/
+  token=$(host_trust env PYTHONPATH=scripts python3 -c 'from keycloak_smoke import login, wait_for
+print(login(wait_for("'"$KEYCLOAK"'"), "alice", "alice-dev-password")["access_token"])')
+  log "ZAP: the API, from its OpenAPI document, as alice"
+  docker run --rm --network host -v "$PWD/$out:/zap/wrk:rw" -e ZAP_AUTH_HEADER=Authorization \
+    -e ZAP_AUTH_HEADER_VALUE="Bearer $token" "$ZAP_IMAGE" zap-api-scan.py \
+    -t "$API/openapi.json" -f openapi -c api.conf -r api.html -J api.json \
+    -z "-config scanner.maxScanDurationInMins=3" || status=1
+  if ! curl -sf --cacert "$ROOT_CA" -o /dev/null -H "Authorization: Bearer $token" "$API/me"; then
+    echo "alice's token expired during the API's scan: part of it ran unauthenticated" >&2
+    status=1
+  fi
+  log "ZAP: the gateway"
+  docker run --rm --network host -v "$PWD/$out:/zap/wrk:rw" -e ZAP_AUTH_HEADER=Authorization \
+    -e ZAP_AUTH_HEADER_VALUE="Bearer not-an-intent" "$ZAP_IMAGE" zap-api-scan.py \
+    -t /zap/wrk/gateway-openapi.yaml -f openapi -O https://localhost:8888 \
+    -c gateway.conf -r gateway.html -J gateway.json || status=1
+  return $status
 }
 
 case ${1:-} in
 up) up ;;
 images) images && restart ;;
 check) check ;;
+zap) zap ;;
 down) k3d cluster delete "$CLUSTER" ;;
 *)
   sed -n '2,20p' "$0"

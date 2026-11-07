@@ -62,6 +62,12 @@ func write(t *testing.T, path string, data []byte, mtime time.Time) {
 // client trusting only `trusted` accepts.
 func serves(t *testing.T, r *Reloader, trusted []byte) bool {
 	t.Helper()
+	return servesUpTo(t, r, trusted, tls.VersionTLS13)
+}
+
+// servesUpTo is serves with a client that speaks TLS versions up to maxVersion.
+func servesUpTo(t *testing.T, r *Reloader, trusted []byte, maxVersion uint16) bool {
+	t.Helper()
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", r.ServerConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +82,7 @@ func serves(t *testing.T, r *Reloader, trusted []byte) bool {
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM(trusted)
 	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", ln.Addr().String(),
-		&tls.Config{RootCAs: pool, ServerName: "localhost", MinVersion: tls.VersionTLS12})
+		&tls.Config{RootCAs: pool, ServerName: "localhost", MinVersion: tls.VersionTLS12, MaxVersion: maxVersion})
 	if err != nil {
 		return false
 	}
@@ -214,5 +220,12 @@ func TestClientPresentsTheRenewedCertificate(t *testing.T) {
 	}
 	if name := presents(t, r); name != "second" {
 		t.Fatalf("presented %q, want second", name)
+	}
+}
+
+func TestOnlyTLS13IsServed(t *testing.T) {
+	r, _, _, first := setup(t)
+	if servesUpTo(t, r, first, tls.VersionTLS12) {
+		t.Fatal("served a TLS 1.2 client")
 	}
 }

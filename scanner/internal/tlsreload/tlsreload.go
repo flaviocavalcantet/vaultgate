@@ -105,9 +105,10 @@ func (r *Reloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error
 	return r.cert, nil
 }
 
-// ServerConfig is a TLS 1.2+ server configuration serving the reloaded certificate.
+// ServerConfig is a TLS 1.3 server configuration serving the reloaded certificate:
+// TLS 1.3 only, as on every hop (ADR 0012).
 func (r *Reloader) ServerConfig() *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: r.GetCertificate}
+	return &tls.Config{MinVersion: tls.VersionTLS13, GetCertificate: r.GetCertificate}
 }
 
 // GetClientCertificate is for a client's tls.Config: the pair loaded last, presented
@@ -118,9 +119,9 @@ func (r *Reloader) GetClientCertificate(*tls.CertificateRequestInfo) (*tls.Certi
 	return r.cert, nil
 }
 
-// ClientConfig is a TLS 1.2+ client configuration presenting the reloaded certificate
+// ClientConfig is a TLS 1.3 client configuration presenting the reloaded certificate
 // (mutual TLS); servers are verified against the system's roots, which SSL_CERT_FILE
 // replaces.
 func (r *Reloader) ClientConfig() *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS12, GetClientCertificate: r.GetClientCertificate}
+	return &tls.Config{MinVersion: tls.VersionTLS13, GetClientCertificate: r.GetClientCertificate}
 }

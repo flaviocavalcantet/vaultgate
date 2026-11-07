@@ -148,10 +148,24 @@ class BaseHandler(tornado.web.RequestHandler):
             return None
         return value.strip() or None
 
+    def set_default_headers(self) -> None:
+        # On every response, errors included (M10, docs/security-scans.md): no server
+        # name or version, nothing a browser may sniff, render with scripts or frame,
+        # nothing cached or embedded by another site (a download is a navigation, which
+        # CORP doesn't restrict), and HTTPS only from then on when served over TLS.
+        self.clear_header("Server")
+        self.set_header("X-Content-Type-Options", "nosniff")
+        self.set_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.set_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+        self.set_header("Cache-Control", "no-store")
+        if self.request.protocol == "https":
+            self.set_header("Strict-Transport-Security", "max-age=63072000")
+
     def write_error(self, status_code: int, **kwargs) -> None:
         if status_code == 401:  # send_error clears headers set before the error
             self.set_header("WWW-Authenticate", 'Bearer realm="vaultgate"')
-        super().write_error(status_code, **kwargs)
+        # JSON, like the API's errors, never Tornado's HTML page.
+        self.finish({"detail": self._reason})
 
     def clear(self) -> None:
         # send_error() clears headers; keep the request ID on error responses too.
@@ -195,6 +209,17 @@ class HealthHandler(BaseHandler):
 
     def get(self) -> None:
         self.write({"status": "ok", "service": "gateway"})
+
+
+class NotFoundHandler(BaseHandler):
+    """Any path no route matches, whatever the method: a JSON 404 with the headers every
+    response gets, rather than Tornado's own page."""
+
+    traced = False  # no user's request either
+
+    def prepare(self) -> None:
+        super().prepare()
+        raise tornado.web.HTTPError(404)
 
 
 @dataclass
@@ -569,6 +594,7 @@ def make_app(
             (r"/uploads/([A-Za-z0-9_-]+)", UploadHandler),
             (r"/downloads/([A-Za-z0-9_-]+)", DownloadHandler),
         ],
+        default_handler_class=NotFoundHandler,
         log_function=on_request_finished,
         services=services,
         trusted_proxies=trusted_proxies,
@@ -609,6 +635,7 @@ async def main() -> None:
     ssl_context = None
     if settings.tls_cert_file and settings.tls_key_file:
         ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ssl_context.minimum_version = ssl.TLSVersion.TLSv1_3  # as every hop (ADR 0012)
         ssl_context.load_cert_chain(settings.tls_cert_file, settings.tls_key_file)
         reloader = CertificateReloader(
             settings.tls_cert_file,
@@ -628,6 +655,7 @@ async def main() -> None:
     if settings.api_client_cert_file and settings.api_client_key_file:
         # The system's trust store (SSL_CERT_FILE) for the API's certificate.
         api_context = ssl.create_default_context()
+        api_context.minimum_version = ssl.TLSVersion.TLSv1_3
         api_context.load_cert_chain(settings.api_client_cert_file, settings.api_client_key_file)
         client_reloader = CertificateReloader(
             settings.api_client_cert_file, settings.api_client_key_file, [api_context]

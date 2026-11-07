@@ -131,9 +131,11 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def served_certificate(port: int, trusted_cert: bytes) -> bool:
+def served_certificate(port: int, trusted_cert: bytes, max_version=None) -> bool:
     """A real TLS connection to the metrics port, trusting one certificate only."""
     client = ssl.create_default_context(cadata=trusted_cert.decode())
+    if max_version:
+        client.maximum_version = max_version
     try:
         with (
             socket.create_connection(("127.0.0.1", port), timeout=5) as sock,
@@ -155,6 +157,8 @@ def test_metrics_server_speaks_tls_and_renews(pair):
     context = start_metrics_server(port, str(cert_file), str(key_file))
     reloader = CertificateReloader(str(cert_file), str(key_file), [context])
     assert served_certificate(port, first[0])
+    # TLS 1.3 only, as every hop.
+    assert not served_certificate(port, first[0], ssl.TLSVersion.TLSv1_2)
 
     second = self_signed("second")
     write(cert_file, second[0], 2_000_000_000)

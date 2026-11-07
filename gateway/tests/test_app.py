@@ -205,6 +205,32 @@ class UploadTest(GatewayCase):
         assert response.code == 403
         assert response.headers["X-Request-ID"] == "r-1"
 
+    def test_every_response_gets_the_security_headers(self) -> None:
+        for response in (self.fetch("/healthz"), self.put(uuid.uuid4(), b"", token=None)):
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert response.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+            assert response.headers["Content-Security-Policy"] == (
+                "default-src 'none'; frame-ancestors 'none'"
+            )
+            assert response.headers["Cache-Control"] == "no-store"
+            assert "Server" not in response.headers
+            assert "Strict-Transport-Security" not in response.headers  # plain HTTP here
+
+    def test_unknown_paths_are_a_json_404_with_the_headers(self) -> None:
+        for path, method in (("/", "GET"), ("/uploads", "PUT"), ("/latest/meta-data/", "POST")):
+            response = self.fetch(path, method=method, body=b"" if method != "GET" else None)
+            assert response.code == 404
+            assert json.loads(response.body) == {"detail": "Not Found"}
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert "Server" not in response.headers
+
+    def test_errors_are_json(self) -> None:
+        response = self.put(uuid.uuid4(), b"", token=None)
+        assert response.code == 401
+        assert response.headers["Content-Type"].startswith("application/json")
+        assert json.loads(response.body) == {"detail": "Unauthorized"}
+        assert response.headers["WWW-Authenticate"] == 'Bearer realm="vaultgate"'
+
     def test_not_a_uuid_is_404(self) -> None:
         assert self.put("abc123", b"abc").code == 404
 

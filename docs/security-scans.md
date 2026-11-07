@@ -1,10 +1,12 @@
 # Security scans
 
-M10's first two audits: static analysis of VaultGate's code, its dependencies' known
+M10's first audits: static analysis of VaultGate's code, its dependencies' known
 vulnerabilities and secrets in the repository's history; then the container images and
-the Kubernetes manifests. All of it runs in CI
+the Kubernetes manifests; then the running system. The scans run in CI
 (`.github/workflows/security.yml`) on every pull request, on `main`, and weekly, when the
-vulnerability databases may know something new about code that hasn't changed.
+vulnerability databases may know something new about code that hasn't changed; the
+running system's tests (ZAP and the negative tests, below) run in CI's cluster job
+(`k3d-e2e`) on every pull request.
 
 | Tool | What it checks | Scope |
 | --- | --- | --- |
@@ -118,6 +120,11 @@ In `scripts/` and `loadtest/`, Semgrep and Bandit report:
   the image picks the fix up. A smaller base image (distroless Python, or one built
   with only the interpreter) would remove most of these packages outright; left for
   later, as it changes how the images are built.
+- **Fixes the base image doesn't carry yet.** In November 2026 Debian fixed two HIGH
+  zlib vulnerabilities (CVE-2026-76844, CVE-2026-85091) before `python:3.12-slim` was
+  rebuilt with the fix, and the gate failed on them. Both Python images now apply
+  Debian's security updates when they are built (`apt-get upgrade`), so a fix that
+  Debian has released is in the next build.
 
 ### Fixed
 
@@ -177,3 +184,87 @@ workloads in the `default` namespace in rendered charts (the namespace is set wh
 chart is installed), fewer than three replicas, no node affinity. Argo CD's upstream
 install (`deploy/k3d/argocd`) is not scanned: it is the Argo CD project's own manifest,
 applied as published.
+
+## Running system, November 2026
+
+M10's third audit: the services as they run, on the local cluster in CI, after the
+end-to-end check.
+
+- **OWASP ZAP** 2.17.0 (`make k3d-zap`, `scripts/k3d.sh zap`), passive and active
+  scans:
+  - the API, every route from its OpenAPI document, as alice with a real Keycloak
+    login;
+  - the gateway, from `security/zap/gateway-openapi.yaml` (it has no OpenAPI document
+    of its own), with a token that isn't an intent, since a real one would be spent by
+    the first request.
+
+  Any warning fails the run unless `security/zap/<target>.conf` marks its rule as
+  ignored, with the reason. Nothing is ignored.
+- **Negative tests** (`scripts/negative_checks.py`, in `make k3d-check`):
+  - Every protected route of the API (25) answers 401 to:
+    - no token;
+    - a token that isn't a JWT;
+    - alice's token with its payload changed;
+    - alice's claims re-signed with `alg: none`.
+  - alice, not an administrator, gets 403 on every `/admin` route (15).
+  - bob gets 404 on alice's file, its download and its shares, as if it didn't exist.
+  - The gateway refuses:
+    - no token (401);
+    - an unknown token (403);
+    - an upload intent for another file (403);
+    - an upload intent used to download (403).
+
+    None of these refusals spends the intent, which then uploads once and only once.
+  - The API, the gateway, Keycloak and OpenBao speak TLS 1.3 and refuse TLS 1.2 and
+    plain HTTP.
+
+The end-to-end check (`scripts/vault_e2e.py`) already covers:
+- single-use intents;
+- bob refused a download intent for alice's file;
+- deny policies, at the API and again at the gateway;
+- a revoked share link stopping at once.
+
+The internal port's mutual TLS is checked by `scripts/mtls_check.py` (ADR 0013).
+
+### Fixed
+
+ZAP was first run on a local API and gateway, before it went into CI.
+
+- **TLS 1.2 on VaultGate's own services.**
+  - **What was wrong.** The API, the gateway, the scanner's metrics port, and both
+    clients of the internal port accepted TLS 1.2, CBC cipher suites included. Every
+    dependency is TLS 1.3 only, as ADR 0012 says each hop is.
+  - **Fix.** Each server and client of VaultGate's now sets TLS 1.3 as its minimum.
+- **Missing security headers** (ZAP 10021, 10035, 10038).
+  - **What was wrong.** No `X-Content-Type-Options`, no `Strict-Transport-Security`
+    over TLS, no `Content-Security-Policy` on the gateway's pages.
+  - **Fix.** Every response of the API and the gateway, errors included, now carries
+    `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none';
+    frame-ancestors 'none'`, `Cross-Origin-Resource-Policy: same-origin` (ZAP 90004,
+    first reported in CI: no other site may embed a response, while a download, a
+    navigation, and a cross-origin fetch with CORS work as before), and
+    `Cache-Control: no-store`. A response that sets its own `Cache-Control` keeps it.
+  - **HSTS.** Over TLS they also send `Strict-Transport-Security: max-age=63072000`.
+  - **Exception.** The API's interactive docs (`/docs`, `/redoc`) get no CSP, because
+    they load Swagger UI's and ReDoc's scripts.
+- **The server's name and version** (ZAP 10036).
+  - **What was wrong.** The gateway answered `Server: TornadoServer/6.6`, and the API
+    `server: uvicorn`.
+  - **Fix.** Neither sends a `Server` header now.
+- **HTML error pages from the gateway** (ZAP 100001, unexpected content type).
+  - **What was wrong.** Its errors, and any path no route matched, were Tornado's HTML
+    pages, without the headers above.
+  - **Fix.** They are now JSON (`{"detail": ...}`, like the API's), and an unmatched
+    path goes through the gateway's own handler, headers and all.
+
+After the fixes, both scans pass with no warning. Locally, about 7,500 API scan
+requests produced no error and no unhandled exception.
+
+### Not covered
+
+- **The interactive docs are public** (`/docs`, `/redoc`, `/openapi.json`). They are
+  kept: ZAP and clients use the document, and it describes no route that isn't
+  already reachable. Whether to serve them in production is a question for the threat
+  model.
+- **Token expiry.** An expired token's refusal isn't tested on the cluster (Keycloak's
+  tokens last five minutes). The API's tests cover it (`tests/test_auth.py`).
