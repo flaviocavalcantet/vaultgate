@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import json
@@ -10,7 +11,8 @@ import pytest
 from moto import mock_aws
 from prometheus_client import REGISTRY
 from tornado.simple_httpclient import HTTPStreamClosedError
-from tornado.testing import AsyncHTTPTestCase
+from tornado.tcpclient import TCPClient
+from tornado.testing import AsyncHTTPTestCase, gen_test
 
 from vaultgate_gateway.api_client import (
     ApiUnavailable,
@@ -22,6 +24,7 @@ from vaultgate_gateway.app import Services, content_disposition, make_app
 from vaultgate_gateway.clientip import parse_networks
 from vaultgate_gateway.crypto import Decryptor, ciphertext_size
 from vaultgate_gateway.keys import KmsKeyProvider
+from vaultgate_gateway.limits import TransferLimits
 from vaultgate_gateway.logs import JsonFormatter
 
 BUCKET = "vault"
@@ -46,7 +49,7 @@ class FakeApi:
 
     def grant(self, size: int) -> uuid.UUID:
         file_id = uuid.uuid4()
-        self.grants[TOKEN] = UploadGrant(file_id, f"files/{file_id}", size)
+        self.grants[TOKEN] = UploadGrant(file_id, f"files/{file_id}", size, "user:alice")
         return file_id
 
     async def consume_upload(self, token: str, file_id: uuid.UUID, client_ip) -> UploadGrant:
@@ -86,6 +89,7 @@ class FakeApi:
             sha256=done["sha256"],
             wrapped_key=done["wrapped_key"],
             kms_key_id=done["kms_key_id"],
+            limit_key="user:alice",
         )
         if overrides:
             grant = self.download_grants[token]
@@ -500,3 +504,126 @@ def test_content_disposition_keeps_unicode_and_neutralises_quotes() -> None:
         'attachment; filename="relat_rio _final_.pdf"; '
         "filename*=UTF-8''relat%C3%B3rio%20%22final%22.pdf"
     )
+
+
+class TransferLimitTest(GatewayCase):
+    """The gateway's transfer limits (vaultgate_gateway.limits)."""
+
+    def get_app(self):
+        self.limits = TransferLimits(
+            uploads_per_user=1, downloads_per_user=1, transfers_per_client=2, refused_per_minute=2
+        )
+        services = Services(
+            api=self.api,
+            keys=self.keys,
+            s3=self.s3,
+            bucket=BUCKET,
+            part_size=5 * MiB,
+            limits=self.limits,
+        )
+        return make_app(services)
+
+    def get(self, file_id, token: str):
+        return self.fetch(f"/downloads/{file_id}", headers={"Authorization": f"Bearer {token}"})
+
+    def test_places_are_given_back_when_transfers_end(self) -> None:
+        for _ in range(3):  # more than either limit, one after another
+            file_id = self.api.grant(5)
+            assert self.put(file_id, b"hello").code == 201
+            assert self.get(file_id, self.api.grant_download(file_id)).code == 200
+        assert not self.limits._clients
+        assert not any(self.limits._users.values())
+
+    def test_a_client_over_its_limit_gets_429_before_its_intent_is_spent(self) -> None:
+        self.limits._clients["127.0.0.1"] = 2  # two transfers in progress
+        file_id = self.api.grant(5)
+        response = self.put(file_id, b"hello")
+        assert response.code == 429
+        assert int(response.headers["Retry-After"]) >= 1
+        assert TOKEN in self.api.grants  # still unspent
+        assert json.loads(response.body) == {"detail": "Too Many Requests"}
+
+    def test_a_user_over_their_limit_gets_429_and_the_upload_fails(self) -> None:
+        self.limits._users["upload"]["user:alice"] = 1  # one upload in progress
+        file_id = self.api.grant(5)
+        response = self.put(file_id, b"hello")
+        assert response.code == 429
+        assert self.api.failed == [file_id]  # its intent was spent: reported failed
+
+    def test_a_user_over_their_download_limit_gets_429(self) -> None:
+        file_id = self.api.grant(5)
+        assert self.put(file_id, b"hello").code == 201
+        self.limits._users["download"]["user:alice"] = 1
+        assert self.get(file_id, self.api.grant_download(file_id)).code == 429
+
+    def test_refused_intents_block_the_client_for_a_while(self) -> None:
+        for _ in range(3):
+            assert self.put(uuid.uuid4(), b"hello", token="unknown").code == 403
+        file_id = self.api.grant(5)
+        blocked = self.put(file_id, b"hello")
+        assert blocked.code == 429
+        assert int(blocked.headers["Retry-After"]) > 200
+        assert TOKEN in self.api.grants  # refused before its intent was spent
+
+
+class StallTest(GatewayCase):
+    """A transfer that moves no bytes for stall_timeout is aborted."""
+
+    def get_app(self):
+        services = Services(
+            api=self.api,
+            keys=self.keys,
+            s3=self.s3,
+            bucket=BUCKET,
+            part_size=5 * MiB,
+            stall_timeout=0.3,
+        )
+        return make_app(services)
+
+    async def connect(self, request: str):
+        stream = await TCPClient().connect("127.0.0.1", self.get_http_port())
+        await stream.write(request.encode())
+        return stream
+
+    @gen_test
+    async def test_an_upload_whose_body_stops_is_aborted_and_reported(self) -> None:
+        file_id = self.api.grant(10)
+        stream = await self.connect(
+            f"PUT /uploads/{file_id} HTTP/1.1\r\nHost: x\r\n"
+            f"Authorization: Bearer {TOKEN}\r\nContent-Length: 10\r\n\r\nhello"
+        )
+        await asyncio.sleep(1)  # half the body, then nothing
+        assert self.api.failed == [file_id]
+        assert self.open_uploads() == []
+        await asyncio.wait_for(stream.read_until_close(), 5)  # the gateway closed it
+
+    @gen_test(timeout=30)
+    async def test_a_download_nobody_reads_is_aborted(self) -> None:
+        payload = os.urandom(24 * MiB)  # more than the sockets' buffers hold
+        file_id = self.api.grant(len(payload))
+        response = await self.http_client.fetch(
+            self.get_url(f"/uploads/{file_id}"),
+            method="PUT",
+            body=payload,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert response.code == 201
+        token = self.api.grant_download(file_id)
+        before = (
+            REGISTRY.get_sample_value(
+                "vaultgate_gateway_download_failures_total", {"reason": "stalled"}
+            )
+            or 0
+        )
+        stream = await self.connect(
+            f"GET /downloads/{file_id} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n\r\n"
+        )
+        for _ in range(50):  # read nothing while the gateway waits
+            await asyncio.sleep(0.2)
+            stalled = REGISTRY.get_sample_value(
+                "vaultgate_gateway_download_failures_total", {"reason": "stalled"}
+            )
+            if stalled == before + 1:
+                break
+        assert stalled == before + 1
+        stream.close()

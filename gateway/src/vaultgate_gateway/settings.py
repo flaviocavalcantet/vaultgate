@@ -34,6 +34,18 @@ class Settings:
     tls_reload_interval_seconds: int = int(_env("TLS_RELOAD_INTERVAL_SECONDS", "60"))
     metrics_port: int = int(_env("METRICS_PORT", "9100"))
     max_upload_bytes: int = int(_env("MAX_UPLOAD_BYTES", str(5 * 1024**3)))
+    # Transfer limits (vaultgate_gateway.limits; M10): at once per user and per client
+    # address, and how many refused intents a minute block an address, for how long.
+    # 0 turns a limit off.
+    uploads_per_user: int = int(_env("UPLOADS_PER_USER", "4"))
+    downloads_per_user: int = int(_env("DOWNLOADS_PER_USER", "8"))
+    transfers_per_client: int = int(_env("TRANSFERS_PER_CLIENT", "16"))
+    refused_intents_per_minute: int = int(_env("REFUSED_INTENTS_PER_MINUTE", "10"))
+    refused_intents_block_seconds: int = int(_env("REFUSED_INTENTS_BLOCK_SECONDS", "300"))
+    # How long a connection may send nothing before it is closed (Tornado: an hour), and
+    # how long a transfer may move no bytes before it is aborted (0: never).
+    idle_connection_timeout_seconds: int = int(_env("IDLE_CONNECTION_TIMEOUT_SECONDS", "60"))
+    transfer_stall_timeout_seconds: int = int(_env("TRANSFER_STALL_TIMEOUT_SECONDS", "60"))
     # Reverse proxies whose X-Forwarded-For is believed, comma-separated networks.
     # Proxy addresses only, never client networks (see vaultgate_gateway.clientip).
     trusted_proxies: tuple[IPNetwork, ...] = tuple(parse_networks(_env("TRUSTED_PROXIES", "")))

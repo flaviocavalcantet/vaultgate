@@ -10,14 +10,18 @@ import asyncio
 import base64
 import hashlib
 import logging
+import math
 import os
 import ssl
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import NoReturn
 from urllib.parse import quote
 
+import tornado.ioloop
 import tornado.iostream
 import tornado.web
 from opentelemetry import context, trace
@@ -28,6 +32,7 @@ from vaultgate_gateway.api_client import ApiUnavailable, IntentRefused, Internal
 from vaultgate_gateway.clientip import IPNetwork, client_ip
 from vaultgate_gateway.crypto import DecryptionError, Decryptor, Encryptor
 from vaultgate_gateway.keys import KeyProvider, KeyUnavailable, KmsKeyProvider
+from vaultgate_gateway.limits import Slot, TransferLimits
 from vaultgate_gateway.logs import (
     REQUEST_ID_HEADER,
     configure_logging,
@@ -48,6 +53,8 @@ logger = logging.getLogger("vaultgate.gateway")
 
 # Reporting a finished upload is retried: losing that call loses the upload.
 COMPLETE_ATTEMPTS = 3
+# Retry-After for a transfer over a concurrency limit: one finishing frees a place.
+LIMIT_RETRY_SECONDS = 5
 COMPLETE_RETRY_DELAY = 0.5  # seconds, grows linearly
 
 # Cleanup started from synchronous callbacks; the event loop only keeps weak references
@@ -134,12 +141,38 @@ class BaseHandler(tornado.web.RequestHandler):
         span.end()
 
     def on_finish(self) -> None:
+        self._release_slot()
         self.end_span()
 
     def on_connection_close(self) -> None:
+        self._release_slot()
         self.mark_failure("client_disconnected")
         self.end_span()
         super().on_connection_close()
+
+    # Transfer limits (vaultgate_gateway.limits): the place this request holds, if any.
+    _slot: Slot | None = None
+    _retry_after: int | None = None
+
+    def _release_slot(self) -> None:
+        if self._slot is not None:
+            self._slot.release()
+            self._slot = None
+
+    def _start_transfer(self, limits: TransferLimits) -> str:
+        """Checks the client's limits before its intent is spent; returns its key."""
+        client = request_client_ip(self) or self.request.remote_ip or "unknown"
+        if wait := limits.blocked(client):
+            metrics.TRANSFERS_LIMITED.labels("blocked").inc()
+            self._too_many(wait)
+        self._slot = limits.client_slot(client)
+        if self._slot is None:
+            self._too_many(LIMIT_RETRY_SECONDS)
+        return client
+
+    def _too_many(self, wait: float) -> NoReturn:
+        self._retry_after = max(1, math.ceil(wait))
+        raise tornado.web.HTTPError(429)
 
     def _bearer_token(self) -> str | None:
         header = self.request.headers.get("Authorization", "")
@@ -164,6 +197,8 @@ class BaseHandler(tornado.web.RequestHandler):
     def write_error(self, status_code: int, **kwargs) -> None:
         if status_code == 401:  # send_error clears headers set before the error
             self.set_header("WWW-Authenticate", 'Bearer realm="vaultgate"')
+        if status_code == 429 and self._retry_after:
+            self.set_header("Retry-After", str(self._retry_after))
         # JSON, like the API's errors, never Tornado's HTML page.
         self.finish({"detail": self._reason})
 
@@ -233,6 +268,10 @@ class Services:
     part_size: int = 8 * 1024 * 1024
     read_size: int = 256 * 1024
     max_upload_bytes: int = 5 * 1024**3
+    limits: TransferLimits = field(default_factory=TransferLimits)
+    # A transfer that moves no bytes for this long is aborted (0: never), so a client
+    # can't hold its places by sending or reading nothing.
+    stall_timeout: float = 60
 
 
 @tornado.web.stream_request_body
@@ -278,17 +317,25 @@ class UploadHandler(BaseHandler):
         token = self._bearer_token()
         if token is None:
             raise tornado.web.HTTPError(401)
+        limits = self.services.limits
+        client = self._start_transfer(limits)
 
         try:
             self._grant = await self.services.api.consume_upload(
                 token, file_id, request_client_ip(self)
             )
         except IntentRefused:
+            limits.refused(client)
             self._count_failure("intent_refused")
             raise tornado.web.HTTPError(403) from None
         except ApiUnavailable:
             self._count_failure("api_unavailable")
             raise tornado.web.HTTPError(503) from None
+        if self._grant.limit_key and not limits.user_slot(
+            "upload", self._grant.limit_key, self._slot
+        ):
+            await self._fail("too_many_uploads")
+            self._too_many(LIMIT_RETRY_SECONDS)
 
         declared = self._grant.declared_size
         length = self.request.headers.get("Content-Length")
@@ -313,9 +360,42 @@ class UploadHandler(BaseHandler):
                 "kms_unavailable" if isinstance(exc, KeyUnavailable) else "storage_unavailable"
             )
             raise tornado.web.HTTPError(503) from None
+        self._watch_stall()
+
+    _stall_timer: object | None = None
+    _last_data = 0.0
+
+    def _watch_stall(self) -> None:
+        """Aborts the upload if the body stops arriving for stall_timeout seconds."""
+        if self.services.stall_timeout <= 0:
+            return
+        self._last_data = time.monotonic()
+        self._stall_timer = tornado.ioloop.IOLoop.current().call_later(
+            self.services.stall_timeout, self._check_stall
+        )
+
+    def _check_stall(self) -> None:
+        self._stall_timer = None
+        if self._finished_ok or self._cleaned_up:
+            return
+        idle = time.monotonic() - self._last_data
+        if idle < self.services.stall_timeout:
+            self._stall_timer = tornado.ioloop.IOLoop.current().call_later(
+                self.services.stall_timeout - idle, self._check_stall
+            )
+            return
+        with self.in_request():
+            _background(self._fail("stalled"))  # marks the upload cleaned up at once
+        self.request.connection.close()
+
+    def _stop_stall_watch(self) -> None:
+        if self._stall_timer is not None:
+            tornado.ioloop.IOLoop.current().remove_timeout(self._stall_timer)
+            self._stall_timer = None
 
     async def data_received(self, chunk: bytes) -> None:
         # Tornado calls this from the connection's coroutine, not the request's.
+        self._last_data = time.monotonic()
         with self.in_request():
             await self._receive(chunk)
 
@@ -339,6 +419,7 @@ class UploadHandler(BaseHandler):
             self._error = tornado.web.HTTPError(503)
 
     async def put(self, upload_id: str) -> None:
+        self._stop_stall_watch()  # the whole body is in
         if self._error is not None:
             raise self._error
         if self._received != self._grant.declared_size:
@@ -439,6 +520,7 @@ class UploadHandler(BaseHandler):
         self.mark_failure(reason)
 
     def _end_upload(self) -> None:
+        self._stop_stall_watch()
         if self._in_progress:
             self._in_progress = False
             metrics.UPLOADS_IN_PROGRESS.dec()
@@ -473,15 +555,23 @@ class DownloadHandler(BaseHandler):
         token = self._bearer_token()
         if token is None:
             raise tornado.web.HTTPError(401)
+        client = self._start_transfer(services.limits)
 
         try:
             grant = await services.api.consume_download(token, file_id, request_client_ip(self))
         except IntentRefused:
+            services.limits.refused(client)
             self._count_failure("intent_refused")
             raise tornado.web.HTTPError(403) from None
         except ApiUnavailable:
             self._count_failure("api_unavailable")
             raise tornado.web.HTTPError(503) from None
+        if grant.limit_key and not services.limits.user_slot(
+            "download", grant.limit_key, self._slot
+        ):
+            # The intent is spent: the client asks for a new one, after Retry-After.
+            self._count_failure("too_many_downloads")
+            self._too_many(LIMIT_RETRY_SECONDS)
 
         try:
             key = await services.keys.unwrap(file_id, grant.wrapped_key)
@@ -522,6 +612,8 @@ class DownloadHandler(BaseHandler):
             return self._abort("storage_unavailable")
         except _ClientGone:
             return self._abort("client_disconnected")
+        except _Stalled:
+            return self._abort("stalled")
         if self._sent != grant.size:
             logger.error(
                 "stored object size differs from the recorded size",
@@ -538,10 +630,14 @@ class DownloadHandler(BaseHandler):
         self._sent += len(data)
         metrics.DOWNLOAD_BYTES.inc(len(data))
         self.write(data)
+        stall = self.application.settings["services"].stall_timeout
         try:
-            await self.flush()  # backpressure: wait until the client has taken it
+            # Backpressure: wait until the client has taken it, but not forever.
+            await asyncio.wait_for(self.flush(), stall or None)
         except tornado.iostream.StreamClosedError:
             raise _ClientGone() from None
+        except TimeoutError:
+            raise _Stalled() from None
 
     def _abort(self, reason: str) -> None:
         """Fail a response whose headers may already be out: close the connection so
@@ -570,6 +666,10 @@ class DownloadHandler(BaseHandler):
 
 
 class _ClientGone(Exception):
+    pass
+
+
+class _Stalled(Exception):
     pass
 
 
@@ -616,6 +716,14 @@ def services_from_settings(api_context: ssl.SSLContext | None = None) -> Service
         part_size=settings.part_size,
         read_size=settings.read_size,
         max_upload_bytes=settings.max_upload_bytes,
+        limits=TransferLimits(
+            uploads_per_user=settings.uploads_per_user,
+            downloads_per_user=settings.downloads_per_user,
+            transfers_per_client=settings.transfers_per_client,
+            refused_per_minute=settings.refused_intents_per_minute,
+            block_seconds=settings.refused_intents_block_seconds,
+        ),
+        stall_timeout=settings.transfer_stall_timeout_seconds,
     )
 
 
@@ -665,7 +773,13 @@ async def main() -> None:
         )
     # xheaders stays off: client addresses come from clientip, against trusted_proxies.
     make_app(services_from_settings(api_context), settings.trusted_proxies).listen(
-        settings.port, max_body_size=settings.max_upload_bytes, ssl_options=ssl_context
+        settings.port,
+        max_body_size=settings.max_upload_bytes,
+        ssl_options=ssl_context,
+        # A connection that sends nothing (no request yet, or its headers too slowly)
+        # for this long is closed; Tornado's default is an hour. A transfer in progress
+        # is never cut by it.
+        idle_connection_timeout=settings.idle_connection_timeout_seconds,
     )
     logger.info(
         "gateway listening",

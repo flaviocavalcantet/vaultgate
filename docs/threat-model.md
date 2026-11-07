@@ -147,8 +147,8 @@ Each row is a threat to an element or flow. The **status** is one of:
 | --- | --- | --- |
 | Many or huge uploads | A size limit per upload, at most 20 open uploads per user, the gateway's memory flat per transfer (M8 load tests) | mitigated |
 | A decompression or parsing bomb at the scanner | Limits on expansion, nesting and time; PDFium capped in memory and time; the file is unscannable, not clean | mitigated |
-| Request floods at the API or the gateway | No rate limits beyond the per-user ones; the gateway's autoscaler absorbs load, not abuse | open (TM-3) |
-| Slow clients holding the gateway's connections | Tornado's defaults: a connection may idle for an hour | open (TM-4) |
+| Request floods at the API or the gateway | Per-user rate limits at the API (transfers started, other requests), per-address limits for the share recipients' routes and failed authentication, and limits on transfers at once per user and per address at the gateway; 429 with Retry-After (M10); a coarse per-address ceiling at the ingress, recommended in the chart | mitigated (TM-3, fixed) |
+| Slow clients holding the gateway's connections | A connection that sends nothing for 60 seconds is closed, and a transfer that moves no bytes for 60 seconds (a body that stops arriving, a download nobody reads) is aborted; at most 16 transfers per address at once (M10) | mitigated (TM-4, fixed) |
 | Share codes mailed in a loop | At most 5 an hour per share | mitigated |
 | The identity provider hammered through the API with random key IDs | Refreshing the JWKS is itself rate limited | mitigated |
 | A stopped scanner or queue | Scan requests wait in the queue and the API resends them; nothing is downloadable before its scan | mitigated |
@@ -183,16 +183,6 @@ Each row is a threat to an element or flow. The **status** is one of:
     credential, and so the union of their rights.
   - **Fix.** One IAM identity per service in Terraform, each with its own least-privilege
     policy, and one OpenBao secret per service.
-- **TM-3. No rate limits on the public API and the gateway.**
-  - **Problem.** Floods are bounded only by the per-user limits and autoscaling.
-  - **Fix.** Decide where limits belong: the ingress (configured in the chart) or in
-    each service. Then apply them per client address, and per user where the API knows
-    who it is.
-- **TM-4. The gateway's connection timeouts are Tornado's defaults.**
-  - **Problem.** A connection may idle for an hour, so slow clients can tie up the
-    gateway.
-  - **Fix.** Set an idle timeout and a header timeout that real transfers never hit,
-    then show with the load tests that they don't.
 - **TM-5. Metrics ports reachable from every pod.**
   - **Problem.** The network policies let any pod in the cluster read every service's
     `/metrics`.
@@ -207,6 +197,30 @@ Each row is a threat to an element or flow. The **status** is one of:
     HIGH CVEs and no fix released (docs/security-scans.md).
   - **Fix.** A slimmer base for the API and the gateway (distroless Python, or one with
     the interpreter only).
+
+### Fixed in M10's last step
+
+- **TM-3. No rate limits on the public API and the gateway.**
+  - **Problem.** Floods were bounded only by the per-user caps on open uploads and
+    shares, and by autoscaling.
+  - **Fix.** Limits of two kinds, in the services, where who and what are known:
+    - **Requests:** the API limits requests per user, with starting a transfer
+      counted apart from every other request.
+    - **Transfers at once:** the gateway limits how many run at once, per user (a
+      share counts as its recipient) and per client address.
+    - **Per address:** unauthenticated routes and failed authentication are limited
+      per client address.
+  - **Outer ceiling.** The chart recommends a coarse per-address ceiling at the
+    ingress.
+  - **One trade-off.** The gateway learns whose transfer it is by spending the intent,
+    so a transfer over its user's limit has spent it.
+- **TM-4. The gateway's connection timeouts were Tornado's defaults.**
+  - **Problem.** A connection could sit idle, or send its headers slowly, for an hour,
+    and a transfer could stop moving bytes and hold its places indefinitely.
+  - **Fix.** A connection that sends nothing for 60 seconds is closed. A transfer whose
+    body stops arriving, or whose download nobody reads, for 60 seconds is aborted (an
+    upload is reported failed). A slow but moving transfer is never cut, and the
+    per-address limit caps how many one client holds.
 
 ### Accepted
 

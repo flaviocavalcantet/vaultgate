@@ -158,6 +158,15 @@ tls:
 ingress:
   enabled: false
   className: ""
+  # The controller's own settings, on the Ingress. Rate limits (M10): the API and the
+  # gateway limit per user and per transfer themselves (see the README), so the
+  # controller only needs a coarse ceiling per client address, against floods before
+  # they reach a pod: well above what one user may do, as a NAT can hold many users.
+  # For example, with ingress-nginx, 50 requests a second and 32 connections per
+  # address: nginx.ingress.kubernetes.io/limit-rps: "50" and
+  # nginx.ingress.kubernetes.io/limit-connections: "32" (Traefik: a RateLimit and an
+  # InFlightReq middleware). Keep the connection ceiling above the gateway's 16
+  # transfers per address.
   annotations: {}
   apiHost: api.vaultgate.localhost
   gatewayHost: gateway.vaultgate.localhost

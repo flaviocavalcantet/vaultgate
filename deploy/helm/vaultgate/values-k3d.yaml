@@ -46,6 +46,10 @@ api:
   smtp:
     host: mailpit.vaultgate-deps
     port: 1025
+  env:
+    # The user OWASP ZAP scans as (make k3d-zap) skips the per-user rate limits, which it
+    # would otherwise mostly be scanning. Never a person, and only on this cluster.
+    VAULTGATE_RATE_LIMIT_EXEMPT_USERS: '["zap-scanner"]'
 
 gateway:
   nodePort: 30888

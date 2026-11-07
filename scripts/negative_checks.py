@@ -4,15 +4,18 @@ end-to-end check, from the host, trusting the root (SSL_CERT_FILE).
 
 1. Authentication: every route in the API's OpenAPI document but the public ones
    (health, and the share recipients' routes, which a link's token and an emailed code
-   authorize) answers 401 with no token, a token that isn't a JWT, alice's token with
-   its payload changed (the signature no longer matches), and alice's claims re-signed
-   with `alg: none`.
+   authorize) refuses no token, a token that isn't a JWT, alice's token with its
+   payload changed (the signature no longer matches), and alice's claims re-signed with
+   `alg: none`: 401, then, once this address has failed often enough, 429 with
+   Retry-After (vaultgate_api.ratelimit), while a valid token from it still works.
 2. Authorization: alice, who isn't an administrator, gets 403 on every /admin route;
    bob gets 404 on alice's file, its download, and its shares, as if it didn't exist.
 3. Intent tokens at the gateway: none is 401; an unknown one, an upload intent for
    another file, and an upload intent used to download are refused, and the refusals
    leave it unspent: it then uploads, once.
-4. TLS: the API, the gateway, Keycloak and OpenBao speak TLS 1.3 and nothing older, and
+4. Rate limits: bob, asking for /me as fast as he can, is refused with 429 and
+   Retry-After once past his burst.
+5. TLS: the API, the gateway, Keycloak and OpenBao speak TLS 1.3 and nothing older, and
    no plain HTTP.
 
     python3 scripts/negative_checks.py [--api URL] [--gateway URL] [--keycloak URL]
@@ -40,6 +43,13 @@ PUBLIC = ("/healthz", "/readyz", "/shares/access")
 def request(
     base: str, method: str, path: str, token: str | None = None, body=None
 ) -> tuple[int, bytes]:
+    status, body, _ = request_full(base, method, path, token, body)
+    return status, body
+
+
+def request_full(
+    base: str, method: str, path: str, token: str | None = None, body=None
+) -> tuple[int, bytes, http.client.HTTPMessage]:
     parts = urllib.parse.urlsplit(base)
     conn = http.client.HTTPSConnection(parts.hostname, parts.port, timeout=30)
     headers = {"Content-Type": "application/json"}
@@ -51,7 +61,7 @@ def request(
     try:
         conn.request(method, path, body=data, headers=headers)
         response = conn.getresponse()
-        return response.status, response.read()
+        return response.status, response.read(), response.headers
     finally:
         conn.close()
 
@@ -89,12 +99,22 @@ def routes(api: str) -> list[tuple[str, str]]:
 def check_authentication(api: str, alice: str) -> None:
     protected = [(m, p) for m, p in routes(api) if not p.startswith(PUBLIC)]
     assert len(protected) > 20, protected  # the document lists them all
+    statuses = []
     for what, token in forged(alice).items():
         for method, path in protected:
-            status, _ = request(api, method, path, token, {})
-            assert status == 401, f"{method} {path} with {what}: {status}"
-    print(f"ok  {len(protected)} protected routes answer 401 to no token, a non-JWT, ", end="")
-    print("a changed payload and alg none")
+            status, _, headers = request_full(api, method, path, token, {})
+            assert status in (401, 429), f"{method} {path} with {what}: {status}"
+            if status == 429:
+                assert int(headers["Retry-After"]) > 0, headers
+            statuses.append(status)
+    # 401 until the address has failed too often, then 429 for its failing requests.
+    first = statuses.index(429) if 429 in statuses else len(statuses)
+    assert first < len(statuses), "no 429 after so many failures"
+    assert set(statuses[first:]) == {429}, "a failure got 401 again during the block"
+    status, _ = request(api, "GET", "/me", alice)
+    assert status == 200, f"alice's valid token got {status} from the blocked address"
+    print(f"ok  {len(protected)} protected routes refuse no token, a non-JWT, a changed ", end="")
+    print(f"payload and alg none: 401, then 429 after {first} failures; valid tokens still work")
 
 
 def check_authorization(api: str, alice: str, bob: str) -> tuple[str, dict]:
@@ -141,6 +161,18 @@ def check_intents(gateway: str, file_id: str, upload: dict) -> None:
     assert status == 403, f"the intent worked twice: {status}"
     print("ok  the gateway refuses no token, an unknown one, another file's and an upload ", end="")
     print("intent to download, and those refusals left the intent to upload once")
+
+
+def check_rate_limit(api: str, bob: str) -> None:
+    for sent in range(1, 301):
+        status, _, headers = request_full(api, "GET", "/me", bob)
+        if status == 429:
+            assert int(headers["Retry-After"]) > 0, headers
+            break
+        assert status == 200, status
+    else:
+        raise AssertionError("bob was never limited in 300 requests")
+    print(f"ok  bob, as fast as he can, gets 429 with Retry-After at request {sent}")
 
 
 def handshake(host: str, port: int, version: ssl.TLSVersion) -> bool:
@@ -191,6 +223,7 @@ def main(argv: list[str]) -> int:
     check_authentication(args.api, alice)
     file_id, upload = check_authorization(args.api, alice, bob)
     check_intents(args.gateway, file_id, upload)
+    check_rate_limit(args.api, bob)
     check_tls(
         {
             "API": args.api,

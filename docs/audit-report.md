@@ -10,9 +10,9 @@ and updates it.
 
 ## Summary
 
-The audit found 29 issues. 17 were fixed in the step that found them, 5 more are
-accepted with a reason, and 7 are open, to be fixed in M10's last step. No finding is
-critical.
+The audit found 29 issues. 17 were fixed in the step that found them and 2 more in M10's
+last step so far, 5 are accepted with a reason, and 5 are still open, for that last
+step. No finding is critical.
 
 The worst ones were:
 - vulnerable dependencies the scanner calls (fixed);
@@ -22,9 +22,9 @@ The worst ones were:
 
 | Status | High | Medium | Low | Total |
 | --- | --- | --- | --- | --- |
-| Fixed | 2 | 6 | 9 | 17 |
+| Fixed | 2 | 7 | 10 | 19 |
 | Accepted | 0 | 2 | 3 | 5 |
-| Open, for M10's last step | 0 | 4 | 3 | 7 |
+| Open, for M10's last step | 0 | 3 | 2 | 5 |
 
 The severity scale:
 - **High:** exploitable by an outsider, or a known vulnerability rated high in code
@@ -71,6 +71,8 @@ on every pull request, so a regression fails the build.
 | A-15 | The gateway's errors and unmatched paths were Tornado's HTML pages, without the security headers | Low | ZAP (100001) | #58: JSON, through the gateway's own handler |
 | A-16 | No `Cross-Origin-Resource-Policy`: another site could embed responses | Low | ZAP (90004) | #58: `same-origin` |
 | A-17 | An unhandled exception's 500 went out without the security headers | Low | Code review of #58 | #58: the headers wrap the whole application |
+| TM-3 | No rate limits on the public API and the gateway | Medium | Threat model | #60: per-user request limits at the API (transfers started apart), per-address limits for the share recipients' routes and failed authentication, transfers at once per user and per address at the gateway; an ingress ceiling recommended in the chart |
+| TM-4 | The gateway's connection timeouts were Tornado's defaults (an hour idle), and a stalled transfer held its places indefinitely | Low | Threat model | #60: idle connections closed after 60 seconds, transfers that move no bytes for 60 seconds aborted |
 
 ### Accepted
 
@@ -98,9 +100,7 @@ Each is recorded where it occurs, with its reason (security-scans.md).
 | --- | --- | --- | --- |
 | TM-1 | No egress network policies: a compromised scanner could send what it decrypts anywhere | Medium | Egress policies per service |
 | TM-2 | API, gateway and scanner share one AWS credential, so each holds all three's rights | Medium | One IAM identity and policy per service, one secret each |
-| TM-3 | No rate limits on the public API and the gateway | Medium | Per-client limits, at the ingress or in the services |
 | TM-7 | `python:3.12-slim` brings Debian packages the services never run, with unfixed HIGH CVEs | Medium | A slimmer Python base image |
-| TM-4 | The gateway's connection timeouts are Tornado's defaults (an hour idle) | Low | Idle and header timeouts, checked against the load tests |
 | TM-5 | Every pod may read every service's `/metrics` | Low | Metrics ports limited to the monitoring namespace |
 | TM-6 | The API's interactive documentation is public | Low | A setting, off by default in the chart |
 

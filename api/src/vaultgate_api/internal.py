@@ -90,6 +90,9 @@ class ConsumeRequest(BaseModel):
 class ConsumeResponse(BaseModel):
     file_id: uuid.UUID
     owner_id: uuid.UUID
+    # Whose transfer this is, for the gateway's per-user limits: the user who asked for
+    # the intent, or the share a recipient downloads through.
+    limit_key: str
     storage_key: str
     declared_size: int
     content_type: str
@@ -195,6 +198,7 @@ async def consume_intent(body: ConsumeRequest, session: SessionDep) -> ConsumeRe
     response = ConsumeResponse(
         file_id=file.id,
         owner_id=file.owner_id,
+        limit_key=f"user:{user_id}",
         storage_key=file.storage_key,
         declared_size=file.declared_size,
         content_type=file.content_type,
@@ -299,6 +303,7 @@ async def _consume_share_download(
     return ConsumeResponse(
         file_id=file.id,
         owner_id=file.owner_id,
+        limit_key=f"share:{share_id}",
         storage_key=file.storage_key,
         declared_size=file.declared_size,
         content_type=file.content_type,

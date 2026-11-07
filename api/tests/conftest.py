@@ -19,12 +19,19 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from tests.fake_oidc import FakeProvider, make_validator
-from vaultgate_api import scans
+from vaultgate_api import ratelimit, scans
 from vaultgate_api.config import settings
 from vaultgate_api.db import get_session
 from vaultgate_api.internal import internal_app
 from vaultgate_api.main import app
 from vaultgate_api.models import Policy
+
+
+@pytest.fixture(autouse=True)
+def fresh_rate_limits():
+    """Each test starts with empty rate-limit counters (vaultgate_api.ratelimit)."""
+    ratelimit.reset()
+
 
 TEST_DATABASE_URL = os.getenv("VAULTGATE_TEST_DATABASE_URL")
 API_ROOT = Path(__file__).resolve().parent.parent

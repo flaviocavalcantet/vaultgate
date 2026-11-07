@@ -17,6 +17,7 @@ from vaultgate_api.config import settings
 from vaultgate_api.headers import SecurityHeadersMiddleware
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
+from vaultgate_api.ratelimit import limit_share_access, limit_user
 from vaultgate_api.routers import (
     admin,
     admin_files,
@@ -76,10 +77,11 @@ app.add_middleware(ClientAddressMiddleware, trusted=settings.trusted_proxies)
 app.include_router(health.router)
 # Share recipients have no token: the link's own token and an emailed code authorize
 # them (vaultgate_api.routers.share_access).
-app.include_router(share_access.router)
+app.include_router(share_access.router, dependencies=[Depends(limit_share_access)])
 
 # Deny by default: every router below requires a valid bearer token.
-protected = APIRouter(dependencies=[Depends(get_principal)])
+# Authenticated, then within the caller's rate limits (vaultgate_api.ratelimit).
+protected = APIRouter(dependencies=[Depends(get_principal), Depends(limit_user)])
 protected.include_router(me.router)
 protected.include_router(admin.router)
 protected.include_router(admin_files.router)
