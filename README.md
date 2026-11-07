@@ -551,6 +551,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Service identity: client certificates from OpenBao for the gateway and the scanner; the API's internal port requires mutual TLS and authorizes by certificate identity, the shared tokens kept as a second factor ([ADR 0013](docs/adr/0013-service-identity.md))
   - [ ] Running-system tests: OWASP ZAP against the API and the gateway on the cluster, and negative tests (authorization bypass, token reuse, TLS downgrade, plain HTTP)
   - [ ] Threat model (STRIDE over the data flows) and a published audit report: findings, their fixes, and what is accepted
+  - [ ] Fixes: the vulnerabilities and problems M10 found that its earlier steps didn't fix, the API's and the gateway's images on a slimmer Python base among them (the unfixed Debian packages of `python:3.12-slim`); each finding fixed, or accepted with its reason, and the report updated to match
 - [ ] **M11 — Node enrollment:** certificates for external nodes through VaultGate's API, built on the M9 PKI, with a choice of first-trust methods
   - [ ] A second intermediate CA for nodes, from the offline root, limited to node identities; short-lived certificates, revocation (CRL and OCSP)
   - [ ] Enrollment API: a node sends a CSR for a key it generated itself, and VaultGate signs it through OpenBao once the node passes its first-trust check; under the access policies and in the audit log; renewal over mTLS with the current certificate, so the first credential is used once
