@@ -20,6 +20,7 @@ def test_every_response_gets_the_headers() -> None:
         TestClient(app).get("/me"),  # 401
     ):
         assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["cross-origin-resource-policy"] == "same-origin"
         assert response.headers["content-security-policy"] == (
             "default-src 'none'; frame-ancestors 'none'"
         )

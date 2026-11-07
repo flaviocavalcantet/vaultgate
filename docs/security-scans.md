@@ -240,8 +240,10 @@ ZAP was first run on a local API and gateway, before it went into CI.
     over TLS, no `Content-Security-Policy` on the gateway's pages.
   - **Fix.** Every response of the API and the gateway, errors included, now carries
     `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none';
-    frame-ancestors 'none'`, and `Cache-Control: no-store`. A response that sets its
-    own `Cache-Control` keeps it.
+    frame-ancestors 'none'`, `Cross-Origin-Resource-Policy: same-origin` (ZAP 90004,
+    first reported in CI: no other site may embed a response, while a download, a
+    navigation, and a cross-origin fetch with CORS work as before), and
+    `Cache-Control: no-store`. A response that sets its own `Cache-Control` keeps it.
   - **HSTS.** Over TLS they also send `Strict-Transport-Security: max-age=63072000`.
   - **Exception.** The API's interactive docs (`/docs`, `/redoc`) get no CSP, because
     they load Swagger UI's and ReDoc's scripts.

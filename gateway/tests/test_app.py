@@ -208,6 +208,7 @@ class UploadTest(GatewayCase):
     def test_every_response_gets_the_security_headers(self) -> None:
         for response in (self.fetch("/healthz"), self.put(uuid.uuid4(), b"", token=None)):
             assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert response.headers["Cross-Origin-Resource-Policy"] == "same-origin"
             assert response.headers["Content-Security-Policy"] == (
                 "default-src 'none'; frame-ancestors 'none'"
             )

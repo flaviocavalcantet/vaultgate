@@ -151,9 +151,11 @@ class BaseHandler(tornado.web.RequestHandler):
     def set_default_headers(self) -> None:
         # On every response, errors included (M10, docs/security-scans.md): no server
         # name or version, nothing a browser may sniff, render with scripts or frame,
-        # nothing cached, and HTTPS only from then on when served over TLS.
+        # nothing cached or embedded by another site (a download is a navigation, which
+        # CORP doesn't restrict), and HTTPS only from then on when served over TLS.
         self.clear_header("Server")
         self.set_header("X-Content-Type-Options", "nosniff")
+        self.set_header("Cross-Origin-Resource-Policy", "same-origin")
         self.set_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
         self.set_header("Cache-Control", "no-store")
         if self.request.protocol == "https":
