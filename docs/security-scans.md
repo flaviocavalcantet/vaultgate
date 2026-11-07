@@ -120,6 +120,11 @@ In `scripts/` and `loadtest/`, Semgrep and Bandit report:
   the image picks the fix up. A smaller base image (distroless Python, or one built
   with only the interpreter) would remove most of these packages outright; left for
   later, as it changes how the images are built.
+- **Fixes the base image doesn't carry yet.** In November 2026 Debian fixed two HIGH
+  zlib vulnerabilities (CVE-2026-76844, CVE-2026-85091) before `python:3.12-slim` was
+  rebuilt with the fix, and the gate failed on them. Both Python images now apply
+  Debian's security updates when they are built (`apt-get upgrade`), so a fix that
+  Debian has released is in the next build.
 
 ### Fixed
 
