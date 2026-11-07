@@ -320,7 +320,10 @@ check() {
 # security/zap/gateway-openapi.yaml with a token that isn't an intent (one real intent
 # would be spent by the first request). Passive and active scans; any warning that
 # security/zap/<target>.conf doesn't mark as ignored fails the run. Its attacks create
-# files and shares as alice: run it on a cluster nothing else needs, last.
+# files and shares as alice: run it on a cluster nothing else needs, last. alice's token
+# lasts 5 minutes (the realm's accessTokenLifespan) and is fetched right before the
+# API's scan, whose active part is capped at 3: the whole scan runs as alice, never
+# carrying on unauthenticated (it takes about a minute).
 ZAP_IMAGE=zaproxy/zap-stable:2.17.0
 zap() {
   local out=${VAULTGATE_ZAP_DIR:-zap-reports} status=0 token
@@ -332,7 +335,8 @@ print(login(wait_for("'"$KEYCLOAK"'"), "alice", "alice-dev-password")["access_to
   log "ZAP: the API, from its OpenAPI document, as alice"
   docker run --rm --network host -v "$PWD/$out:/zap/wrk:rw" -e ZAP_AUTH_HEADER=Authorization \
     -e ZAP_AUTH_HEADER_VALUE="Bearer $token" "$ZAP_IMAGE" zap-api-scan.py \
-    -t "$API/openapi.json" -f openapi -c api.conf -r api.html -J api.json || status=1
+    -t "$API/openapi.json" -f openapi -c api.conf -r api.html -J api.json \
+    -z "-config scanner.maxScanDurationInMins=3" || status=1
   log "ZAP: the gateway"
   docker run --rm --network host -v "$PWD/$out:/zap/wrk:rw" -e ZAP_AUTH_HEADER=Authorization \
     -e ZAP_AUTH_HEADER_VALUE="Bearer not-an-intent" "$ZAP_IMAGE" zap-api-scan.py \
