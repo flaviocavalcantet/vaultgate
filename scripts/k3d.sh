@@ -322,8 +322,9 @@ check() {
 # security/zap/<target>.conf doesn't mark as ignored fails the run. Its attacks create
 # files and shares as alice: run it on a cluster nothing else needs, last. alice's token
 # lasts 5 minutes (the realm's accessTokenLifespan) and is fetched right before the
-# API's scan, whose active part is capped at 3: the whole scan runs as alice, never
-# carrying on unauthenticated (it takes about a minute).
+# API's scan, whose active part is capped at 3 (the whole scan takes about a minute).
+# The token must still be accepted once the scan is done, or the run fails: a scan that
+# went on unauthenticated would pass without testing what alice can reach.
 ZAP_IMAGE=zaproxy/zap-stable:2.17.0
 zap() {
   local out=${VAULTGATE_ZAP_DIR:-zap-reports} status=0 token
@@ -337,6 +338,10 @@ print(login(wait_for("'"$KEYCLOAK"'"), "alice", "alice-dev-password")["access_to
     -e ZAP_AUTH_HEADER_VALUE="Bearer $token" "$ZAP_IMAGE" zap-api-scan.py \
     -t "$API/openapi.json" -f openapi -c api.conf -r api.html -J api.json \
     -z "-config scanner.maxScanDurationInMins=3" || status=1
+  if ! curl -sf --cacert "$ROOT_CA" -o /dev/null -H "Authorization: Bearer $token" "$API/me"; then
+    echo "alice's token expired during the API's scan: part of it ran unauthenticated" >&2
+    status=1
+  fi
   log "ZAP: the gateway"
   docker run --rm --network host -v "$PWD/$out:/zap/wrk:rw" -e ZAP_AUTH_HEADER=Authorization \
     -e ZAP_AUTH_HEADER_VALUE="Bearer not-an-intent" "$ZAP_IMAGE" zap-api-scan.py \
