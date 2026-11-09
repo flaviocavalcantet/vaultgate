@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # carry this shared secret. Unset means the internal API refuses everything.
     internal_port: int = 8001
     internal_token: SecretStr | None = None
+    # Apply pending database migrations (alembic.ini in the working directory) before
+    # serving: the image does, as it has no shell to run `alembic upgrade head` first.
+    migrate_on_start: bool = False
     # The interactive documentation (/docs, /redoc) and the OpenAPI document
     # (/openapi.json) on the public port (M10, TM-6). On by default for development; the
     # Helm chart turns them off unless asked, so a deployment doesn't map its routes for
