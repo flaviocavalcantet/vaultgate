@@ -37,7 +37,11 @@ api:
   replicas: 1
   docs: true
   nodesCa: { enabled: true }
-  nodes: { enabled: true, nodePort: 30802 }
+  nodes:
+    enabled: true
+    nodePort: 30802
+    # The local stand-in for AWS (scripts/k3d.sh), and a made-up account.
+    aws: { certificatesSecret: vaultgate-aws-iid, accounts: ["000000000000"] }
   nodePort: 30800
   publicUrl: https://localhost:8000
   gatewayPublicUrl: https://localhost:8888

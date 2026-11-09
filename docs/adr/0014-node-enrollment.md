@@ -2,7 +2,8 @@
 
 **Status:** Accepted (M11, in steps: the nodes' CA; then enrollment, with admin approval
 as its first first-trust method; then first trust by a Keycloak client, and by an
-admin's enrollment token; the other methods follow, and extend this record)
+admin's enrollment token, and by cloud instance identity (AWS); the other methods
+follow, and extend this record)
 
 ## Context
 
@@ -187,6 +188,44 @@ once.**
 - **The node's client** reads the token from `VAULTGATE_ENROLLMENT_TOKEN`, or asks for
   it, and never takes it as a command-line argument, which shell history would keep.
 
+### First trust by cloud instance identity
+
+**An instance of an allowed cloud account enrolls with the identity document its cloud
+signs, once per instance.** AWS first; GCP's and Azure's documents would be further
+providers behind the same route.
+
+- **The document:** an EC2 instance reads it from the instance metadata service
+  (IMDSv2):
+  - JSON naming its account, instance, region and launch time;
+  - AWS's RSA-SHA256 signature over it (base64).
+
+  The node sends both, with a CSR, to `POST /nodes/enrollments/by-cloud`.
+- **What VaultGate checks:**
+  - **The signature**, against the certificates the operator configures: AWS's
+    published ones, for the regions in use (`api.nodes.aws.certificatesSecret`). There
+    is no other trust anchor: a document that verifies against none is refused.
+  - **The account**, which must be allowed (`accounts`; none, and the method is off).
+  - **The region**, if any are listed (`regions`).
+  - **The launch time**, optionally: at most `maxLaunchAgeSeconds` ago.
+  - **The `enroll` policies**, as for every method.
+- **The node's name is its instance's** (`aws-<instance ID>`). Nothing the node sends
+  chooses it.
+- **Once per instance, because the document isn't secret.** Any process on the instance
+  can read it, and it never changes. So VaultGate records the instance
+  (`aws:<account>:<instance>`, under the same unique index as Keycloak clients) and
+  accepts its first enrollment only, even after that node is revoked.
+  - If something else on the instance enrolled first, the real node is refused, and the
+    admin sees both in the audit log.
+  - The launch-time limit narrows that window to the instance's first minutes, for
+    fleets that enroll at boot.
+- **Refusals:** a document whose signature doesn't verify is refused without an audit
+  record (anyone can send one). A signed document from the wrong account, region or
+  launch time, or an instance used already, is refused and audited.
+- **Locally:** k3d has no EC2. `make k3d-up` makes a stand-in for AWS's signing key next
+  to the root (`local-aws-iid.key`), and the cluster's API trusts its certificate for a
+  made-up account. `scripts/node_check.py` serves a document signed with it from a fake
+  metadata service.
+
 ### First trust by a Keycloak client
 
 **A node with its own confidential Keycloak client enrolls with that client's token, at
@@ -279,6 +318,10 @@ once and once.**
   enrolls with it, and then:
   - the token is refused a second time;
   - a token carol revoked enrolls nothing.
+- **The cloud identity check:** `scripts/node_check.py` also enrolls a fourth node, from
+  a fake metadata service, with the stand-in's signature. Then:
+  - the instance can't enroll a second node;
+  - a document changed after signing is refused.
 - **The Keycloak client check:** `scripts/node_check.py` also makes a node client with
   its certificate. The node enrolls with a token got by `private_key_jwt`, and checks
   that:

@@ -500,6 +500,8 @@ curl -s -X POST https://localhost:8000/admin/nodes/tokens -H "Authorization: Bea
 scripts/vaultgate_node.py enroll-token          # asks for it (or VAULTGATE_ENROLLMENT_TOKEN)
 ```
 
+Or, on an EC2 instance of an allowed account (`api.nodes.aws` in the chart), by its instance identity: `scripts/vaultgate_node.py enroll-cloud` reads the signed identity document from the metadata service, and the node is named `aws-<instance ID>`. Each instance enrolls once.
+
 Or by the node's own Keycloak client: the node makes a credential (an RSA key and its certificate), an admin creates the client `node-<name>` for it, and the node enrolls with that client's token, got by a JWT its key signs (`private_key_jwt`):
 
 ```bash
@@ -609,7 +611,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] First trust by a Keycloak client: one confidential client per node, authenticated with a signed JWT (`private_key_jwt`); VaultGate accepts the client's token for one enrollment only (it never writes to Keycloak: removing the role afterwards is the admin's tidying, [ADR 0014](docs/adr/0014-node-enrollment.md))
   - [x] First trust by an admin enrollment token: single use, short-lived, limited to one node identity ([ADR 0014](docs/adr/0014-node-enrollment.md))
   - [ ] First trust by TPM attestation: the node's key proven to be held by its TPM
-  - [ ] First trust by cloud instance identity: the cloud's signed instance identity document (AWS first; GCP and Azure alike)
+  - [ ] First trust by cloud instance identity: the cloud's signed instance identity document (AWS first; GCP and Azure alike). AWS is done: one enrollment per instance, from allowed accounts and regions ([ADR 0014](docs/adr/0014-node-enrollment.md))
 - [ ] **M12 — Delivery and scaling:** builds on M7 and the M8 load tests
   - [ ] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them, replacing the local registry
   - [ ] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests

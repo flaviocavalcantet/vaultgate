@@ -68,6 +68,18 @@ spec:
               value: /etc/vaultgate/client-ca/ca.crt
             - name: VAULTGATE_OPENBAO_AGENT_ADDRESS
               value: http://127.0.0.1:8100
+            {{- with $api.nodes.aws }}
+            {{- if .certificatesSecret }}
+            - name: VAULTGATE_NODE_AWS_CERTIFICATES_FILE
+              value: /etc/vaultgate/aws-iid/certificates.pem
+            - name: VAULTGATE_NODE_AWS_ACCOUNTS
+              value: {{ join "," .accounts | quote }}
+            - name: VAULTGATE_NODE_AWS_REGIONS
+              value: {{ join "," .regions | quote }}
+            - name: VAULTGATE_NODE_CLOUD_MAX_LAUNCH_AGE_SECONDS
+              value: {{ .maxLaunchAgeSeconds | quote }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- with .Values.scanQueueUrl }}
             - name: VAULTGATE_SCAN_QUEUE_URL
@@ -106,11 +118,18 @@ spec:
             {{- include "vaultgate.openbaoMount" $ctx | nindent 12 }}
             {{- include "vaultgate.tlsMount" $ctx | nindent 12 }}
             {{- include "vaultgate.trustMount" . | nindent 12 }}
+            {{- if and $api.nodes.enabled $api.nodes.aws.certificatesSecret }}
+            - { name: aws-iid, mountPath: /etc/vaultgate/aws-iid, readOnly: true }
+            {{- end }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
         {{- include "vaultgate.openbaoVolumes" $ctx | nindent 8 }}
         {{- include "vaultgate.tlsVolume" $ctx | nindent 8 }}
         {{- include "vaultgate.trustVolume" . | nindent 8 }}
+        {{- if and $api.nodes.enabled $api.nodes.aws.certificatesSecret }}
+        - name: aws-iid
+          secret: { secretName: {{ $api.nodes.aws.certificatesSecret }}, items: [{ key: certificates.pem, path: certificates.pem }] }
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

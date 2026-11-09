@@ -3,8 +3,8 @@
 carol (an admin) approves once the fingerprint matches, the node completes with the
 one-time code, calls the nodes' port with its certificate, renews with a new key, and is
 revoked; then a second node enrolls with its own Keycloak client (private_key_jwt),
-once; and a third with carol's enrollment token, once. What must be refused on the way,
-is.
+once; a third with carol's enrollment token, once; and a fourth by its (stand-in) AWS
+instance identity, once. What must be refused on the way, is.
 
     python3 scripts/node_check.py --api URL --nodes URL --keycloak URL
 
@@ -13,12 +13,17 @@ SSL_CERT_FILE (scripts/k3d.sh's host_trust). Standard library and OpenSSL only.
 """
 
 import argparse
+import base64
+import datetime
+import http.server
+import json
 import os
 import secrets
 import socket
 import ssl
 import sys
 import tempfile
+import threading
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -154,7 +159,80 @@ def main(argv: list[str]) -> int:
 
     by_client(args.keycloak.rstrip("/"), f"{name}-kc", carol)
     by_token(f"{name}-tok", carol)
+    by_cloud(carol)
     return 0
+
+
+def fake_imds(key: Path, document: str) -> http.server.ThreadingHTTPServer:
+    """An instance metadata service (IMDSv2's paths) serving `document`, signed with
+    `key`: the local stand-in for AWS's (scripts/k3d.sh), which the cluster's API trusts."""
+    signature = base64.b64encode(node.openssl("dgst", "-sha256", "-sign", str(key),
+                                              data=document.encode())).decode()  # fmt: skip
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def answer(self, body: str) -> None:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+        def do_PUT(self) -> None:
+            self.answer("imds-session-token")
+
+        def do_GET(self) -> None:
+            if self.headers.get("X-aws-ec2-metadata-token") != "imds-session-token":
+                self.send_response(401)
+                self.end_headers()
+            elif self.path.endswith("/document"):
+                self.answer(document)
+            elif self.path.endswith("/signature"):
+                self.answer(signature)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def by_cloud(carol: str) -> None:
+    """First trust by cloud instance identity: a document for a made-up instance of the
+    allowed account, signed by the stand-in for AWS; the instance enrolls once."""
+    pki = Path(os.getenv("VAULTGATE_PKI_DIR", Path.home() / ".vaultgate" / "pki"))
+    instance = f"i-0{secrets.token_hex(8)}"
+    document = json.dumps({
+        "accountId": "000000000000", "instanceId": instance, "region": "ap-northeast-1",
+        "pendingTime": datetime.datetime.now(datetime.UTC).isoformat(),
+    })  # fmt: skip
+    server = fake_imds(pki / "local-aws-iid.key", document)
+    node.IMDS = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            node.NODE_DIR = Path(directory)
+            enrolled = node.enroll_cloud()
+            assert enrolled["identity"] == f"spiffe://nodes.vaultgate/node/aws-{instance}"
+            assert node.whoami()["name"] == f"aws-{instance}"
+            again_doc, again_sig = node.instance_identity()
+            status, _ = node.call(f"{node.API}/nodes/enrollments/by-cloud", "POST",
+                                  {"provider": "aws", "document": again_doc,
+                                   "signature": again_sig,
+                                   "csr": node.csr(node.NODE_DIR / "node.key")})  # fmt: skip
+            assert status == 409, f"the instance a second time: {status}"
+            print("ok  enrolled by its instance identity, which enrolls no second node")
+            forged = json.loads(document) | {"accountId": "000000000001"}
+            status, _ = node.call(f"{node.API}/nodes/enrollments/by-cloud", "POST",
+                                  {"provider": "aws", "document": json.dumps(forged),
+                                   "signature": again_sig,
+                                   "csr": node.csr(node.NODE_DIR / "node.key")})  # fmt: skip
+            assert status == 403, f"a changed document: {status}"
+            print("ok  a document changed after signing is refused")
+            node.call(f"{node.API}/admin/nodes/{enrolled['node_id']}/revoke", "POST",
+                      token=carol)  # fmt: skip
+    finally:
+        server.shutdown()
 
 
 def by_token(name: str, carol: str) -> None:

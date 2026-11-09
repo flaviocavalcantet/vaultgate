@@ -108,6 +108,15 @@ api:
     port: 8002
     # Publish the nodes' port on every node at this port (local clusters), as nodePort.
     nodePort: ""
+    # First trust by AWS instance identity: documents verified with the certificates in
+    # this Secret (key certificates.pem: AWS's, for the RSA signature, for your regions),
+    # from these accounts (none: off), in these regions (none: any), launched at most
+    # maxLaunchAgeSeconds ago (0: no limit).
+    aws:
+      certificatesSecret: ""
+      accounts: []
+      regions: []
+      maxLaunchAgeSeconds: 0
   # Set to also publish the public port on every node at this port (an extra NodePort
   # Service with that port only), as the local k3d cluster does; empty behind an Ingress.
   nodePort: ""
