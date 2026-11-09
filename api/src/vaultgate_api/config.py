@@ -119,6 +119,14 @@ class Settings(BaseSettings):
     # never longer than the maximum.
     node_token_ttl_seconds: int = 3600
     node_token_max_ttl_seconds: int = 86400
+    # First trust by cloud instance identity (M11, ADR 0014), AWS: instance identity
+    # documents verified with these certificates (AWS's, for the RSA signature, for the
+    # regions used; a PEM bundle), from these accounts only (none: the method is off),
+    # in these regions (none: any), and, if set, launched at most this long ago.
+    node_aws_certificates_file: str | None = None
+    node_aws_accounts: Annotated[list[str], NoDecode] = []
+    node_aws_regions: Annotated[list[str], NoDecode] = []
+    node_cloud_max_launch_age_seconds: int = 0
     # The nodes' port: mutual TLS, a client certificate from this CA (the root; the
     # name constraints keep node identities to the nodes' CA) naming a node. Renewal is
     # served there. Unset: no nodes' port.
@@ -202,9 +210,9 @@ class Settings(BaseSettings):
     def split_networks(cls, value):
         return parse_networks(value) if isinstance(value, str) else value
 
-    @field_validator("quarantine_kinds", mode="before")
+    @field_validator("quarantine_kinds", "node_aws_accounts", "node_aws_regions", mode="before")
     @classmethod
-    def split_kinds(cls, value):
+    def split_lists(cls, value):
         if isinstance(value, str):
             return [kind.strip() for kind in value.split(",") if kind.strip()]
         return value
