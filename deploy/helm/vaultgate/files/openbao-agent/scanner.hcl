@@ -26,5 +26,5 @@ template {
 template {
   destination = "/run/secrets/vaultgate/aws-credentials"
   perms       = "0400"
-  contents    = "{{ with secret \"secret/data/vaultgate/aws\" }}{{ .Data.data.value }}{{ end }}"
+  contents    = "{{ with secret \"secret/data/vaultgate/aws-scanner\" }}{{ .Data.data.value }}{{ end }}"
 }

@@ -208,10 +208,12 @@ EOT
 # secret/vaultgate/<name>, its value in the field `value`. Each service logs in as its
 # own service account and may read the secrets it uses and nothing else; the values
 # never pass through git or Helm values. `make k3d-up` seeds them with random values
-# (scripts/service_secrets.py seed) as the secrets-seed service account, which may create a
-# secret and see whether one exists (its metadata), but not read or change one: a seeded
-# value is never overwritten. It also rotates OpenBao's own database password once
-# PostgreSQL is up, after which nobody but OpenBao knows it.
+# (scripts/service_secrets.py seed), and each service's own AWS key (aws-api,
+# aws-gateway, aws-scanner; M10, TM-2) from Terraform's per-service IAM users
+# (scripts/service_secrets.py seed-aws), as the secrets-seed service account. That
+# account may create a secret and see whether one exists (its metadata), but not read or
+# change one: a seeded value is never overwritten. It also rotates OpenBao's own database
+# password once PostgreSQL is up, after which nobody but OpenBao knows it.
 initialize "secrets" {
   request "mount" {
     operation = "update"
@@ -255,7 +257,7 @@ EOT
 path "database/creds/vaultgate-api" { capabilities = ["read"] }
 path "secret/data/vaultgate/internal-token" { capabilities = ["read"] }
 path "secret/data/vaultgate/scanner-token" { capabilities = ["read"] }
-path "secret/data/vaultgate/aws" { capabilities = ["read"] }
+path "secret/data/vaultgate/aws-api" { capabilities = ["read"] }
 EOT
     }
   }
@@ -265,7 +267,7 @@ EOT
     data = {
       policy = <<EOT
 path "secret/data/vaultgate/internal-token" { capabilities = ["read"] }
-path "secret/data/vaultgate/aws" { capabilities = ["read"] }
+path "secret/data/vaultgate/aws-gateway" { capabilities = ["read"] }
 EOT
     }
   }
@@ -275,7 +277,7 @@ EOT
     data = {
       policy = <<EOT
 path "secret/data/vaultgate/scanner-token" { capabilities = ["read"] }
-path "secret/data/vaultgate/aws" { capabilities = ["read"] }
+path "secret/data/vaultgate/aws-scanner" { capabilities = ["read"] }
 EOT
     }
   }

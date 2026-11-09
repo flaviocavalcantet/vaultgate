@@ -51,6 +51,11 @@ api:
     # The user OWASP ZAP scans as (make k3d-zap) skips the per-user rate limits, which it
     # would otherwise mostly be scanning. Never a person, and only on this cluster.
     VAULTGATE_RATE_LIMIT_EXEMPT_USERS: '["zap-scanner"]'
+    # The share recipients' per-address limit, off here: every client of this cluster,
+    # ZAP included, arrives from the host's one address, and the limit's 429s partway
+    # through a scan read to ZAP's comparing rules as a change of behaviour (it took
+    # one for SQL injection). The API's unit tests cover the limit.
+    VAULTGATE_RATE_LIMIT_SHARE_ACCESS_PER_MINUTE: "0"
 
 gateway:
   nodePort: 30888

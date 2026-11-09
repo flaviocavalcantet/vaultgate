@@ -138,7 +138,7 @@ Each row is a threat to an element or flow. The **status** is one of:
 | Secrets in git, images or environment variables | gitleaks over the whole history; credentials come from OpenBao as files, never environment variables (`make k3d-check` checks the deployments) | mitigated |
 | Metrics ports reachable from every pod | Only Prometheus' namespace may reach the metrics ports (M10); `make k3d-check` checks another pod can't | mitigated (TM-5, fixed) |
 | A compromised scanner (it parses untrusted files) sends what it decrypts elsewhere | PDFs are parsed in a WebAssembly sandbox with memory and time limits, and the image is distroless. Egress network policies let each component reach only DNS, the API's internal port and the dependencies listed for it (M10); `make k3d-check` checks the API reaches nothing else | mitigated (TM-1, fixed) |
-| One service's AWS credentials used for another's work | API, gateway and scanner share one AWS credential, so the scanner, which only reads, can also write and delete objects | open (TM-2) |
+| One service's AWS credentials used for another's work | Each service has its own AWS identity and least-privilege policy (M10): the API only sends scan requests, the scanner only reads objects, unwraps their keys and consumes the queue, and only the gateway writes; direct use of the vault key needs a file's encryption context; `terraform test` checks the policies | mitigated (TM-2, fixed) |
 | Known vulnerabilities in the images | Trivy gates on fixable HIGH and CRITICAL; the Python images still carry Debian packages with unfixed CVEs | open (TM-7) |
 
 ### Denial of service
@@ -171,12 +171,6 @@ Each row is a threat to an element or flow. The **status** is one of:
 
 ### Open: fixed in M10's last step
 
-- **TM-2. One AWS credential for three services.**
-  - **Problem.** The API sends scan requests, the gateway writes and reads objects, and
-    the scanner reads objects and unwraps keys, but all three hold the same
-    credential, and so the union of their rights.
-  - **Fix.** One IAM identity per service in Terraform, each with its own least-privilege
-    policy, and one OpenBao secret per service.
 - **TM-7. Unfixed vulnerabilities in the Python images' base.**
   - **Problem.** `python:3.12-slim` carries Debian packages the services never run, with
     HIGH CVEs and no fix released (docs/security-scans.md).
@@ -184,6 +178,27 @@ Each row is a threat to an element or flow. The **status** is one of:
     the interpreter only).
 
 ### Fixed in M10's last step
+
+- **TM-2. One AWS credential for three services.**
+  - **Problem.** The API sends scan requests, the gateway writes and reads objects, and
+    the scanner reads objects and unwraps keys, but all three held the same
+    credential, and so the union of their rights.
+  - **Fix.** One policy per service (`infra/terraform/modules/access`) with what its
+    code calls and nothing more:
+    - **API:** `sqs:SendMessage`.
+    - **Gateway:** its object writes, reads and deletes under `files/`, and the key's
+      `GenerateDataKey` and `Decrypt`.
+    - **Scanner:** `GetObject`, `Decrypt` and the queue's receive, delete and
+      visibility.
+
+    Direct use of the vault key needs a file's encryption context. S3's use of the key
+    for the bucket's encryption needs `kms:ViaService`.
+  - **Local cluster.** Each service is its own IAM user, whose key it reads from its
+    own OpenBao secret (`aws-api`, `aws-gateway`, `aws-scanner`).
+  - **Tests.** `terraform test` checks the policies: no service holds another's rights,
+    no wildcards, every key use is conditioned. LocalStack doesn't enforce IAM, so the
+    refusals themselves are AWS's to check.
+  - **Production.** IAM roles for service accounts carry the same policies.
 
 - **TM-1. No egress network policies.**
   - **Problem.** The network policies said who may connect to each component, but not

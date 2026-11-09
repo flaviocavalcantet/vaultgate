@@ -164,9 +164,13 @@ load renewed certificates as they run.**
 files in memory.**
 
 - **Stored** in a key-value mount (`secret/`): `secret/vaultgate/<name>`, the value in
-  its `value` field. The secrets are the internal token, the scanner token and the
-  AWS credentials file. The database credentials are not stored at all (below).
-- **Seeded by `make k3d-up`** (`scripts/service_secrets.py seed`) with random tokens.
+  its `value` field. The secrets are the internal token, the scanner token and, since
+  M10, each service's own AWS credentials file (`aws-api`, `aws-gateway`,
+  `aws-scanner`), from its own IAM user with a least-privilege policy
+  (`infra/terraform/modules/access`; TM-2 in docs/threat-model.md). The database
+  credentials are not stored at all (below).
+- **Seeded by `make k3d-up`** with random tokens (`scripts/service_secrets.py seed`),
+  and with each service's AWS key from Terraform's output (`seed-aws`).
   - It runs as the `secrets-seed` service account. Its policy has `create` on the
     secrets and `read` on their metadata. It can create a secret and see that one
     exists, but never read or overwrite one, so a second run keeps every value, and a
