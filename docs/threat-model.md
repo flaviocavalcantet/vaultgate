@@ -3,7 +3,7 @@
 M10's threat model: STRIDE over VaultGate's data flows, as of November 2026 (after M9's
 PKI and M10's service identity). Every threat lists what stands against it and where
 that is decided or tested. A threat that nothing fully covers is a finding, numbered
-**TM-n**, either open (its fix is M10's last step) or accepted with its reason. The
+**TM-n**, either fixed in M10's last step or accepted with its reason. The
 audit report ([audit-report.md](audit-report.md)) gathers these findings with those of
 the scans.
 
@@ -87,7 +87,7 @@ tests check the outside ones (docs/security-scans.md). The trust boundaries:
 Each row is a threat to an element or flow. The **status** is one of:
 - **mitigated**: something in place stands against the threat, cited in the row;
 - **accepted**: a known limit, with its reason under [Accepted](#accepted);
-- **open**: a finding whose fix is M10's last step.
+- **mitigated (TM-n, fixed)**: a finding, fixed in M10's last step.
 
 ### Spoofing
 
@@ -139,7 +139,7 @@ Each row is a threat to an element or flow. The **status** is one of:
 | Metrics ports reachable from every pod | Only Prometheus' namespace may reach the metrics ports (M10); `make k3d-check` checks another pod can't | mitigated (TM-5, fixed) |
 | A compromised scanner (it parses untrusted files) sends what it decrypts elsewhere | PDFs are parsed in a WebAssembly sandbox with memory and time limits, and the image is distroless. Egress network policies let each component reach only DNS, the API's internal port and the dependencies listed for it (M10); `make k3d-check` checks the API reaches nothing else | mitigated (TM-1, fixed) |
 | One service's AWS credentials used for another's work | Each service has its own AWS identity and least-privilege policy (M10): the API only sends scan requests, the scanner only reads objects, unwraps their keys and consumes the queue, and only the gateway writes; direct use of the vault key needs a file's encryption context; `terraform test` checks the policies | mitigated (TM-2, fixed) |
-| Known vulnerabilities in the images | Trivy gates on fixable HIGH and CRITICAL; the Python images still carry Debian packages with unfixed CVEs | open (TM-7) |
+| Known vulnerabilities in the images | VaultGate's three images are distroless, with only the Debian packages their code links to, and Trivy gates them on fixable HIGH and CRITICAL (M10). The third-party images are scanned and reported on every pull request and weekly, and bumped when a fix is released | mitigated (TM-7, fixed) |
 
 ### Denial of service
 
@@ -169,15 +169,22 @@ Each row is a threat to an element or flow. The **status** is one of:
 
 ## Findings
 
-### Open: fixed in M10's last step
+### Fixed in M10's last step
 
 - **TM-7. Unfixed vulnerabilities in the Python images' base.**
-  - **Problem.** `python:3.12-slim` carries Debian packages the services never run, with
-    HIGH CVEs and no fix released (docs/security-scans.md).
-  - **Fix.** A slimmer base for the API and the gateway (distroless Python, or one with
-    the interpreter only).
-
-### Fixed in M10's last step
+  - **Problem.** `python:3.12-slim` carried 87 Debian packages, most of them tools the
+    API and the gateway never run, with 49 HIGH CVEs and no fix released
+    (docs/security-scans.md).
+  - **Fix.** Both images are distroless (`gcr.io/distroless/cc-debian13`): Python 3.12,
+    the service's dependencies, and only the Debian packages they link to (glibc,
+    OpenSSL, zlib and seven more), taken from a build stage that applies Debian's
+    security updates, so the image never lags a fix Debian has released. 18 packages,
+    6 HIGH, 2 of them fixed by those updates. No shell and no package manager; the API
+    runs its migrations itself before it serves.
+  - **Tests.** The build fails if a library the binaries link to is missing or belongs
+    to no package; Trivy gates the images as before.
+  - **Also.** The third-party images the environments run are now scanned and reported
+    too, and the stale ones were bumped (docs/security-scans.md).
 
 - **TM-2. One AWS credential for three services.**
   - **Problem.** The API sends scan requests, the gateway writes and reads objects, and
