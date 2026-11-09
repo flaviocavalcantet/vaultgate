@@ -117,12 +117,24 @@ async def request_enrollment(body: EnrollmentIn, session: SessionDep) -> Enrollm
     if await active_node(session, body.name) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "A node of that name is enrolled")
     now = datetime.now(UTC)
-    waiting = await session.scalar(
+    waiting = (
         select(func.count())
         .select_from(NodeEnrollment)
         .where(NodeEnrollment.status.in_(("pending", "approved")), NodeEnrollment.expires_at > now)
     )
-    if waiting >= settings.node_max_pending_enrollments:
+    # Per address first, so one client can't take every waiting place and keep real
+    # nodes out for a day. Not per name: whoever knows a node's name could then keep its
+    # real request out instead.
+    address = client_ip_var.get()
+    if address is not None and (
+        await session.scalar(waiting.where(NodeEnrollment.client_ip == address))
+        >= settings.node_max_pending_per_address
+    ):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many enrollments from this address are waiting; try later",
+        )
+    if await session.scalar(waiting) >= settings.node_max_pending_enrollments:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS, "Too many enrollments are waiting; try later"
         )

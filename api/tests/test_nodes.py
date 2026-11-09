@@ -302,6 +302,26 @@ async def test_too_many_waiting(env, monkeypatch) -> None:
 
 
 @requires_db
+async def test_too_many_waiting_from_one_address(env, monkeypatch) -> None:
+    """One client can't take every waiting place: others still get theirs."""
+    public, _, _, session = env
+    monkeypatch.setattr(settings, "node_max_pending_per_address", 2)
+    codes = [
+        (
+            await public.post("/nodes/enrollments", json={"name": f"n{i}", "csr": csr_for()[0]})
+        ).status_code
+        for i in range(3)
+    ]
+    assert codes == [202, 202, 429]
+    # The same requests from elsewhere don't count against this address.
+    for enrollment in await session.scalars(select(NodeEnrollment)):
+        enrollment.client_ip = "192.0.2.7"
+    await session.flush()
+    again = await public.post("/nodes/enrollments", json={"name": "n9", "csr": csr_for()[0]})
+    assert again.status_code == 202
+
+
+@requires_db
 async def test_a_code_has_a_few_tries_and_a_short_life(env, monkeypatch) -> None:
     public, admin, signer, session = env
     monkeypatch.setattr(settings, "node_code_attempts", 3)

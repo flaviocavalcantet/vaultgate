@@ -81,8 +81,10 @@ credential again.**
   - The answer is the request's ID and the key's fingerprint: SHA-256 over the
     SubjectPublicKeyInfo, as `SHA256:<base64>` (OpenSSH's form). The node also shows its
     operator this fingerprint, computed from its own key.
-  - A request waits a day at most. At most 100 wait at once, and a name with an active
-    node can't be asked for.
+  - A request waits a day at most. At most 100 wait at once, and 10 from one client
+    address, so one client can't take every place. A name with an active node can't be
+    asked for. Names aren't limited: whoever knows a node's name could then keep its
+    real request out.
 - **No credential yet, so no token.** The node's routes (request, status, complete) are
   limited per client address. They are also under the access policies, through a new
   action, `enroll`, evaluated with the node's address and the time, and no groups (a

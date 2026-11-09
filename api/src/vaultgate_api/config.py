@@ -100,13 +100,15 @@ class Settings(BaseSettings):
     # through the pod's OpenBao agent (its API proxy, which adds the agent's token);
     # unset, enrollment answers 503. An enrollment request waits for approval for
     # node_enrollment_ttl_seconds; an approval's one-time code lasts node_code_ttl_seconds
-    # and node_code_attempts tries; at most node_max_pending_enrollments wait at once.
+    # and node_code_attempts tries; at most node_max_pending_enrollments wait at once, and
+    # node_max_pending_per_address from one client address (some nodes share a NAT).
     openbao_agent_address: str | None = None
     nodes_pki_role: str = "node"
     node_enrollment_ttl_seconds: int = 86400
     node_code_ttl_seconds: int = 900
     node_code_attempts: int = 5
     node_max_pending_enrollments: int = 100
+    node_max_pending_per_address: int = 10
     # The nodes' port: mutual TLS, a client certificate from this CA (the root; the
     # name constraints keep node identities to the nodes' CA) naming a node. Renewal is
     # served there. Unset: no nodes' port.
