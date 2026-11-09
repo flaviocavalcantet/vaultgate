@@ -179,8 +179,17 @@ def by_tpm(name: str, carol: str) -> None:
     with tempfile.TemporaryDirectory() as directory:
         state = Path(directory, "tpm")
         state.mkdir()
-        subprocess.run(["swtpm_setup", "--tpm2", "--tpmstate", str(state), "--create-ek-cert",
-                        "--overwrite"], capture_output=True, check=True)  # fmt: skip
+        # swtpm_setup signs the EK's certificate with swtpm_localca, whose system-wide CA
+        # (/var/lib/swtpm-localca) only root and the swtpm user can write: the check gets
+        # its own configuration and local CA, under its temporary directory.
+        env = os.environ | {"XDG_CONFIG_HOME": str(Path(directory, "config"))}
+        for args in (["--create-config-files", "overwrite"],
+                     ["--tpm2", "--tpmstate", str(state), "--create-ek-cert", "--overwrite"]):  # fmt: skip
+            setup = subprocess.run(
+                ["swtpm_setup", *args], env=env, capture_output=True, text=True, check=False
+            )
+            if setup.returncode:
+                raise node.Failure(f"swtpm_setup {args[0]}: {setup.stdout}{setup.stderr}")
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
