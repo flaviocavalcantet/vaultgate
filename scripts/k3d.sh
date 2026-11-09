@@ -345,8 +345,9 @@ check() {
 # before the API's scan, whose active part is capped at 3 (the whole scan takes about a
 # minute). The token must still be accepted once the scan is done, or the run fails: a
 # scan that went on unauthenticated would pass without testing what a user can reach.
-# The share recipients' routes and the gateway keep their per-address limits, so ZAP
-# reaches them until those answer 429 (their unit tests cover the rest).
+# The share recipients' per-address limit is off on this cluster (values-k3d.yaml), as
+# its 429s mid-scan look like a change of behaviour to ZAP; the gateway keeps its own,
+# so ZAP reaches it until it answers 429 (its unit tests cover the rest).
 ZAP_IMAGE=zaproxy/zap-stable:2.17.0
 zap() {
   local out=${VAULTGATE_ZAP_DIR:-zap-reports} status=0 token

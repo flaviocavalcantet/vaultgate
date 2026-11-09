@@ -194,9 +194,11 @@ end-to-end check.
   scans:
   - the API, every route from its OpenAPI document, with a real Keycloak login as
     `zap-scanner`. Since TM-3's fix, that local user is exempt from the per-user rate
-    limits, or ZAP would mostly scan the limiter. The share recipients' routes and the
-    gateway keep their per-address limits, so ZAP reaches them until those answer 429;
-    their unit tests cover the rest;
+    limits, or ZAP would mostly scan the limiter. On the local cluster the share
+    recipients' per-address limit is off too: there every client comes from the host's
+    one address, and its 429s partway through a scan read to ZAP's comparing rules as
+    a change of behaviour (a false SQL injection on `/shares/access/verify`). The API's
+    unit tests cover that limit. The gateway keeps its per-address limits;
   - the gateway, from `security/zap/gateway-openapi.yaml` (it has no OpenAPI document
     of its own), with a token that isn't an intent, since a real one would be spent by
     the first request.
