@@ -68,6 +68,9 @@ jobs:
       - run: terraform fmt -check -recursive ../..
       - run: terraform init -backend=false
       - run: terraform validate
+      # Each service's IAM policy holds only its own rights (M10, TM-2).
+      - run: terraform -chdir=../../modules/access init -backend=false
+      - run: terraform -chdir=../../modules/access test
 
   observability:
     runs-on: ubuntu-latest

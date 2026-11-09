@@ -5,9 +5,10 @@
 #   scripts/k3d.sh up      create the cluster, build and push the images, give OpenBao its
 #                          TLS certificate (from the offline root) and seal key, install
 #                          Argo CD, hand it the repo, wait until everything is synced and
-#                          healthy, install the intermediate CA (the PKI ceremony), then
-#                          create the buckets, key and queues (Terraform) and seed the
-#                          local access policy
+#                          healthy, install the intermediate CA (the PKI ceremony), seed
+#                          the services' credentials, create the bucket, key, queues and
+#                          one IAM user per service (Terraform) and give each service its
+#                          own AWS key, then seed the local access policy
 #   scripts/k3d.sh images  rebuild and push the images, and restart the pods to pull them
 #   scripts/k3d.sh check   the vault end-to-end check against the cluster (traces in
 #                          Tempo and logs in Loki included), plus cluster checks: Argo CD
@@ -137,6 +138,19 @@ pki_ceremony() {
     "vaultgate.io/root-ca-installed=$(date +%s)" >/dev/null 2>&1 || true
 }
 
+# The AWS resources and each service's own AWS key (M10, TM-2): Terraform creates the
+# bucket, key and queues and one IAM user per service, with its own least-privilege
+# policy, in the in-cluster LocalStack; each user's key goes into that service's secret
+# in OpenBao. Before VaultGate's pods are waited for, as their agents wait for the keys.
+aws_setup() {
+  log "Terraform against the in-cluster LocalStack, and each service's AWS key in OpenBao"
+  wait_for 120 "LocalStack" curl -sf http://localhost:4566/_localstack/health
+  make tf-local
+  terraform -chdir=infra/terraform/envs/local output -json service_credentials |
+    VAULTGATE_OPENBAO_JWT=$(kubectl -n openbao create token secrets-seed --audience openbao --duration 10m) \
+      python3 scripts/service_secrets.py seed-aws
+}
+
 # The services' credentials, in OpenBao (M9, ADR 0012): random values for the tokens,
 # created once and kept. The pods' OpenBao agents wait for them.
 secrets_seed() {
@@ -207,14 +221,12 @@ up() {
   secrets_seed
   wait_for 900 "vaultgate-deps to be synced and healthy" app_ready vaultgate-deps
   secrets_rotate
+  aws_setup
   for app in cert-manager kube-prometheus-stack trust-manager vaultgate-observability \
     vaultgate-pki vaultgate; do
     wait_for 900 "$app to be synced and healthy" app_ready "$app"
   done
 
-  log "Terraform against the in-cluster LocalStack"
-  wait_for 120 "LocalStack" curl -sf http://localhost:4566/_localstack/health
-  make tf-local
   host_trust python3 scripts/seed_policies.py --api "$API" --keycloak "$KEYCLOAK"
   log "ready: OpenBao https://localhost:8200, API $API, gateway https://localhost:8888 (TLS: trust $ROOT_CA), Keycloak $KEYCLOAK, Mailpit http://localhost:8025, Grafana http://localhost:3000 (admin/admin), Prometheus http://localhost:9090, Alertmanager http://localhost:9093"
 }

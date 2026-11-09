@@ -2,10 +2,12 @@
 """The services' credentials in OpenBao (M9, ADR 0012).
 
     scripts/service_secrets.py seed    create each secret that doesn't exist yet, with a random
-                               value (the local cluster's dependencies' own credentials
-                               for the AWS keys and the database URL); existing ones are
-                               kept: the seed role may create a secret and see that one
-                               exists, never read or overwrite one
+                               value; existing ones are kept: the seed role may create a
+                               secret and see that one exists, never read or overwrite one
+    scripts/service_secrets.py seed-aws
+                               likewise each service's own AWS key (aws-api, aws-gateway,
+                               aws-scanner; M10, TM-2), from Terraform's output on stdin:
+                               terraform output -json service_credentials
     scripts/service_secrets.py rotate-db
                                rotate OpenBao's own PostgreSQL password, once PostgreSQL
                                is up: from then on only OpenBao knows it
@@ -24,6 +26,7 @@ Settings, from the environment:
 scripts/k3d.sh mints those tokens with kubectl create token. Values are never printed.
 """
 
+import json
 import os
 import secrets
 import sys
@@ -37,23 +40,22 @@ def generated() -> dict[str, dict[str, str]]:
     return {
         "internal-token": {"value": secrets.token_urlsafe(32)},
         "scanner-token": {"value": secrets.token_urlsafe(32)},
-        # The AWS SDKs read this file (AWS_SHARED_CREDENTIALS_FILE); LocalStack takes any key.
-        "aws": {"value": "[default]\naws_access_key_id = test\naws_secret_access_key = test\n"},
     }
 
 
 DATABASE_CREDS = "database/creds/vaultgate-api"
 
 # Who may read what, as the policies in deploy/k3d/openbao/openbao.hcl say.
+# Each service's AWS key is its own (M10, TM-2): no service may read another's.
 ACCESS = {
     "api": {
         "secret/data/vaultgate/internal-token",
         "secret/data/vaultgate/scanner-token",
-        "secret/data/vaultgate/aws",
+        "secret/data/vaultgate/aws-api",
         DATABASE_CREDS,
     },
-    "gateway": {"secret/data/vaultgate/internal-token", "secret/data/vaultgate/aws"},
-    "scanner": {"secret/data/vaultgate/scanner-token", "secret/data/vaultgate/aws"},
+    "gateway": {"secret/data/vaultgate/internal-token", "secret/data/vaultgate/aws-gateway"},
+    "scanner": {"secret/data/vaultgate/scanner-token", "secret/data/vaultgate/aws-scanner"},
 }
 EVERY_PATH = set().union(*ACCESS.values())
 
@@ -74,8 +76,8 @@ def exists(token: str, name: str) -> bool:
         raise  # a refusal here is a wrong policy, not an existing secret
 
 
-def seed_with(token: str) -> None:
-    for name, data in generated().items():
+def seed_with(token: str, values: dict[str, dict[str, str]] | None = None) -> None:
+    for name, data in (values or generated()).items():
         if exists(token, name):
             print(f"ok  secret {name} exists (kept)")
             continue
@@ -96,6 +98,20 @@ def as_seed(action) -> None:
 
 def seed() -> None:
     as_seed(seed_with)
+
+
+def aws_keys(terraform_output: str) -> dict[str, dict[str, str]]:
+    """Each service's AWS credentials file, from `terraform output -json
+    service_credentials`, as the secrets to create."""
+    files = json.loads(terraform_output)
+    if set(files) != set(ACCESS):
+        raise pki.Failure(f"expected AWS keys for {sorted(ACCESS)}, got {sorted(files)}")
+    return {f"aws-{service}": {"value": text} for service, text in files.items()}
+
+
+def seed_aws() -> None:
+    values = aws_keys(sys.stdin.read())
+    as_seed(lambda token: seed_with(token, values))
 
 
 def rotate_db_with(token: str) -> None:
@@ -144,7 +160,7 @@ def check() -> None:
 
 
 def main(argv: list[str]) -> int:
-    commands = {"seed": seed, "rotate-db": rotate_db, "check": check}
+    commands = {"seed": seed, "seed-aws": seed_aws, "rotate-db": rotate_db, "check": check}
     if len(argv) != 1 or argv[0] not in commands:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2

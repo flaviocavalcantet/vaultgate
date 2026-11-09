@@ -21,7 +21,7 @@ services:
   localstack:
     image: localstack/localstack:4.4.0
     environment:
-      SERVICES: s3,kms,sqs
+      SERVICES: s3,kms,sqs,iam
     ports: ["4566:4566"]
 
   # OIDC identity provider for local SSO testing. The `vaultgate` realm (clients,

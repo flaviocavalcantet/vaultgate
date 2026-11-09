@@ -60,5 +60,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "vault" {
 }
 
 output "bucket_name" { value = aws_s3_bucket.vault.bucket }
+output "bucket_arn" { value = aws_s3_bucket.vault.arn }
 output "kms_key_arn" { value = aws_kms_key.vault.arn }
 output "kms_alias" { value = aws_kms_alias.vault.name }

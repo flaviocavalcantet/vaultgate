@@ -1,4 +1,4 @@
-# Emulates S3, KMS and SQS. State lives in the pod: after a restart, run
+# Emulates S3, KMS, SQS and IAM (the services' users; it doesn't enforce their policies). State lives in the pod: after a restart, run
 # `make tf-local` again (`make k3d-up` does).
 apiVersion: apps/v1
 kind: Deployment
@@ -25,7 +25,7 @@ spec:
           # Pinned like compose: releases from 2026.03 on need an auth token.
           image: localstack/localstack:4.4.0
           env:
-            - { name: SERVICES, value: "s3,kms,sqs" }
+            - { name: SERVICES, value: "s3,kms,sqs,iam" } # IAM: one user per service (TM-2)
           ports:
             - { name: http, containerPort: 4566 }
           readinessProbe:

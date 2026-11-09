@@ -10,21 +10,21 @@ and updates it.
 
 ## Summary
 
-The audit found 29 issues. 17 were fixed in the step that found them and 5 more in M10's
-last step so far, 5 are accepted with a reason, and 2 are still open, for that last
+The audit found 29 issues. 17 were fixed in the step that found them and 6 more in M10's
+last step so far, 5 are accepted with a reason, and 1 is still open, for that last
 step. No finding is critical.
 
 The worst ones were:
 - vulnerable dependencies the scanner calls (fixed);
 - a way to hide digits from the scanner in RTF files (fixed);
-- a single AWS credential shared by three services (open);
-- no limit on where pods may connect out (open).
+- a single AWS credential shared by three services (fixed in M10's last step);
+- no limit on where pods may connect out (fixed in M10's last step).
 
 | Status | High | Medium | Low | Total |
 | --- | --- | --- | --- | --- |
-| Fixed | 2 | 8 | 12 | 22 |
+| Fixed | 2 | 9 | 12 | 23 |
 | Accepted | 0 | 2 | 3 | 5 |
-| Open, for M10's last step | 0 | 2 | 0 | 2 |
+| Open, for M10's last step | 0 | 1 | 0 | 1 |
 
 The severity scale:
 - **High:** exploitable by an outsider, or a known vulnerability rated high in code
@@ -76,6 +76,7 @@ on every pull request, so a regression fails the build.
 | TM-1 | No egress network policies: a compromised scanner could send what it decrypts anywhere | Medium | Threat model | #61: each component connects only to DNS, the API's internal port and the dependencies listed for it; checked on the cluster |
 | TM-5 | Every pod could read every service's `/metrics` | Low | Threat model | #61: only Prometheus' namespace reaches the metrics ports; checked on the cluster |
 | TM-6 | The API's interactive documentation was public | Low | Threat model | #61: a setting, off in the Helm chart unless asked for |
+| TM-2 | API, gateway and scanner shared one AWS credential, so each held all three's rights | Medium | Threat model | #62: one least-privilege IAM policy per service, its own identity and OpenBao secret; checked by `terraform test` |
 
 ### Accepted
 
@@ -101,7 +102,6 @@ Each is recorded where it occurs, with its reason (security-scans.md).
 
 | ID | Finding | Severity | Planned fix |
 | --- | --- | --- | --- |
-| TM-2 | API, gateway and scanner share one AWS credential, so each holds all three's rights | Medium | One IAM identity and policy per service, one secret each |
 | TM-7 | `python:3.12-slim` brings Debian packages the services never run, with unfixed HIGH CVEs | Medium | A slimmer Python base image |
 
 ## Reproducing the audit
