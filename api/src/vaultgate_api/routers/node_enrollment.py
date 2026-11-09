@@ -430,7 +430,8 @@ class TokenEnrollmentIn(BaseModel):
     csr: str = Field(max_length=nodes.MAX_CSR_BYTES)
 
 
-INVALID_TOKEN = "Not a valid enrollment token"
+# An error message (Bandit B105 matches the name).
+INVALID_TOKEN = "Not a valid enrollment token"  # nosec B105
 
 
 @router.post("/by-token", status_code=status.HTTP_201_CREATED)

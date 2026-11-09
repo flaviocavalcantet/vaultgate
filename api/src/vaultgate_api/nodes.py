@@ -89,7 +89,8 @@ def check_csr(pem: str) -> str:
 
 
 # An enrollment token's prefix, so secret scanners (and people) recognize one.
-TOKEN_PREFIX = "vgn_"
+# A public prefix, not a secret (Bandit B105 matches the name).
+TOKEN_PREFIX = "vgn_"  # nosec B105
 
 
 def new_enrollment_token() -> str:
