@@ -39,6 +39,7 @@ from vaultgate_api.tracing import FASTAPI_TELEMETRY, TracingMiddleware
 PUBLIC_PATHS = frozenset(
     {"/healthz", "/readyz", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"}
     | {f"/pki/nodes/{p}" for p in ("ca", "ca/pem", "crl", "crl/delta", "ocsp")}
+    | {"/pki/nodes/ocsp/{encoded:path}"}
 )
 
 

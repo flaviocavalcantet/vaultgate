@@ -10,7 +10,12 @@ a minute, so a flood of them doesn't reach OpenBao; OCSP answers are not, so a
 revocation shows at once.
 """
 
-import time
+import asyncio
+import base64
+import binascii
+from collections import defaultdict
+from time import monotonic
+from urllib.parse import unquote
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response, status
@@ -23,6 +28,9 @@ CACHE_SECONDS = 60
 MAX_OCSP_REQUEST = 4096  # bytes; a request for one certificate is about 100
 
 _cache: dict[str, tuple[float, bytes]] = {}
+# One fetch at a time per path: requests that miss the cache together wait for it,
+# instead of each going to OpenBao.
+_fetching: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 async def _openbao(
@@ -46,14 +54,16 @@ def _unavailable() -> HTTPException:
 
 
 async def _cached(request: Request, path: str, media_type: str) -> Response:
-    now = time.monotonic()
     hit = _cache.get(path)
-    if hit is None or hit[0] <= now:
-        response = await _openbao(request, "GET", path)
-        if response.status_code != 200:
-            raise _unavailable()
-        hit = (now + CACHE_SECONDS, response.content)
-        _cache[path] = hit
+    if hit is None or hit[0] <= monotonic():
+        async with _fetching[path]:
+            hit = _cache.get(path)  # fetched while this request waited?
+            if hit is None or hit[0] <= monotonic():
+                response = await _openbao(request, "GET", path)
+                if response.status_code != 200:
+                    raise _unavailable()
+                hit = (monotonic() + CACHE_SECONDS, response.content)
+                _cache[path] = hit
     return Response(
         hit[1], media_type=media_type, headers={"Cache-Control": f"max-age={CACHE_SECONDS}"}
     )
@@ -92,8 +102,33 @@ async def ocsp(request: Request) -> Response:
     async for chunk in request.stream():
         body += chunk
         if len(body) > MAX_OCSP_REQUEST:
-            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "OCSP request too large")
-    response = await _openbao(request, "POST", "ocsp", bytes(body))
+            raise _too_large()
+    return await _ocsp(request, bytes(body))
+
+
+@router.get("/ocsp/{encoded:path}")
+async def ocsp_get(request: Request, encoded: str) -> Response:
+    """OCSP's GET form (RFC 6960, appendix A): the request DER, base64, URL-encoded, as
+    the path. Answered as the POST form is."""
+    # The raw path: a URL-encoded "/" in the base64 must not split it.
+    raw = request.scope.get("raw_path", b"").decode("latin-1").rsplit("/ocsp/", 1)[-1]
+    if len(raw) > MAX_OCSP_REQUEST * 2:
+        raise _too_large()
+    try:
+        der = base64.b64decode(unquote(raw), validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Not a base64 OCSP request") from None
+    if len(der) > MAX_OCSP_REQUEST:
+        raise _too_large()
+    return await _ocsp(request, der)
+
+
+def _too_large() -> HTTPException:
+    return HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "OCSP request too large")
+
+
+async def _ocsp(request: Request, der: bytes) -> Response:
+    response = await _openbao(request, "POST", "ocsp", der)
     if response.headers.get("content-type") != "application/ocsp-response":
         raise _unavailable()
     return Response(
@@ -104,3 +139,4 @@ async def ocsp(request: Request) -> Response:
 def reset() -> None:
     """Forget the cached certificate and lists (tests)."""
     _cache.clear()
+    _fetching.clear()

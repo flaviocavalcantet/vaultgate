@@ -1,6 +1,10 @@
 """The nodes' CA, published (vaultgate_api.routers.pki, M11): its certificate, revocation
 lists and OCSP, from OpenBao, without a token."""
 
+import asyncio
+import base64
+from urllib.parse import quote
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -19,8 +23,9 @@ def openbao(monkeypatch):
     answers: dict[str, tuple[int, str, bytes]] = {}
     seen: list[httpx.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
+        await asyncio.sleep(0.01)  # as a real round trip: concurrent requests overlap
         if request.url.host == "down.test":
             raise httpx.ConnectError("refused", request=request)
         code, ctype, body = answers.get(request.url.path, (404, "application/json", b"{}"))
@@ -66,7 +71,7 @@ def test_the_lists_are_cached_for_a_minute(openbao, monkeypatch) -> None:
     answers, seen = openbao
     answers["/v1/pki-nodes/crl"] = (200, "application/pkix-crl", b"one")
     now = [1000.0]
-    monkeypatch.setattr(pki.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(pki, "monotonic", lambda: now[0])
     client = TestClient(app)
     assert client.get("/pki/nodes/crl").content == b"one"
     answers["/v1/pki-nodes/crl"] = (200, "application/pkix-crl", b"two")
@@ -139,3 +144,37 @@ def test_limited_per_address(openbao, monkeypatch) -> None:
     client = TestClient(app)
     codes = [client.post("/pki/nodes/ocsp", content=b"R").status_code for _ in range(4)]
     assert codes == [200, 200, 200, 429]
+
+
+def test_ocsp_get_form(openbao) -> None:
+    """RFC 6960 appendix A: the request base64 and URL-encoded in the path; a "/" in
+    the base64 arrives as %2F and must not split it."""
+    answers, seen = openbao
+    answers["/v1/pki-nodes/ocsp"] = (200, "application/ocsp-response", b"SIGNED")
+    der = bytes(range(250, 256)) * 3  # base64 with "/" and "+"
+    encoded = quote(base64.b64encode(der).decode(), safe="")
+    assert "%2F" in encoded and "%2B" in encoded
+    response = TestClient(app).get(f"/pki/nodes/ocsp/{encoded}")
+    assert response.status_code == 200
+    assert response.content == b"SIGNED"
+    assert seen[0].method == "POST" and seen[0].content == der
+
+
+def test_ocsp_get_form_refuses_junk_and_size(openbao) -> None:
+    _, seen = openbao
+    client = TestClient(app)
+    assert client.get("/pki/nodes/ocsp/not*base64").status_code == 400
+    big = quote(base64.b64encode(b"x" * (pki.MAX_OCSP_REQUEST + 1)).decode(), safe="")
+    assert client.get(f"/pki/nodes/ocsp/{big}").status_code == 413
+    assert seen == []
+
+
+async def test_concurrent_misses_fetch_once(openbao) -> None:
+    answers, seen = openbao
+    answers["/v1/pki-nodes/crl"] = (200, "application/pkix-crl", b"CRL")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        responses = await asyncio.gather(*(client.get("/pki/nodes/crl") for _ in range(10)))
+    assert [r.content for r in responses] == [b"CRL"] * 10
+    assert len(seen) == 1
