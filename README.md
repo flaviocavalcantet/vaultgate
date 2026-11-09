@@ -476,6 +476,24 @@ kubectl -n vaultgate get hpa,pods                          # the gateway's autos
 
 Chart or manifest changes reach the cluster when they are pushed: Argo CD looks every minute. Code changes reach it with `make k3d-images`. CI runs `k3d-up` and `k3d-check` on every PR, syncing the PR's commit.
 
+### Node enrollment
+
+External nodes get certificates from the nodes' CA through the API ([ADR 0014](docs/adr/0014-node-enrollment.md)). On the local cluster, with `scripts/vaultgate_node.py` as the node (its key stays in `~/.vaultgate/node`):
+
+```bash
+export SSL_CERT_FILE=~/.vaultgate/pki/root-ca.crt
+scripts/vaultgate_node.py request edge-1        # shows the key's fingerprint
+# an admin (carol) checks the fingerprint with you, then approves; the answer is a one-time code
+curl -s -X POST https://localhost:8000/admin/nodes/enrollments/<id>/approve \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"key_fingerprint": "SHA256:..."}'
+scripts/vaultgate_node.py complete <CODE>       # the certificate, in ~/.vaultgate/node
+scripts/vaultgate_node.py whoami                # the nodes' port, https://localhost:8002, with it
+scripts/vaultgate_node.py renew --new-key       # a new certificate (and key); the old one is revoked
+```
+
+Nodes may enroll only where an access policy allows the `enroll` action (the seeded local policy does). Admins list requests and nodes at `/admin/nodes/enrollments` and `/admin/nodes`, reject a request, and revoke a node (`POST /admin/nodes/<id>/revoke`). The nodes' port is for machines only: people, and a frontend, use the public port with tokens.
+
 ### Load testing
 
 Locust scenarios in `loadtest/` run against the local cluster ([ADR 0011](docs/adr/0011-load-testing.md)). Each simulated user logs in as its own load user (`load-001` ... `load-050`, the `/load` group) through `vaultgate-load`, a local-only Keycloak client with the password grant. The web client stays PKCE-only.
@@ -568,8 +586,8 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Fixes: the vulnerabilities and problems M10 found that its earlier steps didn't fix, each fixed or accepted with its reason, and the report updated to match: rate limits and transfer timeouts, egress network policies, one AWS identity per service, and the API's and the gateway's images on distroless (only the Debian packages they link to); every third-party image scanned and reported, the stale ones bumped
 - [ ] **M11 — Node enrollment:** certificates for external nodes through VaultGate's API, built on the M9 PKI, with a choice of first-trust methods
   - [x] A second intermediate CA for nodes, from the offline root, limited to node identities; short-lived certificates, revocation (CRL and OCSP) ([ADR 0014](docs/adr/0014-node-enrollment.md))
-  - [ ] Enrollment API: a node sends a CSR for a key it generated itself, and VaultGate signs it through OpenBao once the node passes its first-trust check; under the access policies and in the audit log; renewal over mTLS with the current certificate, so the first credential is used once
-  - [ ] First trust by admin approval: the request waits, the admin confirms the node's key fingerprint and approves, and a one-time code passed to the node completes the enrollment for that key only
+  - [x] Enrollment API: a node sends a CSR for a key it generated itself, and VaultGate signs it through OpenBao once the node passes its first-trust check; under the access policies and in the audit log; renewal over mTLS with the current certificate, so the first credential is used once ([ADR 0014](docs/adr/0014-node-enrollment.md))
+  - [x] First trust by admin approval: the request waits, the admin confirms the node's key fingerprint and approves, and a one-time code passed to the node completes the enrollment for that key only
   - [ ] First trust by a Keycloak client: one confidential client per node, authenticated with a signed JWT (`private_key_jwt`), its enrollment role removed once the node has its certificate
   - [ ] First trust by an admin enrollment token: single use, short-lived, limited to one node identity
   - [ ] First trust by TPM attestation: the node's key proven to be held by its TPM
