@@ -482,3 +482,23 @@ async def test_revocation_waits_for_openbao(env) -> None:
     signer.failing = False
     nodes_ = (await public.get("/admin/nodes", headers=admin)).json()["items"]
     assert nodes_[0]["status"] == "active"  # not marked revoked while OpenBao said no
+
+
+@requires_db
+async def test_an_enroll_policy_made_by_an_admin_allows_enrolling(env) -> None:
+    """Through the admin API, as scripts/seed_policies.py makes it: `enroll` is kept."""
+    public, admin, _, session = env
+    for policy in await session.scalars(select(Policy).where(Policy.name == "nodes may enroll")):
+        await session.delete(policy)
+    await session.flush()
+    made = await public.post(
+        "/admin/policies",
+        json={"name": "anyone, anything", "effect": "allow",
+              "actions": ["read", "upload", "download", "share", "enroll"]},
+        headers=admin,
+    )  # fmt: skip
+    assert made.status_code == 201, made.text
+    assert made.json()["actions"] == ["read", "upload", "download", "share", "enroll"]
+    csr, _ = csr_for()
+    asked = await public.post("/nodes/enrollments", json={"name": "edge-1", "csr": csr})
+    assert asked.status_code == 202, asked.text

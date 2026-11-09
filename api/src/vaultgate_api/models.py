@@ -280,7 +280,7 @@ class TransferIntent(Base):
 
 
 POLICY_EFFECTS = ("allow", "deny")
-POLICY_ACTIONS = ("read", "upload", "download", "share")
+POLICY_ACTIONS = ("read", "upload", "download", "share", "enroll")
 
 
 class Policy(Base):
