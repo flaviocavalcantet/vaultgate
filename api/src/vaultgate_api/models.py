@@ -327,7 +327,7 @@ class Policy(Base):
 
 NODE_STATUSES = ("active", "revoked")
 ENROLLMENT_STATUSES = ("pending", "approved", "completed", "rejected")
-ENROLLMENT_METHODS = ("admin_approval",)
+ENROLLMENT_METHODS = ("admin_approval", "keycloak_client")
 
 
 class Node(Base):
@@ -372,6 +372,10 @@ class NodeEnrollment(Base):
     """A node's request for its first certificate (M11, ADR 0014): the name it asks for
     and a CSR for a key it generated, waiting for its first-trust check.
 
+    By a Keycloak client, there is no wait: the client's token is the first-trust check,
+    and the row is the record that that client has enrolled a node: its service
+    account's subject (client_subject) is unique, so the client never enrolls another.
+
     By admin approval: an admin confirms the key's fingerprint, which the node shows
     its operator, and approves; that gives a one-time code (only its salted hash is
     kept) which the operator passes to the node, and with which the node completes the
@@ -382,6 +386,12 @@ class NodeEnrollment(Base):
     __table_args__ = (
         CheckConstraint(f"status IN {ENROLLMENT_STATUSES}", name="status"),
         CheckConstraint(f"method IN {ENROLLMENT_METHODS}", name="method"),
+        Index(
+            "uq_node_enrollments_client_subject",
+            "client_subject",
+            unique=True,
+            postgresql_where=text("client_subject IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -403,6 +413,9 @@ class NodeEnrollment(Base):
     code_attempts: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     node_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("nodes.id", ondelete="SET NULL"))
+    # By a Keycloak client: its ID (node-<name>) and its service account's subject.
+    client_id: Mapped[str | None] = mapped_column(String(255))
+    client_subject: Mapped[str | None] = mapped_column(String(255))
 
 
 AUDIT_ACTOR_KINDS = ("user", "recipient", "gateway", "scanner", "system", "node")

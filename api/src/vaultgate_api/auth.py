@@ -66,6 +66,10 @@ class Principal:
     email_verified: bool
     name: str | None
     groups: tuple[str, ...]
+    # The client the token was issued to (azp), and the realm roles it carries (Keycloak's
+    # realm_access.roles): node enrollment by a Keycloak client reads them (M11).
+    client_id: str | None = None
+    roles: tuple[str, ...] = ()
 
 
 class TokenError(Exception):
@@ -233,6 +237,10 @@ def _principal(claims: dict[str, Any]) -> Principal:
     groups = claims.get("groups") or []
     if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
         raise TokenError("invalid_groups")
+    roles = (claims.get("realm_access") or {}).get("roles") or []
+    if not isinstance(roles, list) or not all(isinstance(r, str) for r in roles):
+        raise TokenError("invalid_roles")
+    azp = claims.get("azp")
     return Principal(
         issuer=claims["iss"],
         subject=claims["sub"],
@@ -241,17 +249,21 @@ def _principal(claims: dict[str, Any]) -> Principal:
         email_verified=claims.get("email_verified") is True,
         name=claims.get("name"),
         groups=tuple(sorted(groups)),
+        client_id=azp if isinstance(azp, str) else None,
+        roles=tuple(sorted(roles)),
     )
 
 
-def build_validator(client: httpx.AsyncClient) -> TokenValidator:
+def build_validator(client: httpx.AsyncClient, audience: str | None = None) -> TokenValidator:
+    """The validator for the API's own audience, or for `audience` (the node clients',
+    settings.oidc_node_audience, M11): a token is valid for one of them only."""
     discovery_url = settings.oidc_discovery_url or (
         f"{settings.oidc_issuer.rstrip('/')}/.well-known/openid-configuration"
     )
     return TokenValidator(
         JwksCache(client, discovery_url, ttl_seconds=settings.oidc_jwks_ttl_seconds),
         issuer=settings.oidc_issuer,
-        audience=settings.oidc_audience,
+        audience=audience or settings.oidc_audience,
         algorithms=settings.oidc_algorithms,
         leeway_seconds=settings.oidc_leeway_seconds,
     )

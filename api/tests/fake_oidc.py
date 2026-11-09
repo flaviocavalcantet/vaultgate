@@ -67,11 +67,13 @@ class FakeProvider:
         )
 
 
-def make_validator(provider: "FakeProvider", clock=None) -> TokenValidator:
+def make_validator(
+    provider: "FakeProvider", clock=None, audience: str = AUDIENCE
+) -> TokenValidator:
     client = httpx.AsyncClient(transport=httpx.MockTransport(provider.handler))
     kwargs = {"clock": clock} if clock else {}
     keys = JwksCache(client, DISCOVERY_URL, ttl_seconds=300, min_refresh_interval=30, **kwargs)
-    return TokenValidator(keys, issuer=ISSUER, audience=AUDIENCE, algorithms=["RS256"])
+    return TokenValidator(keys, issuer=ISSUER, audience=audience, algorithms=["RS256"])
 
 
 class Clock:

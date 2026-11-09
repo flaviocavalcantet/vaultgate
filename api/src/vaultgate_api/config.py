@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # Must equal the `iss` claim of the provider's tokens exactly.
     oidc_issuer: str = "http://localhost:8080/realms/vaultgate"
     oidc_audience: str = "vaultgate-api"
+    # Node enrollment by a Keycloak client (M11, ADR 0014): node clients' tokens are for
+    # this audience, never the API's (so they open no user route), from a client named
+    # node_client_prefix + the node's name, with this realm role.
+    oidc_node_audience: str = "vaultgate-nodes"
+    node_client_prefix: str = "node-"
+    node_enroll_role: str = "vaultgate-node-enroll"
     # Where the API itself fetches discovery and JWKS. Defaults to the issuer's
     # well-known URL; set it when the API reaches the provider under another address
     # than the public issuer (e.g. keycloak:8080 inside docker compose).

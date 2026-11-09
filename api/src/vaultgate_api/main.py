@@ -47,6 +47,7 @@ PUBLIC_PATHS = frozenset(
         "/nodes/enrollments",
         "/nodes/enrollments/{enrollment_id}",
         "/nodes/enrollments/{enrollment_id}/complete",
+        "/nodes/enrollments/by-client",  # a node client's token, not a user's
     }
 )
 
@@ -61,6 +62,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         httpx.AsyncClient(timeout=5.0, verify=openbao_tls) as openbao,
     ):
         app.state.token_validator = build_validator(client)
+        # Node clients' tokens, a separate audience (vaultgate_api.routers.node_enrollment).
+        app.state.node_token_validator = build_validator(client, settings.oidc_node_audience)
         app.state.openbao = openbao
         # Node certificates, through the pod's OpenBao agent (vaultgate_api.nodes).
         app.state.node_signer = nodes.openbao_signer(client)
