@@ -1,8 +1,8 @@
 # ADR 0014: Node enrollment
 
 **Status:** Accepted (M11, in steps: the nodes' CA; then enrollment, with admin approval
-as its first first-trust method; then first trust by a Keycloak client; the other
-methods follow, and extend this record)
+as its first first-trust method; then first trust by a Keycloak client, and by an
+admin's enrollment token; the other methods follow, and extend this record)
 
 ## Context
 
@@ -161,6 +161,32 @@ credential again.**
     its network policy already allowed (its OpenBao agent's).
   - The chart's `api.nodesCa.enabled` turns them on; off, they answer 404.
 
+### First trust by an admin's enrollment token
+
+**An admin issues a token for one node name, and the node enrolls with it, at once and
+once.**
+
+- **Issued by an admin** (`POST /admin/nodes/tokens`, with the name and, optionally, a
+  shorter life):
+  - 256 random bits, prefixed `vgn_` so that secret scanners, and people, recognize it;
+  - shown once, with only its SHA-256 kept;
+  - an hour by default, a day at most;
+  - not issued for a name with an active node.
+
+  Admins list tokens (`GET /admin/nodes/tokens`) and revoke unused ones.
+- **Used by the node** (`POST /nodes/enrollments/by-token`, the token and a CSR, in the
+  body, never a URL): the token names the node, and the certificate comes back at once.
+  - The token's row is locked, and marked used in the same transaction that records the
+    node and the enrollment. Two concurrent uses can't both succeed, and a failed
+    signing uses nothing up.
+  - A bad CSR or a policy refusal doesn't use it up either.
+  - The `enroll` policies apply, as to every method.
+- **Refusals:** a token that was used, revoked or expired is refused (403) and audited.
+  An unknown string is refused without an audit record: anyone can send one, as often as
+  the per-address limit allows, and a record of each would fill the log.
+- **The node's client** reads the token from `VAULTGATE_ENROLLMENT_TOKEN`, or asks for
+  it, and never takes it as a command-line argument, which shell history would keep.
+
 ### First trust by a Keycloak client
 
 **A node with its own confidential Keycloak client enrolls with that client's token, at
@@ -249,6 +275,10 @@ once and once.**
   - the nodes' port answers the node, and refuses a connection without a certificate;
   - after renewal with a new key, the previous certificate is refused and revoked;
   - after carol revokes the node, the port refuses it and OCSP says revoked.
+- **The token check:** `scripts/node_check.py` also has carol issue a token. The node
+  enrolls with it, and then:
+  - the token is refused a second time;
+  - a token carol revoked enrolls nothing.
 - **The Keycloak client check:** `scripts/node_check.py` also makes a node client with
   its certificate. The node enrolls with a token got by `private_key_jwt`, and checks
   that:

@@ -3,7 +3,8 @@
 carol (an admin) approves once the fingerprint matches, the node completes with the
 one-time code, calls the nodes' port with its certificate, renews with a new key, and is
 revoked; then a second node enrolls with its own Keycloak client (private_key_jwt),
-once. What must be refused on the way, is.
+once; and a third with carol's enrollment token, once. What must be refused on the way,
+is.
 
     python3 scripts/node_check.py --api URL --nodes URL --keycloak URL
 
@@ -152,7 +153,38 @@ def main(argv: list[str]) -> int:
         print("ok  carol revoked the node: the nodes' port refuses it, OCSP says revoked")
 
     by_client(args.keycloak.rstrip("/"), f"{name}-kc", carol)
+    by_token(f"{name}-tok", carol)
     return 0
+
+
+def by_token(name: str, carol: str) -> None:
+    """First trust by an admin's enrollment token: carol issues one for the name, the node
+    enrolls with it, once."""
+    status, issued = node.call(f"{node.API}/admin/nodes/tokens", "POST", {"name": name},
+                               token=carol)  # fmt: skip
+    assert status == 201 and issued["token"].startswith("vgn_"), (status, issued)
+    with tempfile.TemporaryDirectory() as directory:
+        node.NODE_DIR = Path(directory)
+        enrolled = node.enroll_token(issued["token"])
+        assert enrolled["identity"] == f"spiffe://nodes.vaultgate/node/{name}", enrolled
+        assert node.whoami()["name"] == name
+        status, _ = node.call(f"{node.API}/nodes/enrollments/by-token", "POST",
+                              {"token": issued["token"],
+                               "csr": node.csr(node.NODE_DIR / "node.key")})  # fmt: skip
+        assert status == 403, f"the token a second time: {status}"
+        print("ok  enrolled with carol's enrollment token, which works once")
+        status, spare = node.call(f"{node.API}/admin/nodes/tokens", "POST",
+                                  {"name": f"{name}-2"}, token=carol)  # fmt: skip
+        assert status == 201, spare
+        status, _ = node.call(f"{node.API}/admin/nodes/tokens/{spare['id']}/revoke", "POST",
+                              token=carol)  # fmt: skip
+        assert status == 204, status
+        status, _ = node.call(f"{node.API}/nodes/enrollments/by-token", "POST",
+                              {"token": spare["token"],
+                               "csr": node.csr(node.NODE_DIR / "node.key")})  # fmt: skip
+        assert status == 403, f"a revoked token: {status}"
+        print("ok  a revoked token enrolls nothing")
+        node.call(f"{node.API}/admin/nodes/{enrolled['node_id']}/revoke", "POST", token=carol)
 
 
 def by_client(keycloak: str, name: str, carol: str) -> None:

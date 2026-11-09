@@ -11,6 +11,10 @@ DIR/node.key (mode 0600), and only a CSR is sent.
     vaultgate_node.py status            where the request is (pending, approved, ...)
     vaultgate_node.py complete CODE     complete it with the admin's one-time code:
                                         DIR/node.crt (with its chain) and DIR/node.json
+    vaultgate_node.py enroll-token      first trust by an admin's enrollment token instead:
+                                        enroll with it (it names the node), at once; the
+                                        token from VAULTGATE_ENROLLMENT_TOKEN, else asked for
+                                        (never a command-line argument: shell history)
     vaultgate_node.py credential        first trust by a Keycloak client instead: make the
                                         node's Keycloak credential, an RSA key and a
                                         certificate for it (DIR/keycloak.crt), which an admin
@@ -35,6 +39,7 @@ Standard library and OpenSSL 3 only (VAULTGATE_OPENSSL names the command).
 """
 
 import base64
+import getpass
 import hashlib
 import json
 import os
@@ -167,6 +172,24 @@ def complete(code: str) -> dict:
     return answer
 
 
+def enroll_token(token: str | None = None) -> dict:
+    token = (
+        token or os.getenv("VAULTGATE_ENROLLMENT_TOKEN") or getpass.getpass("enrollment token: ")
+    )
+    NODE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = NODE_DIR / "node.key"
+    if not key.exists():
+        new_key(key)
+    code, answer = call(f"{API}/nodes/enrollments/by-token", "POST",
+                        {"token": token.strip(), "csr": csr(key)})  # fmt: skip
+    if code != 201:
+        raise Failure(f"enrollment with the token: {code} {answer.get('detail')}")
+    save(answer)
+    print(f"ok  enrolled as {answer['identity']} with an enrollment token, certificate "
+          f"{answer['serial']} until {answer['expires_at']}")  # fmt: skip
+    return answer
+
+
 def credential() -> None:
     """The node's Keycloak credential: an RSA key (RS256 client assertions) that stays
     here, and a self-signed certificate for it that the admin gives Keycloak."""
@@ -268,6 +291,8 @@ def main(argv: list[str]) -> int:
                 status()
             case ["complete", code]:
                 complete(code)
+            case ["enroll-token"]:
+                enroll_token()
             case ["credential"]:
                 credential()
             case ["enroll-client", name]:
