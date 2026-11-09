@@ -170,3 +170,17 @@ def test_garbage_is_refused() -> None:
             tpm.parse_public(blob)
     with pytest.raises(tpm.InvalidAttestation):
         tpm.certified_name(b"\0" * 40)
+
+
+def test_invalid_keys_are_refused_not_errors() -> None:
+    """A malformed key in a well-formed public area is an attestation refusal (403),
+    not an unhandled error (500)."""
+    fake = FakeTPM()
+    head = fake.key_area[: -(2 + 32 + 2 + 32)]
+    off_curve = head + tpm2b(b"\x01" * 32) + tpm2b(b"\x02" * 32)
+    too_long = head + tpm2b(b"\x01" * 33) + tpm2b(b"\x02" * 32)
+    rsa_head = fake.ak_area[: -(2 + 256)]
+    degenerate = rsa_head + tpm2b(b"\x00" * 255 + b"\x01")
+    for area in (off_curve, too_long, degenerate):
+        with pytest.raises(tpm.InvalidAttestation):
+            tpm.parse_public(tpm2b(area))

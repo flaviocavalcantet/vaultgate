@@ -115,7 +115,10 @@ def parse_public(blob: bytes) -> Public:
         r.u16()  # keyBits
         exponent = r.u32() or 65537
         modulus = int.from_bytes(r.tpm2b(), "big")
-        key = rsa.RSAPublicNumbers(exponent, modulus).public_key()
+        try:
+            key = rsa.RSAPublicNumbers(exponent, modulus).public_key()
+        except ValueError:
+            raise InvalidAttestation("not a valid RSA public key") from None
     elif kind == ALG_ECC:
         _scheme(r)
         curve = r.u16()
@@ -123,8 +126,13 @@ def parse_public(blob: bytes) -> Public:
         x, y = r.tpm2b(), r.tpm2b()
         if curve != ECC_NIST_P256:
             raise InvalidAttestation("only ECC keys on P-256 are supported")
+        if len(x) > 32 or len(y) > 32:
+            raise InvalidAttestation("not a P-256 point")
         point = b"\x04" + x.rjust(32, b"\0") + y.rjust(32, b"\0")
-        key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), point)
+        try:
+            key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), point)
+        except ValueError:
+            raise InvalidAttestation("not a point on P-256") from None
     else:
         raise InvalidAttestation("only RSA and ECC keys are supported")
     r.done()
