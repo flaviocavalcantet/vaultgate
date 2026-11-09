@@ -355,6 +355,15 @@ check() {
 # its 429s mid-scan look like a change of behaviour to ZAP; the gateway keeps its own,
 # so ZAP reaches it until it answers 429 (its unit tests cover the rest).
 ZAP_IMAGE=zaproxy/zap-stable:2.17.0
+# Alerts that are false positives on certain URLs only, so the rule still applies to
+# every other route: "Unexpected Content-Type" (100001) on the nodes' CA's routes, which
+# answer with their protocols' own types (a certificate, CRLs, OCSP: application/pkix-*,
+# application/ocsp-response; M11, ADR 0014), not ones ZAP expects of an API.
+ZAP_API_FILTERS="-config globalalertfilter.filters.filter(0).ruleid=100001 \
+-config globalalertfilter.filters.filter(0).url=https?://[^/]+/pki/nodes/.* \
+-config globalalertfilter.filters.filter(0).urlregex=true \
+-config globalalertfilter.filters.filter(0).newrisk=-1 \
+-config globalalertfilter.filters.filter(0).enabled=true"
 zap() {
   local out=${VAULTGATE_ZAP_DIR:-zap-reports} status=0 token
   mkdir -p "$out"
@@ -366,7 +375,7 @@ print(login(wait_for("'"$KEYCLOAK"'"), "zap-scanner", "zap-scanner-dev-password"
   docker run --rm --network host -v "$PWD/$out:/zap/wrk:rw" -e ZAP_AUTH_HEADER=Authorization \
     -e ZAP_AUTH_HEADER_VALUE="Bearer $token" "$ZAP_IMAGE" zap-api-scan.py \
     -t "$API/openapi.json" -f openapi -c api.conf -r api.html -J api.json \
-    -z "-config scanner.maxScanDurationInMins=3" || status=1
+    -z "-config scanner.maxScanDurationInMins=3 $ZAP_API_FILTERS" || status=1
   if ! curl -sf --cacert "$ROOT_CA" -o /dev/null -H "Authorization: Bearer $token" "$API/me"; then
     echo "zap-scanner's token expired during the API's scan: part of it ran unauthenticated" >&2
     status=1

@@ -326,6 +326,14 @@ ZAP was first run on a local API and gateway, before it went into CI.
 After the fixes, both scans pass with no warning. Locally, about 7,500 API scan
 requests produced no error and no unhandled exception.
 
+One alert is filtered as a false positive, on certain URLs only, so its rule still
+applies to every other route (`ZAP_API_FILTERS` in `scripts/k3d.sh`):
+
+- **"Unexpected Content-Type"** (100001) on `/pki/nodes/` (M11, ADR 0014). The nodes'
+  CA's routes answer with their protocols' own types: `application/pkix-cert`,
+  `application/x-pem-file`, `application/pkix-crl` and `application/ocsp-response`.
+  ZAP expects an API's types (JSON, XML, text).
+
 ### Not covered
 
 - **The interactive docs are public** (`/docs`, `/redoc`, `/openapi.json`). They are
