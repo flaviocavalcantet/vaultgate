@@ -1,6 +1,8 @@
 """Node enrollment (M11, ADR 0014): a node's request, an admin's approval, the one-time
 code, renewal on the nodes' port, revocation; with a fake signer for OpenBao."""
 
+import base64
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -8,7 +10,7 @@ import httpx
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -130,7 +132,9 @@ async def env(clients, provider, session: AsyncSession, monkeypatch):
     """(public client, admin headers, signer, session); enrolling allowed by a policy."""
     public, _ = clients
     session.add(Policy(name="nodes may enroll", effect="allow", actions=["enroll"]))
-    await session.flush()
+    # Committed (a savepoint of the test's transaction): a route's rollback before it
+    # records a refusal must not take the policy with it.
+    await session.commit()
     signer = FakeSigner()
     monkeypatch.setattr(app.state, "node_signer", signer, raising=False)
     admin = {"Authorization": f"Bearer {provider.token(**ADMIN)}"}
@@ -750,3 +754,142 @@ async def test_token_enrollment_under_the_policies(env) -> None:
     assert refused.status_code == 403 and signer.signed == []
     still = (await public.get("/admin/nodes/tokens", headers=admin)).json()["items"]
     assert [t["state"] for t in still] == ["usable"]  # refused, not used up
+
+
+# --- first trust by cloud instance identity (AWS) ----------------------------------------
+
+
+class FakeAWS:
+    """A stand-in for AWS's signing key, and its certificate in a PEM file."""
+
+    def __init__(self, tmp_path) -> None:
+        self.key = rsa.generate_private_key(65537, 2048)
+        name = x509.Name([x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME, "Fake AWS")])
+        now = datetime.now(UTC)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(self.key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1))
+            .not_valid_after(now + timedelta(days=365))
+            .sign(self.key, hashes.SHA256())
+        )
+        self.file = tmp_path / "aws.pem"
+        self.file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+    def document(self, **fields) -> dict:
+        document = json.dumps({
+            "accountId": "123456789012", "instanceId": "i-0abc123def4567890",
+            "region": "ap-northeast-1", "pendingTime": datetime.now(UTC).isoformat(),
+            "instanceType": "t3.micro", "imageId": "ami-0123",
+        } | fields)  # fmt: skip
+        signature = self.key.sign(document.encode(), padding.PKCS1v15(), hashes.SHA256())
+        return {"provider": "aws", "document": document,
+                "signature": base64.b64encode(signature).decode()}  # fmt: skip
+
+
+@pytest.fixture
+async def by_cloud(env, tmp_path, monkeypatch):
+    aws = FakeAWS(tmp_path)
+    monkeypatch.setattr(settings, "node_aws_certificates_file", str(aws.file))
+    monkeypatch.setattr(settings, "node_aws_accounts", ["123456789012"])
+    yield (*env, aws)
+
+
+@requires_db
+async def test_enrollment_by_cloud_identity(by_cloud) -> None:
+    public, admin, signer, session, aws = by_cloud
+    url = "/nodes/enrollments/by-cloud"
+    csr, fingerprint = csr_for()
+    done = await public.post(url, json=aws.document() | {"csr": csr})
+    assert done.status_code == 201, done.text
+    assert done.json()["identity"] == "spiffe://nodes.vaultgate/node/aws-i-0abc123def4567890"
+    node = await session.scalar(select(Node).where(Node.name == "aws-i-0abc123def4567890"))
+    assert node.key_fingerprint == fingerprint
+    node_id = node.id
+    listed = (await public.get("/admin/nodes/enrollments?status=all", headers=admin)).json()
+    assert [(e["method"], e["client_id"]) for e in listed["items"]] == [("cloud_identity", "aws")]
+    # The document isn't secret: the instance enrolls once, ever, revoked or not.
+    again = await public.post(url, json=aws.document() | {"csr": csr_for()[0]})
+    assert again.status_code == 409
+    await public.post(f"/admin/nodes/{node_id}/revoke", headers=admin)
+    after = await public.post(url, json=aws.document() | {"csr": csr_for()[0]})
+    assert after.status_code == 409
+    other = await public.post(url, json=aws.document(instanceId="i-0fff") | {"csr": csr_for()[0]})
+    assert other.status_code == 201
+    assert len(signer.signed) == 2
+
+
+@requires_db
+async def test_only_a_signed_document(by_cloud, tmp_path) -> None:
+    public, _, signer, session, aws = by_cloud
+    url = "/nodes/enrollments/by-cloud"
+    csr, _ = csr_for()
+    forger = FakeAWS(tmp_path / "..")  # another key: not AWS's
+    tampered = aws.document()
+    tampered["document"] = tampered["document"].replace("123456789012", "999999999999")
+    for body in [
+        forger.document(),
+        tampered,
+        aws.document() | {"signature": "not base64!"},
+        aws.document() | {"document": "{}", "signature": aws.document()["signature"]},
+    ]:
+        answer = await public.post(url, json=body | {"csr": csr})
+        assert answer.status_code == 403, answer.text
+    assert signer.signed == []
+    assert await actions(session) == []  # unsigned input: refused, not recorded
+
+
+@requires_db
+async def test_cloud_accounts_regions_and_age(by_cloud, monkeypatch) -> None:
+    public, _, _, session, aws = by_cloud
+    url = "/nodes/enrollments/by-cloud"
+    other_account = await public.post(
+        url, json=aws.document(accountId="210987654321") | {"csr": csr_for()[0]}
+    )
+    assert other_account.status_code == 403
+    monkeypatch.setattr(settings, "node_aws_regions", ["us-east-1"])
+    wrong_region = await public.post(url, json=aws.document() | {"csr": csr_for()[0]})
+    assert wrong_region.status_code == 403
+    monkeypatch.setattr(settings, "node_aws_regions", [])
+    monkeypatch.setattr(settings, "node_cloud_max_launch_age_seconds", 600)
+    old = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    too_old = await public.post(url, json=aws.document(pendingTime=old) | {"csr": csr_for()[0]})
+    assert too_old.status_code == 403
+    fresh = await public.post(url, json=aws.document() | {"csr": csr_for()[0]})
+    assert fresh.status_code == 201
+    results = await session.scalars(
+        select(AuditEvent.details["result"].astext).where(AuditEvent.outcome == "denied")
+    )
+    assert sorted(results) == ["account", "launched too long ago", "region"]
+
+
+@requires_db
+async def test_cloud_identity_off_and_under_the_policies(by_cloud, monkeypatch) -> None:
+    public, _, signer, session, aws = by_cloud
+    url = "/nodes/enrollments/by-cloud"
+    for policy in await session.scalars(select(Policy).where(Policy.name == "nodes may enroll")):
+        await session.delete(policy)
+    await session.flush()
+    assert (await public.post(url, json=aws.document() | {"csr": csr_for()[0]})).status_code == 403
+    monkeypatch.setattr(settings, "node_aws_accounts", [])
+    assert (await public.post(url, json=aws.document() | {"csr": csr_for()[0]})).status_code == 404
+    assert signer.signed == []
+
+
+def test_cloud_identity_document_parsing(tmp_path) -> None:
+    from vaultgate_api import cloud
+
+    aws = FakeAWS(tmp_path)
+    body = aws.document()
+    instance = cloud.aws_instance(body["document"], body["signature"], str(aws.file))
+    assert (instance.account, instance.instance, instance.region) == (
+        "123456789012", "i-0abc123def4567890", "ap-northeast-1"
+    )  # fmt: skip
+    assert instance.subject == "aws:123456789012:i-0abc123def4567890"
+    for fields in [{"accountId": "12"}, {"instanceId": "vm-1"}, {"pendingTime": "yesterday"}]:
+        body = aws.document(**fields)
+        with pytest.raises(cloud.InvalidIdentity):
+            cloud.aws_instance(body["document"], body["signature"], str(aws.file))

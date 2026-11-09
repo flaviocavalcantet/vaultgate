@@ -49,6 +49,7 @@ PUBLIC_PATHS = frozenset(
         "/nodes/enrollments/{enrollment_id}/complete",
         "/nodes/enrollments/by-client",  # a node client's token, not a user's
         "/nodes/enrollments/by-token",  # an admin's enrollment token
+        "/nodes/enrollments/by-cloud",  # a cloud's signed instance identity
     }
 )
 

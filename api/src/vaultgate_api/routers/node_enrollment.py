@@ -18,6 +18,12 @@ Or, first trust by an admin's enrollment token: POST /nodes/enrollments/by-token
 a token an admin issued for one node name (vaultgate_api.routers.admin_nodes): single
 use, short lived. The token names the node, and the certificate comes back at once.
 
+Or, first trust by cloud instance identity: POST /nodes/enrollments/by-cloud, with the
+instance's identity document and its signature from the cloud (vaultgate_api.cloud;
+AWS), from an allowed account and region. The node is named after its instance, and
+each instance enrolls one node, ever: the document isn't secret, so the first enrollment
+of an instance is the one that counts.
+
 Or, first trust by a Keycloak client: POST /nodes/enrollments/by-client, with a token
 of the node's own confidential client (node-<name>), which authenticates to Keycloak
 with a JWT signed by the node's key (private_key_jwt). The token is for the audience
@@ -43,7 +49,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vaultgate_api import audit, nodes, policies
+from vaultgate_api import audit, cloud, nodes, policies
 from vaultgate_api.auth import Principal, TokenError, _unauthorized
 from vaultgate_api.clientip import client_ip_var
 from vaultgate_api.config import settings
@@ -534,6 +540,142 @@ async def enroll_by_token(
         await _revoke_quietly(signer, issued.serial)
         raise HTTPException(status.HTTP_409_CONFLICT, "A node of that name is enrolled") from None
     logger.info("node enrolled by token", extra={"node_id": str(node.id)})
+    return CertificateOut(
+        node_id=node.id,
+        identity=identity,
+        certificate=issued.certificate,
+        chain=issued.chain,
+        serial=issued.serial,
+        expires_at=issued.expires_at,
+    )
+
+
+class CloudEnrollmentIn(BaseModel):
+    provider: Literal["aws"]
+    document: str = Field(max_length=cloud.MAX_DOCUMENT_BYTES)
+    signature: str = Field(max_length=cloud.MAX_SIGNATURE_BYTES)
+    csr: str = Field(max_length=nodes.MAX_CSR_BYTES)
+
+
+@router.post("/by-cloud", status_code=status.HTTP_201_CREATED)
+async def enroll_by_cloud(
+    body: CloudEnrollmentIn, session: SessionDep, signer: SignerDep
+) -> CertificateOut:
+    """First trust by cloud instance identity: the instance's signed identity document
+    and a CSR. The node is named after its instance, which enrolls one node, ever."""
+    if not (settings.node_aws_accounts and settings.node_aws_certificates_file):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cloud instance enrollment is off")
+    try:
+        instance = cloud.aws_instance(
+            body.document, body.signature, settings.node_aws_certificates_file
+        )
+    except cloud.InvalidIdentity as e:
+        # Not audited: anyone can send any document, as often as the address limit lets
+        # them; the signature is what makes one worth recording.
+        logger.info("cloud identity refused", extra={"reason": str(e)})
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a valid instance identity") from None
+    name = instance.node_name
+    details = {
+        "method": "cloud_identity",
+        "provider": instance.provider,
+        "account": instance.account,
+        "instance": instance.instance,
+        "region": instance.region,
+        "name": name,
+    }
+
+    async def refuse(result: str, code: int, detail: str) -> HTTPException:
+        await session.rollback()
+        await audit.record_refusal(
+            session, "node.enrollment_completed", actor_kind="node",
+            details=details | {"result": result},
+        )  # fmt: skip
+        logger.info("cloud enrollment refused", extra={"result": result})
+        return HTTPException(code, detail)
+
+    if instance.account not in settings.node_aws_accounts:
+        raise await refuse("account", status.HTTP_403_FORBIDDEN, "The account may not enroll")
+    if settings.node_aws_regions and instance.region not in settings.node_aws_regions:
+        raise await refuse("region", status.HTTP_403_FORBIDDEN, "The region may not enroll")
+    now = datetime.now(UTC)
+    max_age = settings.node_cloud_max_launch_age_seconds
+    if max_age > 0 and (
+        instance.launched_at is None or now - instance.launched_at > timedelta(seconds=max_age)
+    ):
+        raise await refuse("launched too long ago", status.HTTP_403_FORBIDDEN,
+                           "The instance was launched too long ago to enroll")  # fmt: skip
+    if not nodes.NAME_PATTERN.fullmatch(name):
+        raise await refuse("name", status.HTTP_403_FORBIDDEN, "Not a usable instance ID")
+    try:
+        fingerprint = nodes.check_csr(body.csr)
+    except nodes.InvalidCSR as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from None
+    details["key_fingerprint"] = fingerprint
+    if not (await enroll_allowed(session)).allowed:
+        raise await refuse("policy", status.HTTP_403_FORBIDDEN, NOT_ALLOWED)
+    used = await session.scalar(
+        select(NodeEnrollment).where(NodeEnrollment.client_subject == instance.subject)
+    )
+    if used is not None:
+        raise await refuse(
+            "instance used", status.HTTP_409_CONFLICT, "This instance has enrolled a node already"
+        )
+    if await active_node(session, name) is not None:
+        raise await refuse(
+            "name taken", status.HTTP_409_CONFLICT, "A node of that name is enrolled"
+        )
+
+    identity = nodes.identity(name)
+    try:
+        issued = await signer.sign(body.csr, identity)
+    except nodes.SignerError:
+        logger.exception("node certificate not signed")
+        await session.rollback()
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "The CA is unavailable") from None
+    node = Node(
+        id=uuid.uuid4(),
+        name=name,
+        status="active",
+        key_fingerprint=fingerprint,
+        cert_serial=issued.serial,
+        cert_expires_at=issued.expires_at,
+        enrolled_at=now,
+    )
+    session.add(node)
+    await session.flush()
+    enrollment = NodeEnrollment(
+        id=uuid.uuid4(),
+        name=name,
+        method="cloud_identity",
+        csr=body.csr,
+        key_fingerprint=fingerprint,
+        status="completed",
+        client_ip=client_ip_var.get(),
+        expires_at=now,
+        completed_at=now,
+        node_id=node.id,
+        client_id=instance.provider,
+        client_subject=instance.subject,
+    )
+    session.add(enrollment)
+    await audit.record(
+        session,
+        "node.enrollment_completed",
+        actor_kind="node",
+        actor_id=node.id,
+        target_kind="node_enrollment",
+        target_id=enrollment.id,
+        details=details | {"node_id": str(node.id), "serial": issued.serial},
+    )
+    try:
+        await session.commit()
+    except IntegrityError:  # the same instance, or the name, in a concurrent request
+        await session.rollback()
+        await _revoke_quietly(signer, issued.serial)
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "This instance has enrolled a node already"
+        ) from None
+    logger.info("node enrolled by cloud identity", extra={"node_id": str(node.id)})
     return CertificateOut(
         node_id=node.id,
         identity=identity,

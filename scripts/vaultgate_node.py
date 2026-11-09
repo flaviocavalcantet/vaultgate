@@ -15,6 +15,10 @@ DIR/node.key (mode 0600), and only a CSR is sent.
                                         enroll with it (it names the node), at once; the
                                         token from VAULTGATE_ENROLLMENT_TOKEN, else asked for
                                         (never a command-line argument: shell history)
+    vaultgate_node.py enroll-cloud      first trust by cloud instance identity instead (AWS):
+                                        enroll with the instance's signed identity document,
+                                        from the instance metadata service (IMDSv2); the node
+                                        is named after its instance (aws-<instance ID>)
     vaultgate_node.py credential        first trust by a Keycloak client instead: make the
                                         node's Keycloak credential, an RSA key and a
                                         certificate for it (DIR/keycloak.crt), which an admin
@@ -33,6 +37,8 @@ Settings, from the environment:
     VAULTGATE_API        the API's public address (https://localhost:8000)
     VAULTGATE_NODES_URL  the API's nodes' port (https://localhost:8002)
     VAULTGATE_KEYCLOAK   Keycloak's address, for enroll-client (https://localhost:8080)
+    VAULTGATE_IMDS       the instance metadata service, for enroll-cloud
+                         (http://169.254.169.254, AWS's)
     SSL_CERT_FILE        the CA bundle to verify the API with (VaultGate's root, locally)
 
 Standard library and OpenSSL 3 only (VAULTGATE_OPENSSL names the command).
@@ -58,6 +64,7 @@ API = os.getenv("VAULTGATE_API", "https://localhost:8000").rstrip("/")
 NODES_URL = os.getenv("VAULTGATE_NODES_URL", "https://localhost:8002").rstrip("/")
 OPENSSL = os.getenv("VAULTGATE_OPENSSL", "openssl")
 KEYCLOAK = os.getenv("VAULTGATE_KEYCLOAK", "https://localhost:8080").rstrip("/")
+IMDS = os.getenv("VAULTGATE_IMDS", "http://169.254.169.254").rstrip("/")
 REALM = os.getenv("VAULTGATE_KEYCLOAK_REALM", "vaultgate")
 
 
@@ -190,6 +197,41 @@ def enroll_token(token: str | None = None) -> dict:
     return answer
 
 
+def instance_identity() -> tuple[str, str]:
+    """The instance's identity document and its signature, from the metadata service
+    (IMDSv2: a session token first, then the document and the RSA-SHA256 signature)."""
+
+    def imds(method: str, path: str, headers: dict) -> str:
+        request = urllib.request.Request(f"{IMDS}{path}", method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.read().decode()
+        except (urllib.error.URLError, OSError) as e:
+            raise Failure(f"the instance metadata service ({IMDS}{path}): {e}") from None
+
+    token = imds("PUT", "/latest/api/token", {"X-aws-ec2-metadata-token-ttl-seconds": "60"})
+    headers = {"X-aws-ec2-metadata-token": token}
+    document = imds("GET", "/latest/dynamic/instance-identity/document", headers)
+    signature = imds("GET", "/latest/dynamic/instance-identity/signature", headers)
+    return document, signature
+
+
+def enroll_cloud() -> dict:
+    document, signature = instance_identity()
+    NODE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = NODE_DIR / "node.key"
+    if not key.exists():
+        new_key(key)
+    body = {"provider": "aws", "document": document, "signature": signature, "csr": csr(key)}
+    code, answer = call(f"{API}/nodes/enrollments/by-cloud", "POST", body)
+    if code != 201:
+        raise Failure(f"enrollment by instance identity: {code} {answer.get('detail')}")
+    save(answer)
+    print(f"ok  enrolled as {answer['identity']} by its instance identity, certificate "
+          f"{answer['serial']} until {answer['expires_at']}")  # fmt: skip
+    return answer
+
+
 def credential() -> None:
     """The node's Keycloak credential: an RSA key (RS256 client assertions) that stays
     here, and a self-signed certificate for it that the admin gives Keycloak."""
@@ -293,6 +335,8 @@ def main(argv: list[str]) -> int:
                 complete(code)
             case ["enroll-token"]:
                 enroll_token()
+            case ["enroll-cloud"]:
+                enroll_cloud()
             case ["credential"]:
                 credential()
             case ["enroll-client", name]:

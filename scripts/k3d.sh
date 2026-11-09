@@ -94,6 +94,19 @@ pki_bootstrap() {
     kubectl -n openbao create secret tls openbao-tls --cert="$tmp/tls.crt" --key="$tmp/tls.key"
   fi
   rm -rf "$tmp"
+  # A local stand-in for AWS's instance identity signing key (M11, ADR 0014): k3d has no
+  # EC2, so the cluster check signs its instance identity documents with this key, and
+  # the API trusts its certificate in AWS's place. Local only; kept with the root.
+  local pki=${VAULTGATE_PKI_DIR:-$HOME/.vaultgate/pki}
+  if [[ ! -f $pki/local-aws-iid.key ]]; then
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$pki/local-aws-iid.key" 2>/dev/null
+    chmod 600 "$pki/local-aws-iid.key"
+    openssl req -x509 -new -key "$pki/local-aws-iid.key" -days 3650 -sha256 \
+      -subj "/O=VaultGate local stand-in for AWS instance identity" -out "$pki/local-aws-iid.crt"
+  fi
+  kubectl create namespace vaultgate --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n vaultgate create secret generic vaultgate-aws-iid \
+    --from-file=certificates.pem="$pki/local-aws-iid.crt" --dry-run=client -o yaml | kubectl apply -f -
   # PostgreSQL's passwords, random (deploy/k3d/deps/postgres.yaml): the superuser's, and
   # OpenBao's first one, which OpenBao reads at its first start and rotates once
   # PostgreSQL is up (secrets_rotate below). The API's credentials are OpenBao's to issue.

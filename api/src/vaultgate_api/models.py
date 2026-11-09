@@ -327,7 +327,7 @@ class Policy(Base):
 
 NODE_STATUSES = ("active", "revoked")
 ENROLLMENT_STATUSES = ("pending", "approved", "completed", "rejected")
-ENROLLMENT_METHODS = ("admin_approval", "keycloak_client", "enrollment_token")
+ENROLLMENT_METHODS = ("admin_approval", "keycloak_client", "enrollment_token", "cloud_identity")
 
 
 class Node(Base):
@@ -413,7 +413,8 @@ class NodeEnrollment(Base):
     code_attempts: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     node_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("nodes.id", ondelete="SET NULL"))
-    # By a Keycloak client: its ID (node-<name>) and its service account's subject.
+    # By a Keycloak client: its ID (node-<name>) and its service account's subject. By
+    # cloud instance identity: the provider, and provider:account:instance.
     client_id: Mapped[str | None] = mapped_column(String(255))
     client_subject: Mapped[str | None] = mapped_column(String(255))
 
