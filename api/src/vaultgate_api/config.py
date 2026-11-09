@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     docs_enabled: bool = True
     # Rate limits on the public API (vaultgate_api.ratelimit); 0 turns one off. Per user:
     # starting transfers, and every other request. Per client address: the share
-    # recipients' routes, the nodes' CA's OCSP and revocation lists, and failed
+    # recipients' routes, the nodes' CA's OCSP and revocation lists, node enrollment, and failed
     # authentication (then 429 for its failing requests for
     # rate_limit_auth_block_seconds). The exempt users (usernames) skip the per-user
     # limits: a security scanner, never people.
@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     rate_limit_intents_burst: int = 20
     rate_limit_share_access_per_minute: int = 30
     rate_limit_pki_per_minute: int = 120
+    rate_limit_enroll_per_minute: int = 10
     rate_limit_auth_failures_per_minute: int = 20
     rate_limit_auth_block_seconds: int = 300
     rate_limit_exempt_users: list[str] = []
@@ -95,6 +96,24 @@ class Settings(BaseSettings):
     # with the trust store (SSL_CERT_FILE). Unset address: those routes answer 404.
     openbao_address: str | None = None
     nodes_pki_mount: str = "pki-nodes"
+    # Node enrollment (M11, ADR 0014). Certificates are signed under nodes_pki_role,
+    # through the pod's OpenBao agent (its API proxy, which adds the agent's token);
+    # unset, enrollment answers 503. An enrollment request waits for approval for
+    # node_enrollment_ttl_seconds; an approval's one-time code lasts node_code_ttl_seconds
+    # and node_code_attempts tries; at most node_max_pending_enrollments wait at once, and
+    # node_max_pending_per_address from one client address (some nodes share a NAT).
+    openbao_agent_address: str | None = None
+    nodes_pki_role: str = "node"
+    node_enrollment_ttl_seconds: int = 86400
+    node_code_ttl_seconds: int = 900
+    node_code_attempts: int = 5
+    node_max_pending_enrollments: int = 100
+    node_max_pending_per_address: int = 10
+    # The nodes' port: mutual TLS, a client certificate from this CA (the root; the
+    # name constraints keep node identities to the nodes' CA) naming a node. Renewal is
+    # served there. Unset: no nodes' port.
+    nodes_port: int = 8002
+    nodes_client_ca_file: str | None = None
 
     # Files
     gateway_public_url: str = "http://localhost:8888"

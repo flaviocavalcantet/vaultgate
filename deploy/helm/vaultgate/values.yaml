@@ -97,6 +97,17 @@ api:
   nodesCa:
     enabled: false
     mount: pki-nodes
+  # Node enrollment (M11, ADR 0014): nodes ask for certificates on the public port
+  # (/nodes/enrollments), admins approve them (/admin/nodes), and enrolled nodes call
+  # the nodes' port with their certificates (mutual TLS, a node's identity from the
+  # root in mtls.rootSecret), where they renew. Certificates are signed through the
+  # API's OpenBao agent (its API proxy, on the pod's loopback). Needs mtls.enabled and
+  # openbao.enabled. People never use the nodes' port: browsers stay on the public one.
+  nodes:
+    enabled: false
+    port: 8002
+    # Publish the nodes' port on every node at this port (local clusters), as nodePort.
+    nodePort: ""
   # Set to also publish the public port on every node at this port (an extra NodePort
   # Service with that port only), as the local k3d cluster does; empty behind an Ingress.
   nodePort: ""

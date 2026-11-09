@@ -1,7 +1,7 @@
 # ADR 0014: Node enrollment
 
-**Status:** Accepted (M11, in steps: the nodes' CA first; enrollment and its first-trust
-methods follow, and extend this record)
+**Status:** Accepted (M11, in steps: the nodes' CA; then enrollment, with admin approval
+as its first first-trust method; the other methods follow, and extend this record)
 
 ## Context
 
@@ -64,9 +64,82 @@ identities and nothing else.**
   names a CSR asks for (`use_csr_sans` and `use_csr_common_name` off): a node chooses
   its key, and VaultGate its name. Without this, OpenBao's `sign` takes the CSR's names
   and ignores the ones given.
-- **Who signs:** the enrollment API, in the next step. Until then only `make
-  k3d-check` signs, as its own short-lived login (`pki-nodes-check`), local cluster
-  only.
+- **Who signs:** the API, for enrollment and renewal (below), through its OpenBao agent.
+  `make k3d-check` also signs one, as its own short-lived login (`pki-nodes-check`),
+  local cluster only.
+
+### Enrollment
+
+**A node generates its key, asks with a CSR, and gets its certificate once it passes a
+first-trust check. Then it renews with that certificate, never with the first-trust
+credential again.**
+
+- **The request** (`POST /nodes/enrollments`, public port): the name the node wants (a
+  DNS label) and a CSR.
+  - The API checks that the CSR's signature verifies with its key (the node holds it)
+    and that the key is ECDSA P-256 (the role's), and keeps the CSR.
+  - The answer is the request's ID and the key's fingerprint: SHA-256 over the
+    SubjectPublicKeyInfo, as `SHA256:<base64>` (OpenSSH's form). The node also shows its
+    operator this fingerprint, computed from its own key.
+  - A request waits a day at most. At most 100 wait at once, and 10 from one client
+    address, so one client can't take every place. A name with an active node can't be
+    asked for. Names aren't limited: whoever knows a node's name could then keep its
+    real request out.
+- **No credential yet, so no token.** The node's routes (request, status, complete) are
+  limited per client address. They are also under the access policies, through a new
+  action, `enroll`, evaluated with the node's address and the time, and no groups (a
+  node is no user). Policies deny by default, so no node enrolls until an admin allows
+  it, from the networks they choose. The local cluster's seeded policy allows it.
+- **First trust by admin approval** (`/admin/nodes/enrollments`, public port, admins
+  only):
+  1. The admin compares the request's fingerprint with the one the node's operator reads
+     them, out of band, and approves with it. A different fingerprint is refused and
+     audited: the request's key isn't that node's.
+  2. The approval answers with a one-time code (10 characters from an alphabet without
+     look-alikes, about 50 bits), shown once. Only its salted SHA-256 is kept. It lasts
+     15 minutes and 5 tries, after which the request is rejected. Approving again gives
+     a new code.
+  3. The operator gives the code to the node, which completes the enrollment with it
+     (`POST /nodes/enrollments/{id}/complete`).
+
+  The stored CSR is what gets signed, so the code is good for that key only. Whoever
+  intercepts the code gets a certificate for a key they don't hold.
+- **Completion** signs the CSR under the node role, with the identity
+  `spiffe://nodes.vaultgate/node/<name>`, and records the node: its key's fingerprint
+  and its certificate's serial. The answer is the certificate and its chain. One active
+  node per name, enforced by a partial unique index; a race signs, then revokes the
+  loser's certificate.
+- **Signing through the API's OpenBao agent.** The agent, already the API's sidecar,
+  serves an API proxy on the pod's loopback that adds its own token. The API's OpenBao
+  policy gains three paths: signing under the node role, revoking, and rotating the
+  delta list. The API process never holds an OpenBao token. `make k3d-check` checks
+  that the API may make exactly these calls on the nodes' CA, and the gateway and the
+  scanner none.
+
+### The nodes' port
+
+**Enrolled nodes call the API on a port of their own, with their certificates.**
+
+- **A third API server** (8002, `api.nodes` in the chart), TLS with a required client
+  certificate from the root. The routes then want the certificate to name a node,
+  which only the nodes' CA can do (its constraints; a service's certificate names no
+  node), and to be that node's current one:
+  - the node active (not revoked);
+  - the certificate's serial the one on record.
+- **Renewal** (`POST /renew`): a CSR, for the same key or a new one. The new certificate
+  replaces the old one on record, and the old one is revoked in OpenBao. So each
+  certificate renews once, a copied one can't renew alongside the node, and the
+  first-trust code is never used again. `GET /whoami` shows the node.
+- **No token.** The certificate is the node's credential, and the port is for machines.
+  People and the future frontend stay on the public port, with the identity provider's
+  tokens. Browsers don't hold SPIFFE identities, and never need to.
+- **Revocation by an admin** (`POST /admin/nodes/{id}/revoke`): the certificate is
+  revoked in OpenBao first (OCSP and the lists show it), then the node is marked
+  revoked, so it can't renew. If OpenBao refuses, nothing changes. The name is free to
+  enroll again.
+- **Audited:** each request, approval (or refused fingerprint), rejection, completion
+  (or refused code), renewal, revocation, and each certificate refused on the nodes'
+  port. Nodes are a new kind of actor in the audit log (`node`).
 
 ### Revocation
 
@@ -88,6 +161,15 @@ identities and nothing else.**
   - The chart's `api.nodesCa.enabled` turns them on; off, they answer 404.
 
 ### Alternatives considered
+
+- **Polling for the certificate after approval, without a code:** a certificate for the
+  node's own key is useless to anyone else, but the code also proves that the person
+  who spoke to the admin is at the node. The roadmap's admin approval has it.
+- **Renewal on the public port, with optional client certificates:** one port fewer,
+  but every TLS handshake on the public port would ask for a certificate, and browsers
+  may then prompt their users.
+- **Through the gateway:** it would terminate the node's TLS and pass its identity on,
+  and the API would have to trust the gateway's word for it.
 
 - **Nodes under the services' intermediate, with a role of their own:** one CA less,
   but a role is all that separates a node from a service, and the internal port trusts
@@ -116,7 +198,15 @@ identities and nothing else.**
 - **OpenBao's new mount, role and logins exist only on a fresh OpenBao.**
   Self-initialization runs only on empty storage, so an existing local cluster needs
   `make k3d-down` and `make k3d-up`.
-- **The check:** `make k3d-check`:
+- **The enrollment check:** `make k3d-check` runs `scripts/node_check.py`, with
+  `scripts/vaultgate_node.py` as the node and carol as the admin:
+  - an approval naming another key is refused, and the right one gives a code;
+  - a wrong code and the code a second time are refused;
+  - the certificate names the node, for clients, from the nodes' CA;
+  - the nodes' port answers the node, and refuses a connection without a certificate;
+  - after renewal with a new key, the previous certificate is refused and revoked;
+  - after carol revokes the node, the port refuses it and OCSP says revoked.
+- **The CA check:** `make k3d-check`:
   - confirms both intermediates' constraints (`check-constraints`);
   - signs a 10-minute node certificate under the node role, which refuses a service's
     identity and a DNS name;

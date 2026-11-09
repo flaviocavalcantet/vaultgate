@@ -15,6 +15,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     LargeBinary,
     MetaData,
     SmallInteger,
@@ -24,6 +25,7 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, CIDR, INET, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -278,7 +280,7 @@ class TransferIntent(Base):
 
 
 POLICY_EFFECTS = ("allow", "deny")
-POLICY_ACTIONS = ("read", "upload", "download", "share")
+POLICY_ACTIONS = ("read", "upload", "download", "share", "enroll")
 
 
 class Policy(Base):
@@ -323,7 +325,87 @@ class Policy(Base):
     )
 
 
-AUDIT_ACTOR_KINDS = ("user", "recipient", "gateway", "scanner", "system")
+NODE_STATUSES = ("active", "revoked")
+ENROLLMENT_STATUSES = ("pending", "approved", "completed", "rejected")
+ENROLLMENT_METHODS = ("admin_approval",)
+
+
+class Node(Base):
+    """An external node (M11, ADR 0014): a machine outside the cluster with a certificate
+    from the nodes' CA, naming it spiffe://nodes.vaultgate/node/<name>.
+
+    One active node per name. Only its current certificate's serial is kept: renewal
+    wants that one, so an older certificate, even unexpired, renews nothing. Revoking
+    the node revokes that certificate too.
+    """
+
+    __tablename__ = "nodes"
+    __table_args__ = (
+        CheckConstraint(f"status IN {NODE_STATUSES}", name="status"),
+        # One active node per name; revoked ones stay, for the record.
+        Index(
+            "uq_nodes_active_name", "name", unique=True, postgresql_where=text("status = 'active'")
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(63), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    # SHA-256 of the current key's SubjectPublicKeyInfo, as "SHA256:<base64>".
+    key_fingerprint: Mapped[str] = mapped_column(String(64))
+    cert_serial: Mapped[str] = mapped_column(String(64), unique=True)
+    cert_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    enrolled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    enrolled_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    renewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class NodeEnrollment(Base):
+    """A node's request for its first certificate (M11, ADR 0014): the name it asks for
+    and a CSR for a key it generated, waiting for its first-trust check.
+
+    By admin approval: an admin confirms the key's fingerprint, which the node shows
+    its operator, and approves; that gives a one-time code (only its salted hash is
+    kept) which the operator passes to the node, and with which the node completes the
+    enrollment: the stored CSR is signed, so the code is good for that key only.
+    """
+
+    __tablename__ = "node_enrollments"
+    __table_args__ = (
+        CheckConstraint(f"status IN {ENROLLMENT_STATUSES}", name="status"),
+        CheckConstraint(f"method IN {ENROLLMENT_METHODS}", name="method"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(63), index=True)
+    method: Mapped[str] = mapped_column(String(32), default="admin_approval")
+    csr: Mapped[str] = mapped_column(Text)
+    key_fingerprint: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    client_ip: Mapped[str | None] = mapped_column(INET)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    code_hash: Mapped[str | None] = mapped_column(String(64))
+    code_salt: Mapped[str | None] = mapped_column(String(32))
+    code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    code_attempts: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    node_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("nodes.id", ondelete="SET NULL"))
+
+
+AUDIT_ACTOR_KINDS = ("user", "recipient", "gateway", "scanner", "system", "node")
 
 
 class AuditEvent(Base):

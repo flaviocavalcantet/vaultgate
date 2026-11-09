@@ -26,6 +26,11 @@ spec:
     - ports:
         - { port: http }
     {{- end }}
+    {{- if and (eq $name "api") $.Values.api.nodes.enabled }}
+    # Enrolled nodes, from outside: the port wants their certificates.
+    - ports:
+        - { port: nodes }
+    {{- end }}
     - ports:
         - { port: metrics }
       from:

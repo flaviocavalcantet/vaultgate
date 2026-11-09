@@ -357,6 +357,9 @@ path "database/creds/vaultgate-api" { capabilities = ["read"] }
 path "secret/data/vaultgate/internal-token" { capabilities = ["read"] }
 path "secret/data/vaultgate/scanner-token" { capabilities = ["read"] }
 path "secret/data/vaultgate/aws-api" { capabilities = ["read"] }
+path "pki-nodes/sign/node" { capabilities = ["update"] }
+path "pki-nodes/revoke" { capabilities = ["update"] }
+path "pki-nodes/crl/rotate-delta" { capabilities = ["read"] }
 EOT
     }
   }

@@ -93,7 +93,7 @@ Each row is a threat to an element or flow. The **status** is one of:
 
 | Threat | Against it | Status |
 | --- | --- | --- |
-| A forged or altered access token at the API | Signature against the issuer's JWKS, RS256 only, `iss`, `aud`, `exp` checked on every request (ADR 0002); the negative tests send no token, a non-JWT, a changed payload and `alg: none` to all 25 protected routes | mitigated |
+| A forged or altered access token at the API | Signature against the issuer's JWKS, RS256 only, `iss`, `aud`, `exp` checked on every request (ADR 0002); the negative tests send no token, a non-JWT, a changed payload and `alg: none` to all 30 protected routes | mitigated |
 | A stolen access token | Lives 5 minutes; TLS everywhere; no cookies, so no CSRF; the token is never logged | mitigated |
 | Someone else's intent token at the gateway | 256-bit random, hashed at rest, single use, minutes long, bound to one file and one direction (upload or download); tested by the end-to-end check and the negative tests | mitigated |
 | A guessed share link or code | The link is 256-bit random; the code is 6 digits, valid 10 minutes, 5 attempts each, at most 5 sent an hour, mailed to the recipient's address (ADR 0006) | mitigated |
@@ -101,6 +101,9 @@ Each row is a threat to an element or flow. The **status** is one of:
 | Something else posing as the gateway or the scanner on the internal port | Network policy, a client certificate from VaultGate's root naming the caller, and the caller's token (ADR 0013); `scripts/mtls_check.py` | mitigated |
 | A certificate naming a service, issued to someone else | Only a `Certificate` in VaultGate's namespace can get one (a namespaced Issuer, an OpenBao role bound to it); anyone who can create one there can already read the services' Secrets | accepted (TM-9) |
 | A fake server (the API, PostgreSQL, OpenBao, Keycloak) | Every client verifies the server's certificate against the cluster's trust bundle | mitigated |
+| A machine enrolling as a node it isn't (M11) | An admin approves only once the key's fingerprint matches what the node's operator reads them; the one-time code that completes it signs the request's key only; enrolling needs an `enroll` policy, from the networks it names; requests are limited per address and in number (ADR 0014); `scripts/node_check.py` | mitigated |
+| A node's certificate used after it's replaced or revoked | The nodes' port accepts only the node's current certificate of an active node; renewal revokes the previous one, revocation shows in OCSP at once (ADR 0014) | mitigated |
+| A node posing as a service, or a service as a node | The nodes' CA can sign only `spiffe://nodes.vaultgate/...` URIs, the services' CA only `spiffe://vaultgate/...`, as critical name constraints every verifier enforces (`scripts/pki.py check-constraints`) | mitigated |
 | A spoofed client address to get around an IP policy | `X-Forwarded-For` is believed only from `trusted_proxies`; the gateway passes the address it saw, and the API re-checks the policies with it | mitigated |
 
 ### Tampering

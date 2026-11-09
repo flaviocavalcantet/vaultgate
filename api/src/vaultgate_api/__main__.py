@@ -7,7 +7,8 @@ API the gateway and the scanner use; next to them, a periodic sweep of abandoned
 uploads and the resender of stuck scan requests. With a TLS certificate configured, both
 servers and the metrics port speak TLS only, and a renewed certificate is loaded without a
 restart. With a client CA as well, the internal server wants a client certificate from it
-(mutual TLS, vaultgate_api.mtls).
+(mutual TLS, vaultgate_api.mtls). With a nodes' client CA, a third server, the nodes' port,
+wants a node's certificate (M11, vaultgate_api.nodes_app).
 """
 
 import asyncio
@@ -62,12 +63,25 @@ async def serve(metrics_context: ssl.SSLContext | None = None) -> None:
         }
     public = _server("vaultgate_api.main:app", settings.port)
     internal = _server("vaultgate_api.internal:internal_app", settings.internal_port, **mtls)
-    tasks = [public.serve(), internal.serve()]
+    servers = [public, internal]
+    if settings.nodes_client_ca_file:
+        if not settings.tls_cert_file:
+            raise SystemExit("VAULTGATE_NODES_CLIENT_CA_FILE needs TLS on (a certificate)")
+        servers.append(
+            _server(
+                "vaultgate_api.nodes_app:nodes_app",
+                settings.nodes_port,
+                ssl_ca_certs=settings.nodes_client_ca_file,
+                ssl_cert_reqs=ssl.CERT_REQUIRED,
+                http=ClientIdentityProtocol,
+            )
+        )
+    tasks = [server.serve() for server in servers]
     if settings.tls_cert_file and settings.tls_key_file:
         reloader = CertificateReloader(
             settings.tls_cert_file,
             settings.tls_key_file,
-            [public.config.ssl, internal.config.ssl, *filter(None, [metrics_context])],
+            [*(s.config.ssl for s in servers), *filter(None, [metrics_context])],
         )
         tasks.append(reloader.run(settings.tls_reload_interval_seconds))
     if settings.upload_sweep_interval_seconds > 0:

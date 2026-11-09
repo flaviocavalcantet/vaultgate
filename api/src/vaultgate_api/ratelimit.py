@@ -113,6 +113,9 @@ class Limits:
             s.rate_limit_share_access_per_minute, s.rate_limit_share_access_per_minute, clock
         )
         self.pki = TokenBuckets(s.rate_limit_pki_per_minute, s.rate_limit_pki_per_minute, clock)
+        self.enroll = TokenBuckets(
+            s.rate_limit_enroll_per_minute, s.rate_limit_enroll_per_minute, clock
+        )
         self.auth = FailureBlock(
             s.rate_limit_auth_failures_per_minute, s.rate_limit_auth_block_seconds, clock
         )
@@ -161,6 +164,12 @@ async def limit_pki(request: Request) -> None:
     """Per-address limit on the nodes' CA's public routes, which have no user."""
     if wait := limits.pki.take(client_key(request)):
         raise too_many("pki", wait)
+
+
+async def limit_enroll(request: Request) -> None:
+    """Per-address limit on node enrollment's public routes, which have no user."""
+    if wait := limits.enroll.take(client_key(request)):
+        raise too_many("enroll", wait)
 
 
 def client_key(request: Request) -> str:
