@@ -11,6 +11,14 @@ DIR/node.key (mode 0600), and only a CSR is sent.
     vaultgate_node.py status            where the request is (pending, approved, ...)
     vaultgate_node.py complete CODE     complete it with the admin's one-time code:
                                         DIR/node.crt (with its chain) and DIR/node.json
+    vaultgate_node.py credential        first trust by a Keycloak client instead: make the
+                                        node's Keycloak credential, an RSA key and a
+                                        certificate for it (DIR/keycloak.crt), which an admin
+                                        registers (scripts/keycloak_node_client.py create)
+    vaultgate_node.py enroll-client NAME
+                                        enroll as NAME with that client (node-NAME): a token
+                                        from Keycloak, the client authenticated by a JWT the
+                                        key signs (private_key_jwt), and a CSR; no approval
     vaultgate_node.py whoami            the node, as the API sees it, on the nodes' port
     vaultgate_node.py renew [--new-key] a new certificate, with the current one; the
                                         current one is revoked
@@ -20,6 +28,7 @@ Settings, from the environment:
     VAULTGATE_NODE_DIR   the node's files (~/.vaultgate/node)
     VAULTGATE_API        the API's public address (https://localhost:8000)
     VAULTGATE_NODES_URL  the API's nodes' port (https://localhost:8002)
+    VAULTGATE_KEYCLOAK   Keycloak's address, for enroll-client (https://localhost:8080)
     SSL_CERT_FILE        the CA bundle to verify the API with (VaultGate's root, locally)
 
 Standard library and OpenSSL 3 only (VAULTGATE_OPENSSL names the command).
@@ -29,10 +38,13 @@ import base64
 import hashlib
 import json
 import os
+import secrets
 import ssl
 import subprocess
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -40,6 +52,8 @@ NODE_DIR = Path(os.getenv("VAULTGATE_NODE_DIR", Path.home() / ".vaultgate" / "no
 API = os.getenv("VAULTGATE_API", "https://localhost:8000").rstrip("/")
 NODES_URL = os.getenv("VAULTGATE_NODES_URL", "https://localhost:8002").rstrip("/")
 OPENSSL = os.getenv("VAULTGATE_OPENSSL", "openssl")
+KEYCLOAK = os.getenv("VAULTGATE_KEYCLOAK", "https://localhost:8080").rstrip("/")
+REALM = os.getenv("VAULTGATE_KEYCLOAK_REALM", "vaultgate")
 
 
 class Failure(Exception):
@@ -153,6 +167,74 @@ def complete(code: str) -> dict:
     return answer
 
 
+def credential() -> None:
+    """The node's Keycloak credential: an RSA key (RS256 client assertions) that stays
+    here, and a self-signed certificate for it that the admin gives Keycloak."""
+    NODE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = NODE_DIR / "keycloak.key"
+    if not key.exists():
+        pem = openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:3072")
+        fd = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(pem)
+    cert = openssl("req", "-x509", "-new", "-key", str(key), "-subj", "/CN=vaultgate-node",
+                   "-days", "365", "-sha256")  # fmt: skip
+    (NODE_DIR / "keycloak.crt").write_bytes(cert)
+    print(f"ok  Keycloak credential: give {NODE_DIR / 'keycloak.crt'} to an admin")
+
+
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def client_assertion(client_id: str, audience: str) -> str:
+    """A JWT the node's Keycloak key signs (RFC 7523): who it is, for which token
+    endpoint, valid a minute, used once (jti)."""
+    now = int(time.time())
+    header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    claims = b64url(json.dumps({
+        "iss": client_id, "sub": client_id, "aud": audience,
+        "jti": secrets.token_urlsafe(16), "iat": now, "exp": now + 60,
+    }).encode())  # fmt: skip
+    signature = openssl("dgst", "-sha256", "-sign", str(NODE_DIR / "keycloak.key"),
+                        data=f"{header}.{claims}".encode())  # fmt: skip
+    return f"{header}.{claims}.{b64url(signature)}"
+
+
+def client_token(name: str) -> str:
+    """An access token for the node's client, from Keycloak's token endpoint."""
+    token_endpoint = f"{KEYCLOAK}/realms/{REALM}/protocol/openid-connect/token"
+    form = urllib.parse.urlencode({
+        "grant_type": "client_credentials",
+        "client_id": f"node-{name}",
+        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        "client_assertion": client_assertion(f"node-{name}", f"{KEYCLOAK}/realms/{REALM}"),
+    }).encode()  # fmt: skip
+    request = urllib.request.Request(token_endpoint, data=form, method="POST")
+    try:
+        with urllib.request.urlopen(request, context=ssl.create_default_context(),
+                                    timeout=30) as response:  # fmt: skip
+            return json.loads(response.read())["access_token"]
+    except urllib.error.HTTPError as e:
+        raise Failure(f"Keycloak token: {e.code} {e.read().decode(errors='replace')[:200]}")
+
+
+def enroll_client(name: str) -> dict:
+    NODE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = NODE_DIR / "node.key"
+    if not key.exists():
+        new_key(key)
+    token = client_token(name)
+    status_, answer = call(f"{API}/nodes/enrollments/by-client", "POST", {"csr": csr(key)},
+                           token=token)  # fmt: skip
+    if status_ != 201:
+        raise Failure(f"enrollment with the Keycloak client: {status_} {answer.get('detail')}")
+    save(answer)
+    print(f"ok  enrolled as {answer['identity']} with its Keycloak client, certificate "
+          f"{answer['serial']} until {answer['expires_at']}")  # fmt: skip
+    return answer
+
+
 def whoami() -> dict:
     code, answer = call(f"{NODES_URL}/whoami", client=True)
     if code != 200:
@@ -186,6 +268,10 @@ def main(argv: list[str]) -> int:
                 status()
             case ["complete", code]:
                 complete(code)
+            case ["credential"]:
+                credential()
+            case ["enroll-client", name]:
+                enroll_client(name)
             case ["whoami"]:
                 whoami()
             case ["renew"]:

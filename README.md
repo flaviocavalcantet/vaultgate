@@ -492,6 +492,16 @@ scripts/vaultgate_node.py whoami                # the nodes' port, https://local
 scripts/vaultgate_node.py renew --new-key       # a new certificate (and key); the old one is revoked
 ```
 
+Or, with no approval to wait for, by the node's own Keycloak client: the node makes a credential (an RSA key and its certificate), an admin creates the client `node-<name>` for it, and the node enrolls with that client's token, got by a JWT its key signs (`private_key_jwt`):
+
+```bash
+scripts/vaultgate_node.py credential                                     # ~/.vaultgate/node/keycloak.crt
+scripts/keycloak_node_client.py create edge-2 ~/.vaultgate/node/keycloak.crt   # as Keycloak's admin
+scripts/vaultgate_node.py enroll-client edge-2                           # the certificate, at once
+```
+
+A client enrolls one node, ever: VaultGate refuses its token a second time. Its role or the client itself can be removed afterwards (`keycloak_node_client.py unassign` or `delete`).
+
 Nodes may enroll only where an access policy allows the `enroll` action (the seeded local policy does). Admins list requests and nodes at `/admin/nodes/enrollments` and `/admin/nodes`, reject a request, and revoke a node (`POST /admin/nodes/<id>/revoke`). The nodes' port is for machines only: people, and a frontend, use the public port with tokens.
 
 ### Load testing
@@ -588,7 +598,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] A second intermediate CA for nodes, from the offline root, limited to node identities; short-lived certificates, revocation (CRL and OCSP) ([ADR 0014](docs/adr/0014-node-enrollment.md))
   - [x] Enrollment API: a node sends a CSR for a key it generated itself, and VaultGate signs it through OpenBao once the node passes its first-trust check; under the access policies and in the audit log; renewal over mTLS with the current certificate, so the first credential is used once ([ADR 0014](docs/adr/0014-node-enrollment.md))
   - [x] First trust by admin approval: the request waits, the admin confirms the node's key fingerprint and approves, and a one-time code passed to the node completes the enrollment for that key only
-  - [ ] First trust by a Keycloak client: one confidential client per node, authenticated with a signed JWT (`private_key_jwt`), its enrollment role removed once the node has its certificate
+  - [x] First trust by a Keycloak client: one confidential client per node, authenticated with a signed JWT (`private_key_jwt`); VaultGate accepts the client's token for one enrollment only (it never writes to Keycloak: removing the role afterwards is the admin's tidying, [ADR 0014](docs/adr/0014-node-enrollment.md))
   - [ ] First trust by an admin enrollment token: single use, short-lived, limited to one node identity
   - [ ] First trust by TPM attestation: the node's key proven to be held by its TPM
   - [ ] First trust by cloud instance identity: the cloud's signed instance identity document (AWS first; GCP and Azure alike)

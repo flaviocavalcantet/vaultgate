@@ -1,7 +1,8 @@
 # ADR 0014: Node enrollment
 
 **Status:** Accepted (M11, in steps: the nodes' CA; then enrollment, with admin approval
-as its first first-trust method; the other methods follow, and extend this record)
+as its first first-trust method; then first trust by a Keycloak client; the other
+methods follow, and extend this record)
 
 ## Context
 
@@ -160,7 +161,49 @@ credential again.**
     its network policy already allowed (its OpenBao agent's).
   - The chart's `api.nodesCa.enabled` turns them on; off, they answer 404.
 
+### First trust by a Keycloak client
+
+**A node with its own confidential Keycloak client enrolls with that client's token, at
+once and once.**
+
+- **The client** (`node-<name>`, made by an admin: `scripts/keycloak_node_client.py
+  create`):
+  - **Authentication:** a JWT signed by the node's own key (`private_key_jwt`, RFC 7523).
+    Keycloak holds only the key's certificate, which the node makes
+    (`vaultgate_node.py credential`). There is no client secret to leak or share.
+  - **Its tokens** are for the audience `vaultgate-nodes`, never the API's
+    (`vaultgate-api`). Every user route refuses them, and the enrollment route refuses
+    users' tokens.
+  - **Its service account** has the realm role `vaultgate-node-enroll`.
+- **Enrollment** (`POST /nodes/enrollments/by-client`, with the token and a CSR): the API
+  validates the token against the node audience, wants the role, and names the node
+  after the client (`node-<name>` is `<name>`). Then the CSR is checked and signed as by
+  approval, under the same `enroll` policies, and the certificate comes back at once.
+  There is no admin step at enrollment time: the admin's trust went into making the
+  client.
+- **Once, by VaultGate.** The enrollment records the client's service account (the
+  token's `sub`), and a unique index keeps it to one node ever. A second request with
+  the same client is refused (409, audited), even after its node is revoked.
+  - **VaultGate never writes to Keycloak.** The roadmap had the role removed once the
+    node has its certificate. That would give the API write access to Keycloak's users.
+    The single-use record protects as well, so the API's credentials stay read-only.
+    Removing the role (`unassign`) or the client (`delete`) afterwards is the admin's
+    tidying. Recreating a client makes a new service account, so enrolling again is
+    always a deliberate admin act.
+- **Its failures are plain 401s**, not counted towards the address's authentication
+  block as the user routes' are. The route is limited per address already, a signed
+  token can't be guessed, and ZAP, scanning with a user's token, would otherwise be
+  blocked partway through a scan.
+- **Locally:** `scripts/keycloak_node_client.py` signs in as Keycloak's bootstrap admin
+  (TM-12). Elsewhere it uses an admin's credentials.
+
 ### Alternatives considered
+
+- **The API removing the role in Keycloak itself:** faithful to the roadmap, but it needs
+  a Keycloak credential that can change users' role mappings. Keycloak's fine-grained
+  admin permissions could narrow it to the nodes' service accounts. The single-use
+  record already makes a second enrollment impossible, so the credential wasn't worth
+  adding.
 
 - **Polling for the certificate after approval, without a code:** a certificate for the
   node's own key is useless to anyone else, but the code also proves that the person
@@ -206,6 +249,14 @@ credential again.**
   - the nodes' port answers the node, and refuses a connection without a certificate;
   - after renewal with a new key, the previous certificate is refused and revoked;
   - after carol revokes the node, the port refuses it and OCSP says revoked.
+- **The Keycloak client check:** `scripts/node_check.py` also makes a node client with
+  its certificate. The node enrolls with a token got by `private_key_jwt`, and checks
+  that:
+  - the client can't enroll a second node;
+  - its token opens no user route;
+  - a user's token isn't a node client's.
+
+  The client is deleted afterwards.
 - **The CA check:** `make k3d-check`:
   - confirms both intermediates' constraints (`check-constraints`);
   - signs a 10-minute node certificate under the node role, which refuses a service's

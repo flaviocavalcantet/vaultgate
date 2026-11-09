@@ -42,6 +42,8 @@ router = APIRouter(prefix="/admin/nodes", tags=["admin"], dependencies=[Depends(
 
 
 class AdminEnrollmentOut(EnrollmentOut):
+    method: str
+    client_id: str | None
     client_ip: str | None
     created_at: datetime
     decided_at: datetime | None
@@ -51,6 +53,8 @@ class AdminEnrollmentOut(EnrollmentOut):
 def admin_enrollment_out(enrollment: NodeEnrollment, now: datetime) -> AdminEnrollmentOut:
     return AdminEnrollmentOut(
         **enrollment_out(enrollment, now).model_dump(),
+        method=enrollment.method,
+        client_id=enrollment.client_id,
         client_ip=str(enrollment.client_ip) if enrollment.client_ip is not None else None,
         created_at=enrollment.created_at,
         decided_at=enrollment.decided_at,

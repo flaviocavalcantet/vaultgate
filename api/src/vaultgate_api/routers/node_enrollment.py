@@ -14,6 +14,15 @@ default, so no node enrolls until an admin allows it, from the networks they cho
 3. POST /nodes/enrollments/{id}/complete with the code: the stored CSR is signed, so the
    code is good for that key only, and once.
 
+Or, first trust by a Keycloak client: POST /nodes/enrollments/by-client, with a token
+of the node's own confidential client (node-<name>), which authenticates to Keycloak
+with a JWT signed by the node's key (private_key_jwt). The token is for the audience
+vaultgate-nodes, never the API's, so it opens no user route; it must carry the
+enrollment role. No wait and no code: the certificate comes back at once. A client
+enrolls one node, ever: its service account is recorded, and a second request with it
+is refused, whatever Keycloak still allows (removing its role or the client afterwards
+is the admin's tidying).
+
 GET /nodes/enrollments/{id} tells a waiting node where its request is. Its ID is a
 random UUID the node got back; the answer holds nothing a stranger could use.
 """
@@ -24,12 +33,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vaultgate_api import audit, nodes, policies
+from vaultgate_api.auth import Principal, TokenError, _unauthorized
 from vaultgate_api.clientip import client_ip_var
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
@@ -268,6 +279,138 @@ async def complete_enrollment(
         await _revoke_quietly(signer, issued.serial)
         raise HTTPException(status.HTTP_409_CONFLICT, "A node of that name is enrolled") from None
     logger.info("node enrolled", extra={"node_id": str(node.id), "serial": issued.serial})
+    return CertificateOut(
+        node_id=node.id,
+        identity=identity,
+        certificate=issued.certificate,
+        chain=issued.chain,
+        serial=issued.serial,
+        expires_at=issued.expires_at,
+    )
+
+
+_node_bearer = HTTPBearer(auto_error=False, description="A node client's access token")
+
+
+async def node_client(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_node_bearer)],
+) -> Principal:
+    """The node client's token, for the node audience; else 401. Not counted towards the
+    address's authentication failures, as the user routes' are: the route is limited per
+    address already (limit_enroll), and a signed token can't be guessed."""
+    if credentials is None:
+        raise _unauthorized("missing_token")
+    try:
+        return await request.app.state.node_token_validator.validate(credentials.credentials)
+    except TokenError as exc:
+        logger.info("node client token rejected", extra={"reason": exc.reason})
+        raise _unauthorized(exc.reason) from None
+
+
+class ClientEnrollmentIn(BaseModel):
+    csr: str = Field(max_length=nodes.MAX_CSR_BYTES)
+
+
+@router.post("/by-client", status_code=status.HTTP_201_CREATED)
+async def enroll_by_client(
+    body: ClientEnrollmentIn,
+    client: Annotated[Principal, Depends(node_client)],
+    session: SessionDep,
+    signer: SignerDep,
+) -> CertificateOut:
+    """First trust by the node's Keycloak client: its token, and a CSR. The node is named
+    by its client (node-<name>); the client enrolls this one node, and never another."""
+    prefix = settings.node_client_prefix
+    client_id = client.client_id or ""
+    name = client_id.removeprefix(prefix) if client_id.startswith(prefix) else ""
+    details = {"client_id": client_id, "client_subject": client.subject, "name": name}
+
+    async def refuse(result: str, code: int, detail: str) -> HTTPException:
+        await session.rollback()
+        await audit.record_refusal(
+            session, "node.enrollment_completed", actor_kind="node",
+            details=details | {"method": "keycloak_client", "result": result},
+        )  # fmt: skip
+        logger.info("node client enrollment refused", extra={"result": result})
+        return HTTPException(code, detail)
+
+    if not nodes.NAME_PATTERN.fullmatch(name):
+        raise await refuse("not a node client", status.HTTP_403_FORBIDDEN, "Not a node's client")
+    if settings.node_enroll_role not in client.roles:
+        raise await refuse("no role", status.HTTP_403_FORBIDDEN, "The client may not enroll a node")
+    try:
+        fingerprint = nodes.check_csr(body.csr)
+    except nodes.InvalidCSR as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from None
+    details["key_fingerprint"] = fingerprint
+    if not (await enroll_allowed(session)).allowed:
+        raise await refuse("policy", status.HTTP_403_FORBIDDEN, NOT_ALLOWED)
+    used = await session.scalar(
+        select(NodeEnrollment).where(NodeEnrollment.client_subject == client.subject)
+    )
+    if used is not None:
+        raise await refuse(
+            "client used", status.HTTP_409_CONFLICT, "This client has enrolled a node already"
+        )
+    if await active_node(session, name) is not None:
+        raise await refuse(
+            "name taken", status.HTTP_409_CONFLICT, "A node of that name is enrolled"
+        )
+
+    identity = nodes.identity(name)
+    try:
+        issued = await signer.sign(body.csr, identity)
+    except nodes.SignerError:
+        logger.exception("node certificate not signed")
+        await session.rollback()
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "The CA is unavailable") from None
+    now = datetime.now(UTC)
+    node = Node(
+        id=uuid.uuid4(),
+        name=name,
+        status="active",
+        key_fingerprint=fingerprint,
+        cert_serial=issued.serial,
+        cert_expires_at=issued.expires_at,
+        enrolled_at=now,
+    )
+    enrollment = NodeEnrollment(
+        id=uuid.uuid4(),
+        name=name,
+        method="keycloak_client",
+        csr=body.csr,
+        key_fingerprint=fingerprint,
+        status="completed",
+        client_ip=client_ip_var.get(),
+        expires_at=now,
+        completed_at=now,
+        node_id=node.id,
+        client_id=client_id,
+        client_subject=client.subject,
+    )
+    session.add(node)
+    await session.flush()  # the node first: the enrollment refers to it
+    session.add(enrollment)
+    await audit.record(
+        session,
+        "node.enrollment_completed",
+        actor_kind="node",
+        actor_id=node.id,
+        target_kind="node_enrollment",
+        target_id=enrollment.id,
+        details=details | {"method": "keycloak_client", "node_id": str(node.id),
+                           "serial": issued.serial},
+    )  # fmt: skip
+    try:
+        await session.commit()
+    except IntegrityError:  # the same client, or the name, in a concurrent request
+        await session.rollback()
+        await _revoke_quietly(signer, issued.serial)
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "This client or name has enrolled a node already"
+        ) from None
+    logger.info("node enrolled by its client", extra={"node_id": str(node.id)})
     return CertificateOut(
         node_id=node.id,
         identity=identity,

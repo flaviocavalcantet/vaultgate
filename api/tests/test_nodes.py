@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.conftest import requires_db
+from tests.fake_oidc import make_validator
 from vaultgate_api import nodes
 from vaultgate_api.config import settings
 from vaultgate_api.db import get_session
@@ -522,3 +523,107 @@ async def test_an_enroll_policy_made_by_an_admin_allows_enrolling(env) -> None:
     csr, _ = csr_for()
     asked = await public.post("/nodes/enrollments", json={"name": "edge-1", "csr": csr})
     assert asked.status_code == 202, asked.text
+
+
+# --- first trust by a Keycloak client ----------------------------------------------------
+
+
+def node_token(provider, name: str = "edge-1", **overrides) -> dict:
+    """Headers with a node client's token, as Keycloak issues it for client credentials."""
+    claims = {
+        "aud": ["vaultgate-nodes", "account"],
+        "azp": f"node-{name}",
+        "sub": f"sa-{name}",
+        "preferred_username": f"service-account-node-{name}",
+        "realm_access": {"roles": ["default-roles-vaultgate", "vaultgate-node-enroll"]},
+        "groups": None,
+        "email": None,
+        "name": None,
+    } | overrides
+    return {"Authorization": f"Bearer {provider.token(**claims)}"}
+
+
+@pytest.fixture
+async def by_client(env, provider, monkeypatch):
+    monkeypatch.setattr(
+        app.state, "node_token_validator", make_validator(provider, audience="vaultgate-nodes"),
+        raising=False,
+    )  # fmt: skip
+    yield env
+
+
+@requires_db
+async def test_enrollment_by_a_keycloak_client(by_client, provider) -> None:
+    public, admin, signer, session = by_client
+    csr, fingerprint = csr_for()
+    done = await public.post(
+        "/nodes/enrollments/by-client", json={"csr": csr}, headers=node_token(provider)
+    )
+    assert done.status_code == 201, done.text
+    assert done.json()["identity"] == "spiffe://nodes.vaultgate/node/edge-1"
+    assert signer.signed == [(csr, "spiffe://nodes.vaultgate/node/edge-1")]
+    node = await session.scalar(select(Node).where(Node.name == "edge-1"))
+    assert node.key_fingerprint == fingerprint and node.status == "active"
+    node_id = node.id  # the refusals below roll the shared session back
+    listed = (await public.get("/admin/nodes/enrollments?status=all", headers=admin)).json()
+    assert [(e["method"], e["client_id"], e["status"]) for e in listed["items"]] == [
+        ("keycloak_client", "node-edge-1", "completed")
+    ]
+    # The client enrolls one node, ever: again, even once the node is revoked, it's refused.
+    again = await public.post(
+        "/nodes/enrollments/by-client", json={"csr": csr_for()[0]}, headers=node_token(provider)
+    )
+    assert again.status_code == 409
+    await public.post(f"/admin/nodes/{node_id}/revoke", headers=admin)
+    after = await public.post(
+        "/nodes/enrollments/by-client", json={"csr": csr_for()[0]}, headers=node_token(provider)
+    )
+    assert after.status_code == 409
+    # A new client (a new service account), even of the same name, is a new credential.
+    fresh = await public.post(
+        "/nodes/enrollments/by-client",
+        json={"csr": csr_for()[0]},
+        headers=node_token(provider, sub="sa-edge-1-new"),
+    )
+    assert fresh.status_code == 201
+    assert (await actions(session)).count(("node.enrollment_completed", "denied")) == 2
+
+
+@requires_db
+async def test_only_a_node_clients_token_with_the_role(by_client, provider) -> None:
+    public, _, signer, _ = by_client
+    csr, _ = csr_for()
+    url = "/nodes/enrollments/by-client"
+    for headers, code in [
+        ({}, 401),
+        ({"Authorization": f"Bearer {provider.token()}"}, 401),  # a user's token: aud vaultgate-api
+        (node_token(provider, aud="vaultgate-api"), 401),
+        (node_token(provider, azp="vaultgate-web"), 403),  # not a node's client
+        (node_token(provider, azp="node-Bad_Name"), 403),
+        (node_token(provider, realm_access={"roles": ["default-roles-vaultgate"]}), 403),
+    ]:
+        answer = await public.post(url, json={"csr": csr}, headers=headers)
+        assert answer.status_code == code, (headers, answer.text)
+    assert signer.signed == []
+    # And a node client's token opens no user route.
+    assert (await public.get("/me", headers=node_token(provider))).status_code == 401
+
+
+@requires_db
+async def test_by_client_under_the_policies_and_names(by_client, provider) -> None:
+    public, admin, signer, session = by_client
+    await enroll(public, admin, "edge-1")  # by approval
+    taken = await public.post(
+        "/nodes/enrollments/by-client", json={"csr": csr_for()[0]}, headers=node_token(provider)
+    )
+    assert taken.status_code == 409
+    for policy in await session.scalars(select(Policy).where(Policy.name == "nodes may enroll")):
+        await session.delete(policy)
+    await session.flush()
+    refused = await public.post(
+        "/nodes/enrollments/by-client",
+        json={"csr": csr_for()[0]},
+        headers=node_token(provider, "edge-2"),
+    )
+    assert refused.status_code == 403
+    assert len(signer.signed) == 1  # the approval's only
