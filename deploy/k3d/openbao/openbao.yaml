@@ -38,6 +38,15 @@ metadata:
   name: secrets-seed
 automountServiceAccountToken: false
 ---
+# `make k3d-check`'s check of the nodes' CA (scripts/pki.py check-nodes), through tokens
+# the operator mints: OpenBao's pki-nodes-check role signs and revokes a short-lived node
+# certificate, nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pki-nodes-check
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

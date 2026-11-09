@@ -5,6 +5,7 @@ which files exist, and who they were shared with. Large byte streams never pass
 through this service; the Tornado gateway handles those.
 """
 
+import ssl
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -17,7 +18,7 @@ from vaultgate_api.config import settings
 from vaultgate_api.headers import SecurityHeadersMiddleware
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
-from vaultgate_api.ratelimit import limit_share_access, limit_user
+from vaultgate_api.ratelimit import limit_pki, limit_share_access, limit_user
 from vaultgate_api.routers import (
     admin,
     admin_files,
@@ -25,6 +26,7 @@ from vaultgate_api.routers import (
     files,
     health,
     me,
+    pki,
     policies,
     share_access,
     shared_with_me,
@@ -36,13 +38,21 @@ from vaultgate_api.tracing import FASTAPI_TELEMETRY, TracingMiddleware
 # so a new router is authenticated unless it is deliberately added here.
 PUBLIC_PATHS = frozenset(
     {"/healthz", "/readyz", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"}
+    | {f"/pki/nodes/{p}" for p in ("ca", "ca/pem", "crl", "crl/delta", "ocsp")}
 )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    # OpenBao, for the nodes' CA (vaultgate_api.routers.pki): verified with the trust
+    # store OpenSSL's defaults name (SSL_CERT_FILE on the cluster).
+    openbao_tls = ssl.create_default_context()
+    async with (
+        httpx.AsyncClient(timeout=5.0) as client,
+        httpx.AsyncClient(timeout=5.0, verify=openbao_tls) as openbao,
+    ):
         app.state.token_validator = build_validator(client)
+        app.state.openbao = openbao
         yield
 
 
@@ -89,6 +99,9 @@ app.include_router(health.router)
 # Share recipients have no token: the link's own token and an emailed code authorize
 # them (vaultgate_api.routers.share_access).
 app.include_router(share_access.router, dependencies=[Depends(limit_share_access)])
+# The nodes' CA's certificate, revocation lists and OCSP: public by nature (signed), so
+# limited per client address (vaultgate_api.routers.pki).
+app.include_router(pki.router, dependencies=[Depends(limit_pki)])
 
 # Deny by default: every router below requires a valid bearer token.
 # Authenticated, then within the caller's rate limits (vaultgate_api.ratelimit).
@@ -104,7 +117,8 @@ protected.include_router(shared_with_me.router)
 app.include_router(protected)
 
 # Public: /healthz (liveness), /readyz (database reachable), /shares/access (share
-#         recipients, authorized by the link's token and an emailed code).
+#         recipients, authorized by the link's token and an emailed code), /pki/nodes
+#         (the nodes' CA's certificate, revocation lists and OCSP).
 # Protected: /me (caller's user record, provisioned from the access token),
 #            /admin/users, /admin/groups, /admin/policies, /admin/files, /admin/audit (members
 #            of VAULTGATE_ADMIN_GROUPS only; never subject to access policies),

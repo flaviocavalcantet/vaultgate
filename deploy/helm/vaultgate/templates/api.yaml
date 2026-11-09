@@ -50,6 +50,12 @@ spec:
             - name: VAULTGATE_OIDC_DISCOVERY_URL
               value: {{ . | quote }}
             {{- end }}
+            {{- if $api.nodesCa.enabled }}
+            - name: VAULTGATE_OPENBAO_ADDRESS
+              value: {{ .Values.openbao.address | quote }}
+            - name: VAULTGATE_NODES_PKI_MOUNT
+              value: {{ $api.nodesCa.mount | quote }}
+            {{- end }}
             {{- with .Values.scanQueueUrl }}
             - name: VAULTGATE_SCAN_QUEUE_URL
               value: {{ . | quote }}

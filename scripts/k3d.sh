@@ -109,10 +109,11 @@ pki_bootstrap() {
   fi
 }
 
-# The intermediate CA, once OpenBao is up: it generates the key and a CSR, the root
-# signs it here, and OpenBao installs it. Logged in as the pki-ceremony service account.
+# The intermediate CAs (the services' and, since M11, the nodes'), once OpenBao is up:
+# for each, it generates the key and a CSR, the root signs it here, and OpenBao installs
+# it. Logged in as the pki-ceremony service account.
 pki_ceremony() {
-  log "the intermediate CA (PKI ceremony)"
+  log "the intermediate CAs (PKI ceremony)"
   wait_for 120 "OpenBao on localhost:8200" python3 scripts/pki.py check-tls
   VAULTGATE_OPENBAO_JWT=$(kubectl -n openbao create token pki-ceremony --audience openbao --duration 10m) \
     python3 scripts/pki.py intermediate
@@ -286,8 +287,13 @@ check_observability() {
 }
 
 check_pki() {
-  log "PKI: OpenBao unsealed, its TLS and its intermediate CA chained to the root"
+  log "PKI: OpenBao unsealed, its TLS and its intermediate CAs chained to the root"
   python3 scripts/pki.py check
+  log "PKI: each intermediate's name constraints reject what it may not sign (a throwaway root)"
+  python3 scripts/pki.py check-constraints
+  log "the nodes' CA: a node certificate for clients only, refused a service's identity, revoked through the API's OCSP"
+  VAULTGATE_OPENBAO_JWT=$(kubectl -n openbao create token pki-nodes-check --audience openbao --duration 10m) \
+    python3 scripts/pki.py check-nodes
   log "TLS: the API, the gateway and Keycloak serve certificates from the cluster's CA, and nothing in plain HTTP"
   kubectl -n vaultgate wait --for=condition=Ready certificate --all --timeout=120s
   kubectl -n vaultgate-deps wait --for=condition=Ready certificate --all --timeout=120s
