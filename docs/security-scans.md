@@ -167,17 +167,17 @@ against the new versions (`make obs-check`) and the cluster by CI's `k3d-e2e`:
 | --- | --- | --- | --- | --- |
 | curl (the cluster check's probe) | 8.11.1 | 37 | 8.23.0 | 0 |
 | Prometheus (compose) | 3.1.0 | 112 | 3.16.0, as the cluster's | 2 |
-| Grafana (compose) | 11.4.0 | 156 | 13.3.0, as the cluster's | |
-| Loki | 3.3.2 | 61 | 3.7.9 | |
+| Grafana (compose) | 11.4.0 | 156 | 13.3.0, as the cluster's | 54, in libraries bundled in its binaries |
+| Loki | 3.3.2 | 61 | 3.7.9 | 1 |
 | Tempo | 2.6.1 | 89 | 2.10.10 | 2 |
 | Alloy | 1.5.1 | 84 | 1.21.3 | 3 |
 | OpenBao | 2.7.1 | 10 | 2.7.2 | 2 |
 | k3s (the cluster's node) | 1.33.9 | 156 | 1.33.13 | 91 |
-| Keycloak | 26.0.7 | | 26.8.2 | |
+| Keycloak | 26.0.7 | not scanned | 26.8.2 | 1 |
 | Mailpit | 1.33.0 | 0 | 1.33.1 | 0 |
 
-Blank cells are images the scan's first run in CI reports (their registries weren't
-reachable when this was written). k3s bundles many binaries (containerd, runc, CNI
+Keycloak's old release wasn't scanned: its registry wasn't reachable when the scan was
+written, and the bump came before the scan's first run in CI. k3s bundles many binaries (containerd, runc, CNI
 plugins); its latest 1.33 release still carries them, and moving the cluster to a newer
 Kubernetes minor is a change of its own. **LocalStack stays at 4.4.0**: its later
 releases need an account token, and it is only the local environments' AWS emulator.
