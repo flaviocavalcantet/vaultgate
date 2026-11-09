@@ -14,6 +14,10 @@ default, so no node enrolls until an admin allows it, from the networks they cho
 3. POST /nodes/enrollments/{id}/complete with the code: the stored CSR is signed, so the
    code is good for that key only, and once.
 
+Or, first trust by an admin's enrollment token: POST /nodes/enrollments/by-token, with
+a token an admin issued for one node name (vaultgate_api.routers.admin_nodes): single
+use, short lived. The token names the node, and the certificate comes back at once.
+
 Or, first trust by a Keycloak client: POST /nodes/enrollments/by-client, with a token
 of the node's own confidential client (node-<name>), which authenticates to Keycloak
 with a JWT signed by the node's key (private_key_jwt). The token is for the audience
@@ -44,7 +48,7 @@ from vaultgate_api.auth import Principal, TokenError, _unauthorized
 from vaultgate_api.clientip import client_ip_var
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
-from vaultgate_api.models import Node, NodeEnrollment
+from vaultgate_api.models import Node, NodeEnrollment, NodeEnrollmentToken
 
 logger = logging.getLogger(__name__)
 
@@ -411,6 +415,124 @@ async def enroll_by_client(
             status.HTTP_409_CONFLICT, "This client or name has enrolled a node already"
         ) from None
     logger.info("node enrolled by its client", extra={"node_id": str(node.id)})
+    return CertificateOut(
+        node_id=node.id,
+        identity=identity,
+        certificate=issued.certificate,
+        chain=issued.chain,
+        serial=issued.serial,
+        expires_at=issued.expires_at,
+    )
+
+
+class TokenEnrollmentIn(BaseModel):
+    token: str = Field(min_length=1, max_length=128)
+    csr: str = Field(max_length=nodes.MAX_CSR_BYTES)
+
+
+INVALID_TOKEN = "Not a valid enrollment token"
+
+
+@router.post("/by-token", status_code=status.HTTP_201_CREATED)
+async def enroll_by_token(
+    body: TokenEnrollmentIn, session: SessionDep, signer: SignerDep
+) -> CertificateOut:
+    """First trust by an admin's enrollment token: the token (in the body, never a URL)
+    and a CSR. The token names the node; it is used once."""
+    row = await session.scalar(
+        select(NodeEnrollmentToken)
+        .where(NodeEnrollmentToken.token_hash == nodes.hash_token(body.token))
+        .with_for_update()
+    )
+    if row is None:
+        # Not audited: anyone can send any string, as often as the address limit lets
+        # them. Known tokens' refusals are.
+        await session.rollback()
+        raise HTTPException(status.HTTP_403_FORBIDDEN, INVALID_TOKEN)
+    now = datetime.now(UTC)
+    details = {"method": "enrollment_token", "token_id": str(row.id), "name": row.name}
+
+    async def refuse(result: str, code: int, detail: str) -> HTTPException:
+        await session.rollback()
+        await audit.record_refusal(
+            session, "node.enrollment_completed", actor_kind="node",
+            details=details | {"result": result},
+        )  # fmt: skip
+        logger.info("node token enrollment refused", extra={"result": result})
+        return HTTPException(code, detail)
+
+    if row.used_at is not None:
+        raise await refuse("token used", status.HTTP_403_FORBIDDEN, INVALID_TOKEN)
+    if row.revoked_at is not None:
+        raise await refuse("token revoked", status.HTTP_403_FORBIDDEN, INVALID_TOKEN)
+    if row.expires_at <= now:
+        raise await refuse("token expired", status.HTTP_403_FORBIDDEN, INVALID_TOKEN)
+    try:
+        fingerprint = nodes.check_csr(body.csr)
+    except nodes.InvalidCSR as e:
+        await session.rollback()  # the token stays usable: the node may fix its CSR
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from None
+    details["key_fingerprint"] = fingerprint
+    if not (await enroll_allowed(session)).allowed:
+        raise await refuse("policy", status.HTTP_403_FORBIDDEN, NOT_ALLOWED)
+    if await active_node(session, row.name) is not None:
+        raise await refuse(
+            "name taken", status.HTTP_409_CONFLICT, "A node of that name is enrolled"
+        )
+
+    identity = nodes.identity(row.name)
+    try:
+        issued = await signer.sign(body.csr, identity)
+    except nodes.SignerError:
+        logger.exception("node certificate not signed")
+        await session.rollback()  # nothing used up: the same token works once OpenBao does
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "The CA is unavailable") from None
+    node = Node(
+        id=uuid.uuid4(),
+        name=row.name,
+        status="active",
+        key_fingerprint=fingerprint,
+        cert_serial=issued.serial,
+        cert_expires_at=issued.expires_at,
+        enrolled_at=now,
+        enrolled_by=row.created_by,
+    )
+    session.add(node)
+    await session.flush()
+    enrollment = NodeEnrollment(
+        id=uuid.uuid4(),
+        name=row.name,
+        method="enrollment_token",
+        csr=body.csr,
+        key_fingerprint=fingerprint,
+        status="completed",
+        client_ip=client_ip_var.get(),
+        expires_at=row.expires_at,
+        decided_by=row.created_by,
+        decided_at=row.created_at,
+        completed_at=now,
+        node_id=node.id,
+    )
+    session.add(enrollment)
+    await session.flush()
+    row.used_at = now  # single use: with the node, or not at all
+    row.enrollment_id = enrollment.id
+    await audit.record(
+        session,
+        "node.enrollment_completed",
+        actor_kind="node",
+        actor_id=node.id,
+        target_kind="node_enrollment",
+        target_id=enrollment.id,
+        details=details | {"node_id": str(node.id), "serial": issued.serial},
+    )
+    try:
+        await session.commit()
+    except IntegrityError:  # the name, enrolled by a concurrent request
+        await session.rollback()
+        await _revoke_quietly(signer, issued.serial)
+        raise HTTPException(status.HTTP_409_CONFLICT, "A node of that name is enrolled") from None
+    logger.info("node enrolled by token", extra={"node_id": str(node.id)})
     return CertificateOut(
         node_id=node.id,
         identity=identity,

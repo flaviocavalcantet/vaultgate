@@ -88,6 +88,18 @@ def check_csr(pem: str) -> str:
     return fingerprint(key)
 
 
+# An enrollment token's prefix, so secret scanners (and people) recognize one.
+TOKEN_PREFIX = "vgn_"
+
+
+def new_enrollment_token() -> str:
+    return TOKEN_PREFIX + secrets.token_urlsafe(32)  # 256 bits
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def new_code() -> str:
     code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
     return f"{code[:5]}-{code[5:]}"

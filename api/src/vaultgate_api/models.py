@@ -327,7 +327,7 @@ class Policy(Base):
 
 NODE_STATUSES = ("active", "revoked")
 ENROLLMENT_STATUSES = ("pending", "approved", "completed", "rejected")
-ENROLLMENT_METHODS = ("admin_approval", "keycloak_client")
+ENROLLMENT_METHODS = ("admin_approval", "keycloak_client", "enrollment_token")
 
 
 class Node(Base):
@@ -416,6 +416,28 @@ class NodeEnrollment(Base):
     # By a Keycloak client: its ID (node-<name>) and its service account's subject.
     client_id: Mapped[str | None] = mapped_column(String(255))
     client_subject: Mapped[str | None] = mapped_column(String(255))
+
+
+class NodeEnrollmentToken(Base):
+    """An admin's enrollment token for one node name (M11, ADR 0014): single use, short
+    lived. Shown to the admin once; only its SHA-256 is kept. Used, it points at the
+    enrollment it completed."""
+
+    __tablename__ = "node_enrollment_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(63), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("node_enrollments.id", ondelete="SET NULL")
+    )
 
 
 AUDIT_ACTOR_KINDS = ("user", "recipient", "gateway", "scanner", "system", "node")

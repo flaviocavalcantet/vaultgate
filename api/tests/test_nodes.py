@@ -18,7 +18,7 @@ from vaultgate_api import nodes
 from vaultgate_api.config import settings
 from vaultgate_api.db import get_session
 from vaultgate_api.main import app
-from vaultgate_api.models import AuditEvent, Node, NodeEnrollment, Policy
+from vaultgate_api.models import AuditEvent, Node, NodeEnrollment, NodeEnrollmentToken, Policy
 from vaultgate_api.mtls import _WithIdentities
 from vaultgate_api.nodes_app import nodes_app
 
@@ -627,3 +627,126 @@ async def test_by_client_under_the_policies_and_names(by_client, provider) -> No
     )
     assert refused.status_code == 403
     assert len(signer.signed) == 1  # the approval's only
+
+
+# --- first trust by an admin's enrollment token ------------------------------------------
+
+
+async def issue(public, admin, name: str = "edge-1", **body) -> dict:
+    answer = await public.post("/admin/nodes/tokens", json={"name": name, **body}, headers=admin)
+    assert answer.status_code == 201, answer.text
+    return answer.json()
+
+
+@requires_db
+async def test_enrollment_by_token(env) -> None:
+    public, admin, signer, session = env
+    issued = await issue(public, admin)
+    token = issued["token"]
+    assert token.startswith("vgn_") and len(token) > 40
+    assert issued["state"] == "usable" and issued["identity"].endswith("/node/edge-1")
+    row = await session.scalar(select(NodeEnrollmentToken))
+    assert row.token_hash == nodes.hash_token(token) and token not in str(row.__dict__)
+
+    csr, fingerprint = csr_for()
+    done = await public.post("/nodes/enrollments/by-token", json={"token": token, "csr": csr})
+    assert done.status_code == 201, done.text
+    assert done.json()["identity"] == "spiffe://nodes.vaultgate/node/edge-1"
+    assert signer.signed == [(csr, "spiffe://nodes.vaultgate/node/edge-1")]
+
+    again = await public.post(
+        "/nodes/enrollments/by-token", json={"token": token, "csr": csr_for()[0]}
+    )
+    assert again.status_code == 403  # single use
+    listed = (await public.get("/admin/nodes/tokens?status=all", headers=admin)).json()
+    assert [t["state"] for t in listed["items"]] == ["used"]
+    assert (await public.get("/admin/nodes/tokens", headers=admin)).json()["total"] == 0
+    enrollments = (await public.get("/admin/nodes/enrollments?status=all", headers=admin)).json()
+    assert [(e["method"], e["status"]) for e in enrollments["items"]] == [
+        ("enrollment_token", "completed")
+    ]
+    node = await session.scalar(select(Node).where(Node.name == "edge-1"))
+    assert node.key_fingerprint == fingerprint
+    assert await actions(session) == [
+        ("node.enrollment_token_issued", "ok"),
+        ("node.enrollment_completed", "ok"),
+        ("node.enrollment_completed", "denied"),
+    ]
+
+
+@requires_db
+async def test_a_token_expires_and_can_be_revoked(env) -> None:
+    public, admin, signer, session = env
+    expiring = await issue(public, admin, "edge-1", ttl_seconds=60)
+    row = await session.get(NodeEnrollmentToken, uuid.UUID(expiring["id"]))
+    row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await session.flush()
+    url = "/nodes/enrollments/by-token"
+    assert (
+        await public.post(url, json={"token": expiring["token"], "csr": csr_for()[0]})
+    ).status_code == 403
+
+    revoked = await issue(public, admin, "edge-2")
+    gone = await public.post(f"/admin/nodes/tokens/{revoked['id']}/revoke", headers=admin)
+    assert gone.status_code == 204
+    assert (
+        await public.post(url, json={"token": revoked["token"], "csr": csr_for()[0]})
+    ).status_code == 403
+    again = await public.post(f"/admin/nodes/tokens/{revoked['id']}/revoke", headers=admin)
+    assert again.status_code == 409
+
+    assert (
+        await public.post(url, json={"token": "vgn_guess", "csr": csr_for()[0]})
+    ).status_code == 403
+    assert signer.signed == []
+    results = await session.scalars(
+        select(AuditEvent.details["result"].astext).where(AuditEvent.outcome == "denied")
+    )
+    assert sorted(results) == ["token expired", "token revoked"]  # an unknown token: not
+
+
+@requires_db
+async def test_token_limits_and_checks(env, monkeypatch) -> None:
+    public, admin, _, _ = env
+    monkeypatch.setattr(settings, "node_token_max_ttl_seconds", 600)
+    long = await issue(public, admin, "edge-1", ttl_seconds=86400)
+    lasts = datetime.fromisoformat(long["expires_at"]) - datetime.fromisoformat(long["created_at"])
+    assert lasts == timedelta(seconds=600)
+    for body in [{"name": "Bad_Name"}, {"name": "edge-2", "ttl_seconds": 5}]:
+        answer = await public.post("/admin/nodes/tokens", json=body, headers=admin)
+        assert answer.status_code == 422, body
+    # A bad CSR leaves the token usable.
+    url = "/nodes/enrollments/by-token"
+    assert (await public.post(url, json={"token": long["token"], "csr": "junk"})).status_code == 422
+    assert (
+        await public.post(url, json={"token": long["token"], "csr": csr_for()[0]})
+    ).status_code == 201
+    # A name with an active node gets no token.
+    taken = await public.post("/admin/nodes/tokens", json={"name": "edge-1"}, headers=admin)
+    assert taken.status_code == 409
+
+
+@requires_db
+async def test_tokens_are_for_admins(env, provider) -> None:
+    public, _, _, _ = env
+    user = {"Authorization": f"Bearer {provider.token()}"}
+    for method, path, body in [
+        ("POST", "/admin/nodes/tokens", {"name": "edge-1"}),
+        ("GET", "/admin/nodes/tokens", None),
+        ("POST", f"/admin/nodes/tokens/{uuid.uuid4()}/revoke", None),
+    ]:
+        assert (await public.request(method, path, json=body, headers=user)).status_code == 403
+
+
+@requires_db
+async def test_token_enrollment_under_the_policies(env) -> None:
+    public, admin, signer, session = env
+    issued = await issue(public, admin)
+    for policy in await session.scalars(select(Policy).where(Policy.name == "nodes may enroll")):
+        await session.delete(policy)
+    await session.flush()
+    url = "/nodes/enrollments/by-token"
+    refused = await public.post(url, json={"token": issued["token"], "csr": csr_for()[0]})
+    assert refused.status_code == 403 and signer.signed == []
+    still = (await public.get("/admin/nodes/tokens", headers=admin)).json()["items"]
+    assert [t["state"] for t in still] == ["usable"]  # refused, not used up
