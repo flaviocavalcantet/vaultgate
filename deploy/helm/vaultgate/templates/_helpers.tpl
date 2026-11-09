@@ -212,8 +212,23 @@ initContainers:
     command: [bao, agent, -config=/etc/openbao-agent/agent.hcl]
     {{- if eq .name "api" }}
     restartPolicy: Always
+    # The API starts once every file is written, not just some: a client that read a
+    # missing credentials file at start (the AWS SDK's) never looks again.
     startupProbe:
-      exec: { command: [test, -s, /run/secrets/vaultgate/vaultgate_database_url] }
+      exec:
+        command:
+          - test
+          - -s
+          - /run/secrets/vaultgate/vaultgate_database_url
+          - -a
+          - -s
+          - /run/secrets/vaultgate/vaultgate_internal_token
+          - -a
+          - -s
+          - /run/secrets/vaultgate/vaultgate_scanner_token
+          - -a
+          - -s
+          - /run/secrets/vaultgate/aws-credentials
       periodSeconds: 2
       failureThreshold: 300
     {{- end }}
