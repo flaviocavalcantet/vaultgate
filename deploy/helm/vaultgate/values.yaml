@@ -69,7 +69,7 @@ mtls:
 openbao:
   enabled: false
   address: https://openbao.openbao.svc:8200
-  image: openbao/openbao:2.7.1
+  image: openbao/openbao:2.7.2
   # The API's database credentials come from OpenBao's database engine (this role),
   # short-lived and its own per pod; the agent writes them into a URL for this database.
   database:

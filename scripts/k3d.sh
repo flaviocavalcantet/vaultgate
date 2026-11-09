@@ -255,7 +255,7 @@ check_cluster() {
 
   log "network policy: only the gateway and the scanner reach the API's internal port"
   local probe=(kubectl -n vaultgate run "netpol-probe-$RANDOM" --rm -i --restart=Never --quiet
-    --image=curlimages/curl:8.11.1 --command --)
+    --image=curlimages/curl:8.23.0 --command --)
   # The public port first: it proves the probe itself works, so a refusal below is the
   # policy's and not a probe that never ran. Reachability only, hence -k (the probe pod
   # has no trust bundle); the TLS checks are check_pki's.

@@ -43,3 +43,11 @@ place.
   when the chart changes.
 - `make obs-check` for the `observability/` configs once the observability stack is merged
   (needs Docker).
+
+## Container images
+
+- Alpine-based images (VaultGate's own, if any, and third-party ones such as OpenBao,
+  Tempo and Mailpit) run on musl. When an image installs OpenSSH, or starts to, keep its
+  packages updated (`apk upgrade` in the image, or the vendor's fixed release): musl
+  builds without PAM have had authentication bypasses (SSHole, CVE-2026-123158). Check
+  with `apk info` in the image, or the third-party image scan in the Security workflow.

@@ -17,14 +17,16 @@ running system's tests (ZAP and the negative tests, below) run in CI's cluster j
 | [govulncheck](https://go.dev/doc/security/vuln/) 1.9.0 | Known vulnerabilities in Go code the scanner actually calls, its modules' and the standard library's | `scanner` |
 | [gitleaks](https://github.com/gitleaks/gitleaks) 8.30.1 | Secrets in every commit | the whole history |
 | [Trivy](https://github.com/aquasecurity/trivy) 0.76.2, `image` | Known vulnerabilities in the images' operating system packages and everything installed in them; HIGH and CRITICAL with a fix released | the three images, built from their Dockerfiles |
+| Trivy, `image`, third-party | The same, HIGH and CRITICAL whether fixed or not; **reported, not gated** (below) | every third-party image compose and the local cluster run, as `scripts/third_party_images.sh` renders them |
 | Trivy, `config` | Misconfigurations, MEDIUM and up | Dockerfiles, Helm charts, the local cluster's manifests, Terraform |
 | [kube-linter](https://github.com/stackrox/kube-linter) 0.8.3 | Kubernetes hardening and reliability checks (its default set) | the chart, with its default values and the local cluster's, and the local cluster's manifests (`scripts/kube_lint.sh`) |
 
-Every job fails on a finding. A false positive or an accepted finding is suppressed
-where it occurs, with its reason: at the line (`#nosec G115 -- ...`, `# nosec B104`), on
-the Kubernetes object (an `ignore-check.kube-linter.io/<check>` annotation), or for one
-file in `.trivyignore.yaml`. A rule is never turned off for the whole code base, so a
-new occurrence is still reported.
+Every job fails on a finding, except the third-party image scan. A false positive or an
+accepted finding is suppressed where it occurs, with its reason: at the line (`#nosec
+G115 -- ...`, `# nosec B104`), on the Kubernetes object (an
+`ignore-check.kube-linter.io/<check>` annotation), or for one file in
+`.trivyignore.yaml`. A rule is never turned off for the whole code base, so a new
+occurrence is still reported.
 
 ## Scope
 
@@ -117,14 +119,68 @@ In `scripts/` and `loadtest/`, Semgrep and Bandit report:
   all in Debian packages with no fix released (util-linux, ncurses, SQLite, systemd's
   libraries, zlib, perl-base), most of them tools a service never runs. The gate fails
   on a vulnerability once a fix is out; the weekly run sees it then, and rebuilding
-  the image picks the fix up. A smaller base image (distroless Python, or one built
-  with only the interpreter) would remove most of these packages outright; left for
-  later, as it changes how the images are built.
+  the image picks the fix up. Fixed in M10's last step (TM-7, below): both images are
+  now distroless.
 - **Fixes the base image doesn't carry yet.** In November 2026 Debian fixed two HIGH
   zlib vulnerabilities (CVE-2026-76844, CVE-2026-85091) before `python:3.12-slim` was
   rebuilt with the fix, and the gate failed on them. Both Python images now apply
   Debian's security updates when they are built (`apt-get upgrade`), so a fix that
   Debian has released is in the next build.
+- **Distroless Python images** (M10's last step, TM-7). The API and the gateway now
+  run on `gcr.io/distroless/cc-debian13`: glibc, OpenSSL and the C++ runtime, no shell,
+  no package manager. A build stage on `python:3.12-slim` installs the service, drops
+  the standard modules it never imports whose libraries would come along (curses,
+  dbm, nis, readline, sqlite3, crypt, Tk), and copies in the libraries of each Debian
+  package Python and the dependencies link to, after Debian's security updates, with
+  their package records so Trivy sees their versions. The build fails if a library
+  doesn't resolve or belongs to no package. With no shell, the API runs its migrations
+  itself before it serves (`VAULTGATE_MIGRATE_ON_START`).
+
+  | Each image | Before | After |
+  | --- | --- | --- |
+  | Debian packages | 87 | 18 |
+  | Known vulnerabilities in them, any severity | 189 | 56 |
+  | HIGH | 49 | 6, of which 2 (zlib) fixed by the build's updates; the other 4 are util-linux's mount and nsenter code, filed against `libuuid1`, which the services load only for `uuid` |
+  | Size | 405 MB (API), 285 MB (gateway) | 327 MB, 207 MB |
+
+### Third-party images
+
+M10's last step added a scan of every third-party image the environments run: the
+dependencies, OpenBao (whose image the chart also runs in production, as the services'
+agent), observability, Argo CD, cert-manager, the cluster's node and the probe pod.
+`scripts/third_party_images.sh` renders the list from what is deployed (compose, the
+local cluster's manifests and charts, the upstream charts at their pinned versions), so
+an image added or bumped is covered with nothing to update. Each image's HIGH and
+CRITICAL vulnerabilities are in its job's log, and the counts in the run's summary.
+
+**Reported, not gated.** The vendors fix these on their own schedules, often in
+libraries compiled into their binaries: even freshly rebuilt images such as
+`postgres:16` carried fixable findings (the Go standard library in its `gosu` helper).
+A gate would hold every pull request on them. A fix released upstream is taken by
+bumping the image; the weekly run shows what has one.
+
+The first scan found most images on releases a year or more old. Each was bumped to
+its current release in the same major version, with the observability configs checked
+against the new versions (`make obs-check`) and the cluster by CI's `k3d-e2e`:
+
+| Image | Was | HIGH and CRITICAL with a fix, then | Now | HIGH and CRITICAL with a fix, now |
+| --- | --- | --- | --- | --- |
+| curl (the cluster check's probe) | 8.11.1 | 37 | 8.23.0 | 0 |
+| Prometheus (compose) | 3.1.0 | 112 | 3.16.0, as the cluster's | 2 |
+| Grafana (compose) | 11.4.0 | 156 | 13.3.0, as the cluster's | 54, in libraries bundled in its binaries |
+| Loki | 3.3.2 | 61 | 3.7.9 | 1 |
+| Tempo | 2.6.1 | 89 | 2.10.10 | 2 |
+| Alloy | 1.5.1 | 84 | 1.21.3 | 3 |
+| OpenBao | 2.7.1 | 10 | 2.7.2 | 2 |
+| k3s (the cluster's node) | 1.33.9 | 156 | 1.33.13 | 91 |
+| Keycloak | 26.0.7 | not scanned | 26.8.2 | 1 |
+| Mailpit | 1.33.0 | 0 | 1.33.1 | 0 |
+
+Keycloak's old release wasn't scanned: its registry wasn't reachable when the scan was
+written, and the bump came before the scan's first run in CI. k3s bundles many binaries (containerd, runc, CNI
+plugins); its latest 1.33 release still carries them, and moving the cluster to a newer
+Kubernetes minor is a change of its own. **LocalStack stays at 4.4.0**: its later
+releases need an account token, and it is only the local environments' AWS emulator.
 
 ### Fixed
 

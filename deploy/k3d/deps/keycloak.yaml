@@ -37,7 +37,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: keycloak
-          image: quay.io/keycloak/keycloak:26.0.7
+          image: quay.io/keycloak/keycloak:26.8.2
           args: ["start-dev", "--import-realm"]
           env:
             - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: admin }

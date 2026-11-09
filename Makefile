@@ -20,12 +20,12 @@ migrate:     ## Apply database migrations (uses VAULTGATE_DATABASE_URL, defaults
 	cd api && alembic upgrade head
 
 obs-check:   ## Check Prometheus config and alert rules (with unit tests), Loki, Tempo, Alloy and dashboards (needs Docker)
-	docker run --rm -v $(CURDIR)/observability/prometheus:/etc/prometheus:ro --entrypoint promtool prom/prometheus:v3.1.0 check config /etc/prometheus/prometheus.yml
-	docker run --rm -v $(CURDIR)/observability/prometheus/rules:/rules:ro -w /rules --entrypoint promtool prom/prometheus:v3.1.0 test rules vaultgate_test.yml
-	docker run --rm -v $(CURDIR)/observability/loki/loki.yml:/cfg/loki.yml:ro grafana/loki:3.3.2 -config.file=/cfg/loki.yml -verify-config
-	docker run --rm -v $(CURDIR)/observability/tempo/tempo.yml:/cfg/tempo.yml:ro grafana/tempo:2.6.1 -config.file=/cfg/tempo.yml -config.verify=true
-	docker run --rm -v $(CURDIR)/observability/alloy:/cfg:ro grafana/alloy:v1.5.1 fmt -t /cfg/config.alloy
-	docker run --rm -v $(CURDIR)/observability/alloy:/cfg:ro grafana/alloy:v1.5.1 fmt -t /cfg/kubernetes.alloy
+	docker run --rm -v $(CURDIR)/observability/prometheus:/etc/prometheus:ro --entrypoint promtool prom/prometheus:v3.16.0 check config /etc/prometheus/prometheus.yml
+	docker run --rm -v $(CURDIR)/observability/prometheus/rules:/rules:ro -w /rules --entrypoint promtool prom/prometheus:v3.16.0 test rules vaultgate_test.yml
+	docker run --rm -v $(CURDIR)/observability/loki/loki.yml:/cfg/loki.yml:ro grafana/loki:3.7.9 -config.file=/cfg/loki.yml -verify-config
+	docker run --rm -v $(CURDIR)/observability/tempo/tempo.yml:/cfg/tempo.yml:ro grafana/tempo:2.10.10 -config.file=/cfg/tempo.yml -config.verify=true
+	docker run --rm -v $(CURDIR)/observability/alloy:/cfg:ro grafana/alloy:v1.21.3 fmt -t /cfg/config.alloy
+	docker run --rm -v $(CURDIR)/observability/alloy:/cfg:ro grafana/alloy:v1.21.3 fmt -t /cfg/kubernetes.alloy
 	python3 scripts/check_dashboards.py observability/grafana/dashboards
 
 token:       ## Log in through Keycloak in the browser and print an access token (TOKEN=$$(make -s token))

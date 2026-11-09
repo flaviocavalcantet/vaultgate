@@ -1,6 +1,8 @@
 """Each new connection logs in with the credentials in OpenBao's file right then
 (vaultgate_api.db.use_current_credentials): a rotation needs no restart."""
 
+import asyncio
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -54,3 +56,23 @@ async def test_new_connections_use_the_file_as_it_is_now(tmp_path, rotated_login
             await current_user(engine)
     finally:
         await engine.dispose()
+
+
+async def test_migrations_run_in_process(monkeypatch):
+    """`python -m vaultgate_api` runs `alembic upgrade head` itself when asked (the image
+    has no shell): here against the test database, already at head."""
+    from pathlib import Path
+
+    from vaultgate_api import __main__ as entry
+    from vaultgate_api.config import settings
+
+    monkeypatch.setattr(settings, "database_url", TEST_DATABASE_URL)
+    ini = Path(__file__).resolve().parent.parent / "alembic.ini"
+    await asyncio.to_thread(entry.migrate, str(ini))  # it runs its own event loop
+    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            head = (await conn.execute(text("select version_num from alembic_version"))).scalar()
+    finally:
+        await engine.dispose()
+    assert head

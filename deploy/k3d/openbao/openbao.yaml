@@ -60,7 +60,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: openbao
-          image: openbao/openbao:2.7.1
+          image: openbao/openbao:2.7.2
           command: [bao, server, -config=/openbao/config/openbao.hcl]
           env:
             # Its first PostgreSQL password, used once by self-initialization and rotated

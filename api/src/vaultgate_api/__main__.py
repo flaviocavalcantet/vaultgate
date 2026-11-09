@@ -83,8 +83,19 @@ async def serve(metrics_context: ssl.SSLContext | None = None) -> None:
     await asyncio.gather(*tasks)
 
 
+def migrate(config_file: str = "alembic.ini") -> None:
+    """`alembic upgrade head`, in-process. Its environment runs its own event loop, so
+    this comes before the servers'."""
+    from alembic import command
+    from alembic.config import Config
+
+    command.upgrade(Config(config_file), "head")
+
+
 def main() -> None:
     configure_logging(settings.log_level, settings.log_format)
+    if settings.migrate_on_start:
+        migrate()
     configure_tracing()
     metrics_context = start_metrics_server(
         settings.metrics_port, settings.tls_cert_file, settings.tls_key_file

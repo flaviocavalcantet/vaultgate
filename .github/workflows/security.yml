@@ -1,13 +1,13 @@
 name: Security
 
 # Static checks of the code, its dependencies, the images and the Kubernetes manifests
-# (M10, docs/security-scans.md). Each job fails on a finding. A false positive or an
-# accepted finding is suppressed where it occurs, with its reason (`# nosec`, `#nosec`,
-# an ignore-check.kube-linter.io annotation, a path in .trivyignore.yaml), never by
-# turning a rule off for everything. The tools and Semgrep's rules are pinned, so a new
-# finding comes from a change here, not from an upgrade; the vulnerability databases
-# (pip-audit, govulncheck, Trivy) are not pinned, and a weekly run catches what they
-# learn.
+# (M10, docs/security-scans.md). Each job fails on a finding, except the third-party
+# image scan, which reports (below). A false positive or an accepted finding is
+# suppressed where it occurs, with its reason (`# nosec`, `#nosec`, an
+# ignore-check.kube-linter.io annotation, a path in .trivyignore.yaml), never by turning
+# a rule off for everything. The tools and Semgrep's rules are pinned, so a new finding
+# comes from a change here, not from an upgrade; the vulnerability databases (pip-audit,
+# govulncheck, Trivy) are not pinned, and a weekly run catches what they learn.
 
 on:
   push:
@@ -129,6 +129,54 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.2
           image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
           vaultgate-${{ matrix.service }}:scan
+
+  # The third-party images the local environments run (compose and the k3d cluster:
+  # dependencies, OpenBao, observability, Argo CD, cert-manager), as
+  # scripts/third_party_images.sh renders them from what is deployed. Reported, not
+  # gated: their vulnerabilities are fixed upstream on the vendors' schedules (often in
+  # dependencies bundled in their binaries), so a gate would hold every pull request on
+  # them. Each image's HIGH and CRITICAL vulnerabilities are in its job's log, and the
+  # counts in the run's summary; a fix released upstream is taken by bumping the image.
+  third-party-images:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.list.outputs.images }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: list
+        run: |
+          images=$(scripts/third_party_images.sh)
+          echo "$images"
+          echo "images=$(echo "$images" | jq -Rnc '[inputs]')" >>"$GITHUB_OUTPUT"
+
+  trivy-third-party:
+    needs: third-party-images
+    name: trivy ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.third-party-images.outputs.images) }}
+    steps:
+      - name: Trivy
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          trivy() {
+            docker run --rm -v "$RUNNER_TEMP/trivy:/root/.cache" aquasec/trivy:0.76.2 \
+              image --scanners vuln --severity HIGH,CRITICAL "$@" "$IMAGE"
+          }
+          trivy
+          trivy --skip-db-update --format json --quiet >"$RUNNER_TEMP/report.json"
+          jq -r --arg image "$IMAGE" '[.Results[]?.Vulnerabilities[]?] as $v
+            | "| `\($image)` | \([$v[] | select(.Status == "fixed")] | length)"
+              + " | \([$v[] | select(.Status != "fixed")] | length) |"' \
+            "$RUNNER_TEMP/report.json" >"$RUNNER_TEMP/row"
+          {
+            echo "| Image | HIGH and CRITICAL, fixed upstream | Not fixed |"
+            echo "| --- | --- | --- |"
+            cat "$RUNNER_TEMP/row"
+          } >>"$GITHUB_STEP_SUMMARY"
 
   # Misconfigurations in the Dockerfiles, the Helm charts, the Kubernetes manifests and
   # Terraform; accepted findings are in .trivyignore.yaml, each with its reason and path.

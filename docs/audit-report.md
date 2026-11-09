@@ -5,26 +5,26 @@ what became of each finding. The details live in two documents:
 - the scans and their triage, in [security-scans.md](security-scans.md);
 - the threats and why each is covered or not, in [threat-model.md](threat-model.md).
 
-This report is their summary, kept up to date: M10's last step fixes the open findings
-and updates it.
+This report is their summary, kept up to date. M10's last step fixed the findings its
+earlier steps had left open.
 
 ## Summary
 
-The audit found 29 issues. 17 were fixed in the step that found them and 6 more in M10's
-last step so far, 5 are accepted with a reason, and 1 is still open, for that last
-step. No finding is critical.
+The audit found 30 issues. 17 were fixed in the step that found them and 8 in M10's last
+step, and 5 are accepted with a reason. None is open, and none was critical.
 
 The worst ones were:
 - vulnerable dependencies the scanner calls (fixed);
 - a way to hide digits from the scanner in RTF files (fixed);
 - a single AWS credential shared by three services (fixed in M10's last step);
-- no limit on where pods may connect out (fixed in M10's last step).
+- no limit on where pods may connect out (fixed in M10's last step);
+- Debian packages the Python services never run, with unfixed HIGH CVEs (fixed in
+  M10's last step: distroless images).
 
 | Status | High | Medium | Low | Total |
 | --- | --- | --- | --- | --- |
-| Fixed | 2 | 9 | 12 | 23 |
+| Fixed | 2 | 11 | 12 | 25 |
 | Accepted | 0 | 2 | 3 | 5 |
-| Open, for M10's last step | 0 | 1 | 0 | 1 |
 
 The severity scale:
 - **High:** exploitable by an outsider, or a known vulnerability rated high in code
@@ -43,7 +43,7 @@ on every pull request, so a regression fails the build.
 | Step | Methods | In CI |
 | --- | --- | --- |
 | 1. Code and dependencies | Semgrep (pinned community security rules), Bandit, gosec, pip-audit, govulncheck, gitleaks over the whole history | `security.yml`, and weekly |
-| 2. Images and cluster | Trivy on the images, Trivy config on Dockerfiles, charts, manifests and Terraform, kube-linter | `security.yml`, and weekly |
+| 2. Images and cluster | Trivy on the images (VaultGate's gated, the third-party ones reported), Trivy config on Dockerfiles, charts, manifests and Terraform, kube-linter | `security.yml`, and weekly |
 | 3. Service identity | Mutual TLS on the API's internal port, planned when M10 began: until then one bearer token was all a caller needed (ADR 0013) | `make k3d-check` |
 | 4. Running system | OWASP ZAP, passive and active, against the API (authenticated) and the gateway; negative tests for authentication, authorization, intents, TLS versions and plain HTTP | `k3d-e2e` |
 | 5. Threat model | STRIDE over the data flows | This document's findings |
@@ -77,6 +77,8 @@ on every pull request, so a regression fails the build.
 | TM-5 | Every pod could read every service's `/metrics` | Low | Threat model | #61: only Prometheus' namespace reaches the metrics ports; checked on the cluster |
 | TM-6 | The API's interactive documentation was public | Low | Threat model | #61: a setting, off in the Helm chart unless asked for |
 | TM-2 | API, gateway and scanner shared one AWS credential, so each held all three's rights | Medium | Threat model | #62: one least-privilege IAM policy per service, its own identity and OpenBao secret; checked by `terraform test` |
+| TM-7 | `python:3.12-slim` brought 87 Debian packages the services mostly never run, with 49 unfixed HIGH CVEs | Medium | Trivy, threat model | #63: the API and the gateway on distroless, with only the 10 Debian packages they link to, kept up to date at build: 18 packages, 4 unfixed HIGH |
+| A-18 | Third-party images pinned to old releases, with HIGH and CRITICAL vulnerabilities fixed since (curl 8.11.1, Grafana 11.4, Prometheus 3.1, Loki 3.3, Tempo 2.6, Alloy 1.5, Keycloak 26.0, k3s 1.33.9; OpenBao, whose image the chart also runs in production, and Mailpit a patch behind) | Medium | Trivy, third-party scan (#63) | #63: each bumped to its current release in the same major version; the scan now reports every third-party image on each pull request |
 
 ### Accepted
 
@@ -95,20 +97,17 @@ Further findings were accepted in the scans' triage as false positives or toolin
 - Keycloak's writable root filesystem and Alloy running as root, which are needed by
   their roles;
 - the registry allow-list check (Trivy KSV-0125), which is a cluster admission policy.
+- LocalStack kept at 4.4.0 with its known vulnerabilities: later releases need an
+  account token, and it is only the local environments' AWS emulator.
 
 Each is recorded where it occurs, with its reason (security-scans.md).
-
-### Open: M10's last step
-
-| ID | Finding | Severity | Planned fix |
-| --- | --- | --- | --- |
-| TM-7 | `python:3.12-slim` brings Debian packages the services never run, with unfixed HIGH CVEs | Medium | A slimmer Python base image |
 
 ## Reproducing the audit
 
 | What | How |
 | --- | --- |
 | Code, dependency, image and manifest scans | The Security workflow (`.github/workflows/security.yml`); `scripts/kube_lint.sh` locally |
+| The third-party images the scan covers | `scripts/third_party_images.sh` (needs helm and kubectl) |
 | The cluster, its checks and the negative tests | `make k3d-up`, then `make k3d-check` |
 | ZAP | `make k3d-zap` on that cluster, last (it leaves files and shares behind); reports in `zap-reports/` |
 | The load tests the timeouts will be judged against | `make load-smoke` |

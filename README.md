@@ -218,7 +218,7 @@ make vault-check  # upload and download a file through the whole stack (also run
 make test       # run all test suites
 ```
 
-The API applies its database migrations (Alembic) on startup. To run them by hand against a local Postgres, use `make migrate`. API database tests need a disposable database:
+The API applies its database migrations (Alembic) on startup, in its own process before it serves (`VAULTGATE_MIGRATE_ON_START`, set in its image, which has no shell). To run them by hand against a local Postgres, use `make migrate`. API database tests need a disposable database:
 
 ```bash
 VAULTGATE_TEST_DATABASE_URL=postgresql+asyncpg://vaultgate:vaultgate@localhost:5432/vaultgate_test make test
@@ -559,13 +559,13 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] OpenBao in the cluster, self-initialized from git, auto-unsealed; the offline root CA and the ceremony that installs the intermediate, whose key OpenBao generates and keeps ([ADR 0012](docs/adr/0012-pki-and-key-management.md))
   - [x] TLS on every hop: cert-manager issuing short-lived certificates from OpenBao, trust-manager distributing the root, the API, gateway, Keycloak, PostgreSQL, the metrics and traces endpoints and the ingress serving TLS, every client verifying
   - [x] Secrets from OpenBao: the services' credentials delivered at start, nothing secret in git or Helm values, dynamic PostgreSQL credentials per pod
-- [ ] **M10 — Security auditing and node trust:** audits of the code, dependencies, images, cluster and running system, with a threat model and a published report; mutual TLS between the services (enrolling external nodes is M11)
+- [x] **M10 — Security auditing and node trust:** audits of the code, dependencies, images, cluster and running system, with a threat model and a published report; mutual TLS between the services (enrolling external nodes is M11)
   - [x] Code and dependency scans in CI on every PR: SAST (Semgrep, Bandit, gosec), known vulnerabilities (pip-audit, govulncheck), leaked secrets (gitleaks); findings and their triage in [docs/security-scans.md](docs/security-scans.md)
   - [x] Image and cluster scans: the container images (Trivy), the Kubernetes manifests against hardening checks (Trivy config, kube-linter); the local cluster's dependencies hardened (non-root, no capabilities, seccomp, read-only root where they can)
   - [x] Service identity: client certificates from OpenBao for the gateway and the scanner; the API's internal port requires mutual TLS and authorizes by certificate identity, the shared tokens kept as a second factor ([ADR 0013](docs/adr/0013-service-identity.md))
   - [x] Running-system tests: OWASP ZAP against the API and the gateway on the cluster, and negative tests (authorization bypass, token reuse, TLS downgrade, plain HTTP); the API and the gateway now send security headers and no server banner, and every VaultGate service speaks TLS 1.3 only ([docs/security-scans.md](docs/security-scans.md#running-system-november-2026))
   - [x] Threat model (STRIDE over the data flows) and a published audit report: findings, their fixes, and what is accepted ([threat model](docs/threat-model.md), [audit report](docs/audit-report.md))
-  - [ ] Fixes: the vulnerabilities and problems M10 found that its earlier steps didn't fix, the API's and the gateway's images on a slimmer Python base among them (the unfixed Debian packages of `python:3.12-slim`); each finding fixed, or accepted with its reason, and the report updated to match
+  - [x] Fixes: the vulnerabilities and problems M10 found that its earlier steps didn't fix, each fixed or accepted with its reason, and the report updated to match: rate limits and transfer timeouts, egress network policies, one AWS identity per service, and the API's and the gateway's images on distroless (only the Debian packages they link to); every third-party image scanned and reported, the stale ones bumped
 - [ ] **M11 — Node enrollment:** certificates for external nodes through VaultGate's API, built on the M9 PKI, with a choice of first-trust methods
   - [ ] A second intermediate CA for nodes, from the offline root, limited to node identities; short-lived certificates, revocation (CRL and OCSP)
   - [ ] Enrollment API: a node sends a CSR for a key it generated itself, and VaultGate signs it through OpenBao once the node passes its first-trust check; under the access policies and in the audit log; renewal over mTLS with the current certificate, so the first credential is used once
