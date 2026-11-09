@@ -18,6 +18,8 @@ ports:
     nodeFilters: [server:0:direct]
   - port: 127.0.0.1:8888:30888 # gateway
     nodeFilters: [server:0:direct]
+  - port: 127.0.0.1:8002:30802 # API, nodes' port (mutual TLS, M11)
+    nodeFilters: [server:0:direct]
   - port: 127.0.0.1:8080:30080 # Keycloak
     nodeFilters: [server:0:direct]
   - port: 127.0.0.1:4566:30566 # LocalStack (S3, KMS, SQS), for Terraform and the e2e check

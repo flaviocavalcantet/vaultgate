@@ -1,5 +1,8 @@
 {{- $ctx := dict "root" . "name" "api" }}
 {{- $api := .Values.api }}
+{{- if and $api.nodes.enabled (not (and .Values.mtls.enabled .Values.openbao.enabled)) }}
+{{- fail "api.nodes.enabled needs mtls.enabled (the root, to verify nodes) and openbao.enabled (the agent signs)" }}
+{{- end }}
 # The control plane. Migrations run as it starts, one replica at a time (they hold a
 # Postgres advisory lock).
 apiVersion: apps/v1
@@ -56,6 +59,16 @@ spec:
             - name: VAULTGATE_NODES_PKI_MOUNT
               value: {{ $api.nodesCa.mount | quote }}
             {{- end }}
+            {{- if $api.nodes.enabled }}
+            # Node enrollment: nodes' certificates from the root on the nodes' port, and
+            # signing through the agent's API proxy (vaultgate.apiAgentConfig).
+            - name: VAULTGATE_NODES_PORT
+              value: {{ $api.nodes.port | quote }}
+            - name: VAULTGATE_NODES_CLIENT_CA_FILE
+              value: /etc/vaultgate/client-ca/ca.crt
+            - name: VAULTGATE_OPENBAO_AGENT_ADDRESS
+              value: http://127.0.0.1:8100
+            {{- end }}
             {{- with .Values.scanQueueUrl }}
             - name: VAULTGATE_SCAN_QUEUE_URL
               value: {{ . | quote }}
@@ -77,6 +90,9 @@ spec:
           ports:
             - { name: http, containerPort: {{ $api.port }} }
             - { name: internal, containerPort: {{ $api.internalPort }} }
+            {{- if $api.nodes.enabled }}
+            - { name: nodes, containerPort: {{ $api.nodes.port }} }
+            {{- end }}
             - { name: metrics, containerPort: {{ .Values.metrics.port }} }
           {{- $scheme := ternary "HTTPS" "HTTP" .Values.tls.enabled }}
           readinessProbe: { httpGet: { path: {{ $api.readinessPath }}, port: http, scheme: {{ $scheme }} } }
@@ -112,6 +128,11 @@ spec:
     - { name: http, port: {{ $api.port }}, targetPort: http }
     # For the gateway and the scanner only. Never expose this port through an Ingress.
     - { name: internal, port: {{ $api.internalPort }}, targetPort: internal }
+    {{- if $api.nodes.enabled }}
+    # For enrolled nodes, with their certificates: TLS passthrough only (the API
+    # terminates it, to see the client certificate), never an HTTP Ingress.
+    - { name: nodes, port: {{ $api.nodes.port }}, targetPort: nodes }
+    {{- end }}
     # In-cluster only. Never expose this port through an Ingress.
     - { name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics }
 {{- with $api.nodePort }}
@@ -128,4 +149,18 @@ spec:
   selector: {{- include "vaultgate.selector" $ctx | nindent 4 }}
   ports:
     - { name: http, port: {{ $api.port }}, targetPort: http, nodePort: {{ . }} }
+{{- end }}
+{{- if and $api.nodes.enabled $api.nodes.nodePort }}
+---
+# The nodes' port on every node (local clusters).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}-nodes-nodeport
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  type: NodePort
+  selector: {{- include "vaultgate.selector" $ctx | nindent 4 }}
+  ports:
+    - { name: nodes, port: {{ $api.nodes.port }}, targetPort: nodes, nodePort: {{ $api.nodes.nodePort }} }
 {{- end }}

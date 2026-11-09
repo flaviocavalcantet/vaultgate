@@ -70,4 +70,18 @@ template {
   perms       = "0400"
   contents    = "{{ "{{" }} with secret \"secret/data/vaultgate/aws-api\" {{ "}}" }}{{ "{{" }} .Data.data.value {{ "}}" }}{{ "{{" }} end {{ "}}" }}"
 }
+{{- if .Values.api.nodes.enabled }}
+
+# Node enrollment (M11, ADR 0014): the API signs and revokes node certificates through
+# this proxy, on the pod's loopback only, which adds the agent's own token (its policy
+# allows those calls on the nodes' CA, nothing more of it); the API holds no token.
+api_proxy {
+  use_auto_auth_token = "force"
+}
+
+listener "tcp" {
+  address     = "127.0.0.1:8100"
+  tls_disable = true
+}
+{{- end }}
 {{- end }}

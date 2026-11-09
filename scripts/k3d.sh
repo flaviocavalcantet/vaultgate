@@ -329,11 +329,20 @@ check_secrets() {
   echo "ok  no Secret holds them, no deployment has one in its environment"
 }
 
+# Node enrollment (M11, ADR 0014): a node asks, carol approves once the fingerprint
+# matches, the node completes with the code, calls the nodes' port with its certificate,
+# renews with a new key, and is revoked.
+check_nodes() {
+  log "node enrollment: admin approval, the nodes' port (mutual TLS), renewal, revocation"
+  host_trust python3 scripts/node_check.py --api "$API" --nodes https://localhost:8002 --keycloak "$KEYCLOAK"
+}
+
 check() {
   check_cluster
   check_pki
   check_secrets
   check_observability
+  check_nodes
   log "vault end to end, against the cluster"
   host_trust python3 scripts/vault_e2e.py --api "$API" --keycloak "$KEYCLOAK"
   log "negative tests: what the API, the gateway and the cluster's services must refuse"

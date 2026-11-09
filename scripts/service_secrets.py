@@ -58,6 +58,14 @@ ACCESS = {
     "scanner": {"secret/data/vaultgate/scanner-token", "secret/data/vaultgate/aws-scanner"},
 }
 EVERY_PATH = set().union(*ACCESS.values())
+# The nodes' CA (M11, ADR 0014): the API signs node certificates and revokes them, and
+# rotates the delta list after a revocation; the other services may do none of it.
+NODES_CA = {
+    "pki-nodes/sign/node": "update",
+    "pki-nodes/revoke": "update",
+    "pki-nodes/crl/rotate-delta": "read",
+}
+NODES_CA_ACCESS = {"api": set(NODES_CA), "gateway": set(), "scanner": set()}
 
 
 def login(role: str, jwt: str) -> str:
@@ -130,6 +138,12 @@ def readable(token: str) -> set[str]:
     return {path for path in EVERY_PATH if "read" in answer.get(path, [])}
 
 
+def on_nodes_ca(token: str) -> set[str]:
+    """The nodes' CA paths this token may call as the API does (sign, revoke, rotate)."""
+    answer = pki.bao("POST", "sys/capabilities-self", token, {"paths": sorted(NODES_CA)})
+    return {path for path, needs in NODES_CA.items() if needs in answer.get(path, [])}
+
+
 def short(path: str) -> str:
     return path.removeprefix("secret/data/vaultgate/")
 
@@ -143,6 +157,13 @@ def check_with(tokens: dict[str, str]) -> None:
             )
         names = ", ".join(sorted(short(path) for path in allowed))
         print(f"ok  {service} may read {names}, and nothing else of VaultGate's")
+        nodes_ca = on_nodes_ca(token)
+        if nodes_ca != NODES_CA_ACCESS[service]:
+            raise pki.Failure(
+                f"{service} may call {sorted(nodes_ca)} on the nodes' CA, "
+                f"should call {sorted(NODES_CA_ACCESS[service])}"
+            )
+        print(f"ok  {service} may call {', '.join(sorted(nodes_ca)) or 'nothing'} on the nodes' CA")
 
 
 def check() -> None:

@@ -2,9 +2,10 @@
 
 Access is denied by default (ADR 0004), so a fresh stack refuses every file request
 until a policy allows it. This logs in as carol, the local admin, and creates one
-policy that lets every signed-in user read, upload, download and share. If a policy
-with that name exists already, it gets any action it lacks (an older stack's policy
-gains `share`). Run it after `make up` (or `make vault-check` does).
+policy that lets every signed-in user read, upload, download and share, and every node
+enroll (M11: a policy without groups or networks covers nodes too). If a policy with
+that name exists already, it gets any action it lacks (an older stack's policy gains
+`share` and `enroll`). Run it after `make up` (or `make vault-check` does).
 
     python3 scripts/seed_policies.py [--keycloak URL] [--api URL]
 
@@ -24,7 +25,7 @@ POLICY = {
     "name": "local development: signed-in users",
     "description": "Seeded by scripts/seed_policies.py. Allows everything; local use only.",
     "effect": "allow",
-    "actions": ["read", "upload", "download", "share"],
+    "actions": ["read", "upload", "download", "share", "enroll"],
 }
 
 
