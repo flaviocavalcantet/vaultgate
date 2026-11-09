@@ -327,7 +327,13 @@ class Policy(Base):
 
 NODE_STATUSES = ("active", "revoked")
 ENROLLMENT_STATUSES = ("pending", "approved", "completed", "rejected")
-ENROLLMENT_METHODS = ("admin_approval", "keycloak_client", "enrollment_token", "cloud_identity")
+ENROLLMENT_METHODS = (
+    "admin_approval",
+    "keycloak_client",
+    "enrollment_token",
+    "cloud_identity",
+    "tpm",
+)
 
 
 class Node(Base):
@@ -429,6 +435,28 @@ class NodeEnrollmentToken(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(63), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("node_enrollments.id", ondelete="SET NULL")
+    )
+
+
+class NodeTpm(Base):
+    """A TPM an admin registered for one node name (M11, ADR 0014), by its endorsement
+    key's fingerprint (SHA-256 over its SubjectPublicKeyInfo). Used once: the enrollment
+    it allowed is recorded, and enrolling again takes a new registration."""
+
+    __tablename__ = "node_tpms"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(63), index=True)
+    ek_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )

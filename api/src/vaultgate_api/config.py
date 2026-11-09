@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     # never longer than the maximum.
     node_token_ttl_seconds: int = 3600
     node_token_max_ttl_seconds: int = 86400
+    # TPM attestation: an admin's registration of a TPM (its EK) for a node name lasts
+    # this long; the credential the node's TPM must decrypt, node_tpm_challenge_seconds.
+    node_tpm_registration_ttl_seconds: int = 7 * 86400
+    node_tpm_challenge_seconds: int = 300
     # First trust by cloud instance identity (M11, ADR 0014), AWS: instance identity
     # documents verified with these certificates (AWS's, for the RSA signature, for the
     # regions used; a PEM bundle), from these accounts only (none: the method is off),

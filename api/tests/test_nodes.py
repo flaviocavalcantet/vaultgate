@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.conftest import requires_db
 from tests.fake_oidc import make_validator
-from vaultgate_api import nodes
+from vaultgate_api import nodes, tpm
 from vaultgate_api.config import settings
 from vaultgate_api.db import get_session
 from vaultgate_api.main import app
@@ -893,3 +893,156 @@ def test_cloud_identity_document_parsing(tmp_path) -> None:
         body = aws.document(**fields)
         with pytest.raises(cloud.InvalidIdentity):
             cloud.aws_instance(body["document"], body["signature"], str(aws.file))
+
+
+# --- first trust by TPM attestation --------------------------------------------------------
+
+
+async def register_tpm(public, admin, fake, name: str = "edge-1"):
+    answer = await public.post(
+        "/admin/nodes/tpms",
+        json={"name": name, "ek_fingerprint": fake.ek_fingerprint()},
+        headers=admin,
+    )
+    assert answer.status_code == 201, answer.text
+    return answer.json()
+
+
+@requires_db
+async def test_enrollment_by_tpm_attestation(env) -> None:
+    from tests.test_tpm import FakeTPM
+
+    public, admin, signer, session = env
+    fake = FakeTPM()
+    registered = await register_tpm(public, admin, fake)
+    assert registered["state"] == "usable"
+    body = fake.body()
+    started = await public.post("/nodes/enrollments/by-tpm", json=body)
+    assert started.status_code == 202, started.text
+    challenge = started.json()
+    assert challenge["identity"] == "spiffe://nodes.vaultgate/node/edge-1"
+    secret = fake.activate(base64.b64decode(challenge["credential"]))
+    url = f"/nodes/enrollments/by-tpm/{challenge['id']}/complete"
+    wrong = await public.post(url, json={"secret": base64.b64encode(b"x" * 32).decode()})
+    assert wrong.status_code == 403
+    done = await public.post(url, json={"secret": base64.b64encode(secret).decode()})
+    assert done.status_code == 201, done.text
+    assert signer.signed == [(body["csr"], "spiffe://nodes.vaultgate/node/edge-1")]
+    # The registration is used: the TPM enrolls this one node.
+    again = await public.post("/nodes/enrollments/by-tpm", json=fake.body())
+    assert again.status_code == 403
+    listed = (await public.get("/admin/nodes/tpms?status=all", headers=admin)).json()
+    assert [t["state"] for t in listed["items"]] == ["used"]
+    assert await actions(session) == [
+        ("node.tpm_registered", "ok"),
+        ("node.enrollment_requested", "ok"),
+        ("node.enrollment_completed", "denied"),
+        ("node.enrollment_completed", "ok"),
+    ]
+
+
+@requires_db
+async def test_tpm_attestation_refusals(env) -> None:
+    from tests.test_tpm import KEY_ATTRS, FakeTPM
+
+    public, admin, signer, session = env
+    url = "/nodes/enrollments/by-tpm"
+    stranger = FakeTPM()
+    assert (await public.post(url, json=stranger.body())).status_code == 403  # not registered
+    assert await actions(session) == []  # unregistered: not recorded
+
+    exportable = FakeTPM(key_attrs=KEY_ATTRS & ~tpm.FIXED_TPM)
+    await register_tpm(public, admin, exportable, "edge-2")
+    refused = await public.post(url, json=exportable.body())
+    assert refused.status_code == 403 and "never leave" in refused.json()["detail"]
+
+    fake = FakeTPM()
+    await register_tpm(public, admin, fake, "edge-3")
+    other_key = fake.csr(ec.generate_private_key(ec.SECP256R1()))
+    refused = await public.post(url, json=fake.body(csr=other_key))
+    assert refused.status_code == 403 and "CSR" in refused.json()["detail"]
+
+    # Three wrong secrets end the attempt; the registration stays for another.
+    started = (await public.post(url, json=fake.body())).json()
+    for _ in range(3):
+        wrong = await public.post(f"{url}/{started['id']}/complete", json={"secret": "AAAA"})
+    assert wrong.status_code == 403
+    secret = fake.activate(base64.b64decode(started["credential"]))
+    late = await public.post(
+        f"{url}/{started['id']}/complete", json={"secret": base64.b64encode(secret).decode()}
+    )
+    assert late.status_code == 409
+    restarted = (await public.post(url, json=fake.body())).json()
+    secret = fake.activate(base64.b64decode(restarted["credential"]))
+    done = await public.post(
+        f"{url}/{restarted['id']}/complete", json={"secret": base64.b64encode(secret).decode()}
+    )
+    assert done.status_code == 201
+    assert len(signer.signed) == 1
+
+
+@requires_db
+async def test_tpm_enrollments_are_not_approved_by_admins(env) -> None:
+    from tests.test_tpm import FakeTPM
+
+    public, admin, _, _ = env
+    fake = FakeTPM()
+    await register_tpm(public, admin, fake)
+    started = (await public.post("/nodes/enrollments/by-tpm", json=fake.body())).json()
+    approve = await public.post(
+        f"/admin/nodes/enrollments/{started['id']}/approve",
+        json={"key_fingerprint": "SHA256:" + "A" * 43},
+        headers=admin,
+    )
+    assert approve.status_code == 409
+    complete = await public.post(
+        f"/nodes/enrollments/{started['id']}/complete", json={"code": "AAAAA-AAAAA"}
+    )
+    assert complete.status_code == 409
+
+
+@requires_db
+async def test_tpm_registrations(env, provider) -> None:
+    from tests.test_tpm import FakeTPM
+
+    public, admin, _, _ = env
+    fake = FakeTPM()
+    registered = await register_tpm(public, admin, fake)
+    twice = await public.post(
+        "/admin/nodes/tpms",
+        json={"name": "edge-9", "ek_fingerprint": fake.ek_fingerprint()},
+        headers=admin,
+    )
+    assert twice.status_code == 409  # one usable registration per TPM
+    bad = await public.post(
+        "/admin/nodes/tpms", json={"name": "edge-9", "ek_fingerprint": "nope"}, headers=admin
+    )
+    assert bad.status_code == 422
+    gone = await public.post(f"/admin/nodes/tpms/{registered['id']}/revoke", headers=admin)
+    assert gone.status_code == 204
+    assert (await public.post("/nodes/enrollments/by-tpm", json=fake.body())).status_code == 403
+    user = {"Authorization": f"Bearer {provider.token()}"}
+    assert (await public.get("/admin/nodes/tpms", headers=user)).status_code == 403
+
+
+@requires_db
+async def test_a_tpm_node_renews_for_its_attested_key_only(env, monkeypatch) -> None:
+    from tests.test_tpm import FakeTPM
+
+    public, admin, signer, session = env
+    monkeypatch.setattr(nodes_app.state, "node_signer", signer, raising=False)
+    fake = FakeTPM()
+    await register_tpm(public, admin, fake)
+    started = (await public.post("/nodes/enrollments/by-tpm", json=fake.body())).json()
+    secret = fake.activate(base64.b64decode(started["credential"]))
+    done = (
+        await public.post(
+            f"/nodes/enrollments/by-tpm/{started['id']}/complete",
+            json={"secret": base64.b64encode(secret).decode()},
+        )
+    ).json()
+    async with node_client(session, (done["identity"],), done["serial"]) as node:
+        other = await node.post("/renew", json={"csr": csr_for()[0]})
+        assert other.status_code == 409  # a key the TPM never vouched for
+        same = await node.post("/renew", json={"csr": fake.csr()})
+        assert same.status_code == 200, same.text
