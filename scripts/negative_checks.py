@@ -37,7 +37,10 @@ import uuid
 
 from keycloak_smoke import login, wait_for
 
-PUBLIC = ("/healthz", "/readyz", "/shares/access")
+# Routes that answer without a token (vaultgate_api.main.PUBLIC_PATHS): health, share
+# recipients' (their link's token and an emailed code), and the nodes' CA's certificate,
+# revocation lists and OCSP (signed, public by nature; M11, ADR 0014).
+PUBLIC = ("/healthz", "/readyz", "/shares/access", "/pki/nodes/")
 
 
 def request(
