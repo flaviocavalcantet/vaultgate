@@ -55,6 +55,14 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_node_tpms_name"), "node_tpms", ["name"])
     op.create_index(op.f("ix_node_tpms_ek_fingerprint"), "node_tpms", ["ek_fingerprint"])
+    # One open registration per TPM, whatever runs at once.
+    op.create_index(
+        "uq_node_tpms_open_ek",
+        "node_tpms",
+        ["ek_fingerprint"],
+        unique=True,
+        postgresql_where=sa.text("used_at IS NULL AND revoked_at IS NULL"),
+    )
     op.drop_constraint(op.f("ck_node_enrollments_method"), "node_enrollments", type_="check")
     op.create_check_constraint(op.f("ck_node_enrollments_method"), "node_enrollments", AFTER)
 

@@ -424,11 +424,17 @@ def enroll_tpm() -> dict:
                         {"secret": secret})  # fmt: skip
     if code != 201:
         raise Failure(f"completing the TPM enrollment: {code} {answer.get('detail')}")
-    persist(d / "new-key", TPM_HANDLE)  # the certified key, at the node's handle now
+    save(answer)  # first: the node is enrolled now, whatever happens to the handles
+    try:
+        persist(d / "new-key", TPM_HANDLE)  # the certified key, at the node's handle now
+    except Failure as e:
+        raise Failure(
+            f"enrolled, and the certificate saved, but its key is still at {staging}: "
+            f"move it with tpm2_evictcontrol to {TPM_HANDLE} ({e})"
+        ) from None
     evict(staging)
     for part in ("pub", "priv"):
         (d / f"new-key.{part}").replace(d / f"key.{part}")
-    save(answer)
     print(f"ok  enrolled as {answer['identity']} by TPM attestation, certificate "
           f"{answer['serial']} until {answer['expires_at']}; its key is in the TPM "
           f"({TPM_HANDLE})")  # fmt: skip
@@ -466,7 +472,8 @@ def tpm_call(path: str, method: str = "GET", body: dict | None = None) -> tuple[
         # CA too, as a client's chain must be.
         [OPENSSL, "s_client", *TPM2_TLS, "-quiet", "-ign_eof",
          "-connect", f"{url.hostname}:{url.port}", "-servername", url.hostname,
-         "-verify_return_error", *ca, "-cert", str(NODE_DIR / "node.crt"),
+         "-verify_return_error", "-verify_hostname", url.hostname, *ca,
+         "-cert", str(NODE_DIR / "node.crt"),
          "-cert_chain", str(NODE_DIR / "node.crt"), "-key", f"handle:{TPM_HANDLE}"],
         input=request, capture_output=True, check=False, timeout=30,
     )  # fmt: skip

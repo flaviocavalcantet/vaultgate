@@ -1046,3 +1046,34 @@ async def test_a_tpm_node_renews_for_its_attested_key_only(env, monkeypatch) -> 
         assert other.status_code == 409  # a key the TPM never vouched for
         same = await node.post("/renew", json={"csr": fake.csr()})
         assert same.status_code == 200, same.text
+
+
+@requires_db
+async def test_an_expired_tpm_registration_gives_way(env, session) -> None:
+    from tests.test_tpm import FakeTPM
+    from vaultgate_api.models import NodeTpm
+
+    public, admin, _, _ = env
+    fake = FakeTPM()
+    first = await register_tpm(public, admin, fake)
+    row = await session.get(NodeTpm, uuid.UUID(first["id"]))
+    row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await session.commit()
+    second = await register_tpm(public, admin, fake, "edge-2")
+    assert second["state"] == "usable"
+    listed = (await public.get("/admin/nodes/tpms?status=all", headers=admin)).json()["items"]
+    assert sorted(t["state"] for t in listed) == ["revoked", "usable"]
+
+
+@requires_db
+async def test_one_open_registration_per_tpm_is_a_constraint(session) -> None:
+    """Two admins registering one TPM at once: the database keeps one."""
+    from sqlalchemy.exc import IntegrityError
+
+    from vaultgate_api.models import NodeTpm
+
+    later = datetime.now(UTC) + timedelta(hours=1)
+    for name in ("edge-1", "edge-2"):
+        session.add(NodeTpm(name=name, ek_fingerprint="SHA256:" + "E" * 43, expires_at=later))
+    with pytest.raises(IntegrityError):
+        await session.flush()

@@ -453,6 +453,15 @@ class NodeTpm(Base):
     it allowed is recorded, and enrolling again takes a new registration."""
 
     __tablename__ = "node_tpms"
+    __table_args__ = (
+        # One open registration per TPM (expired ones are closed when a new one is made).
+        Index(
+            "uq_node_tpms_open_ek",
+            "ek_fingerprint",
+            unique=True,
+            postgresql_where=text("used_at IS NULL AND revoked_at IS NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(63), index=True)

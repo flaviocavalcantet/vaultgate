@@ -28,6 +28,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from vaultgate_api import audit, nodes
 from vaultgate_api.config import settings
@@ -414,12 +415,22 @@ async def register_tpm(body: TpmIn, session: SessionDep, admin: CurrentUserDep) 
     enroll the node by attestation, once."""
     if await active_node(session, body.name) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "A node of that name is enrolled")
-    taken = await session.scalar(
-        select(NodeTpm).where(NodeTpm.ek_fingerprint == body.ek_fingerprint, *usable_tpm())
-    )
-    if taken is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "That TPM is registered already")
     now = datetime.now(UTC)
+    # An open registration of this TPM blocks a new one (a unique index, so also when two
+    # admins register it at once), unless it has expired: that one is closed first.
+    open_ = await session.scalars(
+        select(NodeTpm)
+        .where(
+            NodeTpm.ek_fingerprint == body.ek_fingerprint,
+            NodeTpm.used_at.is_(None),
+            NodeTpm.revoked_at.is_(None),
+        )
+        .with_for_update()
+    )
+    for row in open_:
+        if row.expires_at > now:
+            raise HTTPException(status.HTTP_409_CONFLICT, "That TPM is registered already")
+        row.revoked_at = now
     row = NodeTpm(
         id=uuid.uuid4(),
         name=body.name,
@@ -437,7 +448,11 @@ async def register_tpm(body: TpmIn, session: SessionDep, admin: CurrentUserDep) 
         target_id=row.id,
         details={"name": row.name, "ek_fingerprint": row.ek_fingerprint},
     )
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:  # registered by a concurrent request
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "That TPM is registered already") from None
     return tpm_out(row, now)
 
 
