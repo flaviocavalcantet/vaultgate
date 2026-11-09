@@ -19,8 +19,9 @@ from typing import Any
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
 # Where the identities go in the request's scope: a tuple of URIs, empty without a
-# client certificate.
+# client certificate; and the certificate's serial number (hex), None without one.
 SCOPE_KEY = "vaultgate.client_identities"
+SERIAL_KEY = "vaultgate.client_serial"
 
 
 def certificate_uris(certificate: dict[str, Any] | None) -> tuple[str, ...]:
@@ -32,13 +33,14 @@ def certificate_uris(certificate: dict[str, Any] | None) -> tuple[str, ...]:
 class _WithIdentities:
     """The application, seeing the connection's client identities in each scope."""
 
-    def __init__(self, app: Any, identities: tuple[str, ...]) -> None:
+    def __init__(self, app: Any, identities: tuple[str, ...], serial: str | None) -> None:
         self.app = app
         self.identities = identities
+        self.serial = serial
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
         if scope["type"] in ("http", "websocket"):
-            scope = {**scope, SCOPE_KEY: self.identities}
+            scope = {**scope, SCOPE_KEY: self.identities, SERIAL_KEY: self.serial}
         await self.app(scope, receive, send)
 
 
@@ -47,8 +49,14 @@ class ClientIdentityProtocol(H11Protocol):
         super().connection_made(transport)
         ssl_object = transport.get_extra_info("ssl_object")
         certificate = ssl_object.getpeercert() if ssl_object is not None else None
-        self.app = _WithIdentities(self.app, certificate_uris(certificate))
+        self.app = _WithIdentities(
+            self.app, certificate_uris(certificate), (certificate or {}).get("serialNumber")
+        )
 
 
 def client_identities(scope: dict) -> tuple[str, ...]:
     return scope.get(SCOPE_KEY, ())
+
+
+def client_serial(scope: dict) -> str | None:
+    return scope.get(SERIAL_KEY)

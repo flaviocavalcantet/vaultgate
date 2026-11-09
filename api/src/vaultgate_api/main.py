@@ -12,20 +12,23 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import APIRouter, Depends, FastAPI
 
+from vaultgate_api import nodes
 from vaultgate_api.auth import build_validator, get_principal
 from vaultgate_api.clientip import ClientAddressMiddleware
 from vaultgate_api.config import settings
 from vaultgate_api.headers import SecurityHeadersMiddleware
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
-from vaultgate_api.ratelimit import limit_pki, limit_share_access, limit_user
+from vaultgate_api.ratelimit import limit_enroll, limit_pki, limit_share_access, limit_user
 from vaultgate_api.routers import (
     admin,
     admin_files,
+    admin_nodes,
     audit,
     files,
     health,
     me,
+    node_enrollment,
     pki,
     policies,
     share_access,
@@ -40,6 +43,11 @@ PUBLIC_PATHS = frozenset(
     {"/healthz", "/readyz", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"}
     | {f"/pki/nodes/{p}" for p in ("ca", "ca/pem", "crl", "crl/delta", "ocsp")}
     | {"/pki/nodes/ocsp/{encoded:path}"}
+    | {
+        "/nodes/enrollments",
+        "/nodes/enrollments/{enrollment_id}",
+        "/nodes/enrollments/{enrollment_id}/complete",
+    }
 )
 
 
@@ -54,6 +62,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     ):
         app.state.token_validator = build_validator(client)
         app.state.openbao = openbao
+        # Node certificates, through the pod's OpenBao agent (vaultgate_api.nodes).
+        app.state.node_signer = nodes.openbao_signer(client)
         yield
 
 
@@ -103,6 +113,10 @@ app.include_router(share_access.router, dependencies=[Depends(limit_share_access
 # The nodes' CA's certificate, revocation lists and OCSP: public by nature (signed), so
 # limited per client address (vaultgate_api.routers.pki).
 app.include_router(pki.router, dependencies=[Depends(limit_pki)])
+# Nodes asking for their first certificate have no credential yet: limited per client
+# address, and under the access policies' `enroll` action (vaultgate_api.routers.
+# node_enrollment).
+app.include_router(node_enrollment.router, dependencies=[Depends(limit_enroll)])
 
 # Deny by default: every router below requires a valid bearer token.
 # Authenticated, then within the caller's rate limits (vaultgate_api.ratelimit).
@@ -110,6 +124,7 @@ protected = APIRouter(dependencies=[Depends(get_principal), Depends(limit_user)]
 protected.include_router(me.router)
 protected.include_router(admin.router)
 protected.include_router(admin_files.router)
+protected.include_router(admin_nodes.router)
 protected.include_router(audit.router)
 protected.include_router(policies.router)
 protected.include_router(files.router)

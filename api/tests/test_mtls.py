@@ -9,6 +9,7 @@ import asyncio
 import datetime
 import socket
 import ssl
+from pathlib import Path
 
 import httpx
 import pytest
@@ -17,12 +18,17 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from pydantic import SecretStr
 
 from vaultgate_api import internal
 from vaultgate_api.config import settings
-from vaultgate_api.mtls import ClientIdentityProtocol, certificate_uris
+from vaultgate_api.mtls import (
+    ClientIdentityProtocol,
+    certificate_uris,
+    client_identities,
+    client_serial,
+)
 
 GATEWAY = "spiffe://vaultgate/ns/vaultgate/sa/vaultgate-gateway"
 SCANNER = "spiffe://vaultgate/ns/vaultgate/sa/vaultgate-scanner"
@@ -102,6 +108,15 @@ async def gateway_route() -> dict:
 @app.get("/scanner", dependencies=[Depends(internal.require_scanner)])
 async def scanner_route() -> dict:
     return {}
+
+
+@app.get("/seen")
+async def seen_route(request: Request) -> dict:
+    """What the protocol put in the scope (the nodes' port reads the serial too)."""
+    return {
+        "identities": list(client_identities(request.scope)),
+        "serial": client_serial(request.scope),
+    }
 
 
 @pytest.fixture
@@ -195,3 +210,15 @@ def test_certificate_uris():
     assert certificate_uris(cert) == (GATEWAY, SCANNER)
     assert certificate_uris({}) == ()
     assert certificate_uris(None) == ()
+
+
+async def test_the_scope_has_the_certificates_uris_and_serial(server, ca, tmp_path):
+    cert_file, key_file = client_cert(ca, tmp_path, "node", "spiffe://nodes.vaultgate/node/n1")
+    url, ca_file = server
+    context = ssl.create_default_context(cafile=ca_file)
+    context.load_cert_chain(cert_file, key_file)
+    async with httpx.AsyncClient(verify=context) as client:
+        seen = (await client.get(url + "/seen")).json()
+    cert = x509.load_pem_x509_certificate(Path(cert_file).read_bytes())
+    assert seen["identities"] == ["spiffe://nodes.vaultgate/node/n1"]
+    assert int(seen["serial"], 16) == cert.serial_number
