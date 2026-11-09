@@ -109,10 +109,11 @@ pki_bootstrap() {
   fi
 }
 
-# The intermediate CA, once OpenBao is up: it generates the key and a CSR, the root
-# signs it here, and OpenBao installs it. Logged in as the pki-ceremony service account.
+# The intermediate CAs (the services' and, since M11, the nodes'), once OpenBao is up:
+# for each, it generates the key and a CSR, the root signs it here, and OpenBao installs
+# it. Logged in as the pki-ceremony service account.
 pki_ceremony() {
-  log "the intermediate CA (PKI ceremony)"
+  log "the intermediate CAs (PKI ceremony)"
   wait_for 120 "OpenBao on localhost:8200" python3 scripts/pki.py check-tls
   VAULTGATE_OPENBAO_JWT=$(kubectl -n openbao create token pki-ceremony --audience openbao --duration 10m) \
     python3 scripts/pki.py intermediate
@@ -286,8 +287,13 @@ check_observability() {
 }
 
 check_pki() {
-  log "PKI: OpenBao unsealed, its TLS and its intermediate CA chained to the root"
+  log "PKI: OpenBao unsealed, its TLS and its intermediate CAs chained to the root"
   python3 scripts/pki.py check
+  log "PKI: each intermediate's name constraints reject what it may not sign (a throwaway root)"
+  python3 scripts/pki.py check-constraints
+  log "the nodes' CA: a node certificate for clients only, refused a service's identity, revoked through the API's OCSP"
+  VAULTGATE_OPENBAO_JWT=$(kubectl -n openbao create token pki-nodes-check --audience openbao --duration 10m) \
+    python3 scripts/pki.py check-nodes
   log "TLS: the API, the gateway and Keycloak serve certificates from the cluster's CA, and nothing in plain HTTP"
   kubectl -n vaultgate wait --for=condition=Ready certificate --all --timeout=120s
   kubectl -n vaultgate-deps wait --for=condition=Ready certificate --all --timeout=120s
@@ -349,6 +355,15 @@ check() {
 # its 429s mid-scan look like a change of behaviour to ZAP; the gateway keeps its own,
 # so ZAP reaches it until it answers 429 (its unit tests cover the rest).
 ZAP_IMAGE=zaproxy/zap-stable:2.17.0
+# Alerts that are false positives on certain URLs only, so the rule still applies to
+# every other route: "Unexpected Content-Type" (100001) on the nodes' CA's routes, which
+# answer with their protocols' own types (a certificate, CRLs, OCSP: application/pkix-*,
+# application/ocsp-response; M11, ADR 0014), not ones ZAP expects of an API.
+ZAP_API_FILTERS="-config globalalertfilter.filters.filter(0).ruleid=100001 \
+-config globalalertfilter.filters.filter(0).url=https?://[^/]+/pki/nodes/.* \
+-config globalalertfilter.filters.filter(0).urlregex=true \
+-config globalalertfilter.filters.filter(0).newrisk=-1 \
+-config globalalertfilter.filters.filter(0).enabled=true"
 zap() {
   local out=${VAULTGATE_ZAP_DIR:-zap-reports} status=0 token
   mkdir -p "$out"
@@ -360,7 +375,7 @@ print(login(wait_for("'"$KEYCLOAK"'"), "zap-scanner", "zap-scanner-dev-password"
   docker run --rm --network host -v "$PWD/$out:/zap/wrk:rw" -e ZAP_AUTH_HEADER=Authorization \
     -e ZAP_AUTH_HEADER_VALUE="Bearer $token" "$ZAP_IMAGE" zap-api-scan.py \
     -t "$API/openapi.json" -f openapi -c api.conf -r api.html -J api.json \
-    -z "-config scanner.maxScanDurationInMins=3" || status=1
+    -z "-config scanner.maxScanDurationInMins=3 $ZAP_API_FILTERS" || status=1
   if ! curl -sf --cacert "$ROOT_CA" -o /dev/null -H "Authorization: Bearer $token" "$API/me"; then
     echo "zap-scanner's token expired during the API's scan: part of it ran unauthenticated" >&2
     status=1

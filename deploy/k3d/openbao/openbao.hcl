@@ -50,7 +50,10 @@ audit "file" "stdout" {
 #   issuer, and the token revoked when done; nothing else (no `default` policy);
 # - the role cert-manager signs service certificates with, and its login: the
 #   openbao-issuer service account in cert-manager's namespace, which may sign under
-#   that role only.
+#   that role only;
+# - the `pki-nodes` mount (M11, ADR 0014): the nodes' intermediate CA, from the same
+#   ceremony, its revocation lists and OCSP, and the role node certificates are signed
+#   under.
 initialize "pki" {
   request "mount" {
     operation = "update"
@@ -113,6 +116,69 @@ initialize "pki" {
       max_ttl           = "72h"
     }
   }
+  # The nodes' CA (M11, ADR 0014): its own mount, so its own issuer, revocation lists,
+  # OCSP and policies; its key never leaves OpenBao either.
+  request "nodes-mount" {
+    operation = "update"
+    path      = "sys/mounts/pki-nodes"
+    data = {
+      type        = "pki"
+      description = "The nodes' intermediate CA, signed by the offline root"
+      config      = { max_lease_ttl = "2160h" }
+    }
+  }
+  # Nodes are outside the cluster: their certificates point at VaultGate's public API,
+  # which serves these from OpenBao (/pki/nodes/...). The local cluster's API is on
+  # localhost:8000; elsewhere, VaultGate's public address.
+  request "nodes-urls" {
+    operation = "update"
+    path      = "pki-nodes/config/urls"
+    data = {
+      issuing_certificates    = ["https://localhost:8000/pki/nodes/ca"]
+      crl_distribution_points = ["https://localhost:8000/pki/nodes/crl"]
+      ocsp_servers            = ["https://localhost:8000/pki/nodes/ocsp"]
+    }
+  }
+  # Revocation: OCSP answers from the revocations as they are, at once. The full list is
+  # rebuilt on a schedule (valid two days, rebuilt half a day before it expires), and a
+  # delta list carries the revocations since, rebuilt every 5 minutes.
+  request "nodes-crl" {
+    operation = "update"
+    path      = "pki-nodes/config/crl"
+    data = {
+      expiry                    = "48h"
+      auto_rebuild              = true
+      auto_rebuild_grace_period = "12h"
+      enable_delta              = true
+      delta_rebuild_interval    = "5m"
+      ocsp_disable              = false
+    }
+  }
+  # Node certificates: a node's identity as a URI, spiffe://nodes.vaultgate/node/<id>,
+  # and nothing else; for clients only; ECDSA P-256; a day by default, a week at most.
+  # The identity comes from the signer, never from the CSR: whatever names a CSR asks
+  # for are ignored (use_csr_sans, use_csr_common_name), so a node chooses its key and
+  # nothing else.
+  request "node-role" {
+    operation = "update"
+    path      = "pki-nodes/roles/node"
+    data = {
+      allowed_domains     = []
+      allow_localhost     = false
+      allow_ip_sans       = false
+      allowed_uri_sans    = ["spiffe://nodes.vaultgate/node/*"]
+      enforce_hostnames   = true
+      require_cn          = false
+      use_csr_sans        = false
+      use_csr_common_name = false
+      key_type            = "ec"
+      key_bits            = 256
+      server_flag         = false
+      client_flag         = true
+      ttl                 = "24h"
+      max_ttl             = "168h"
+    }
+  }
 }
 
 initialize "auth" {
@@ -138,6 +204,11 @@ path "pki/intermediate/set-signed" { capabilities = ["update"] }
 path "pki/issuers" { capabilities = ["list"] }
 path "pki/issuer/+" { capabilities = ["read"] }
 path "pki/config/issuers" { capabilities = ["update"] }
+path "pki-nodes/intermediate/generate/internal" { capabilities = ["update"] }
+path "pki-nodes/intermediate/set-signed" { capabilities = ["update"] }
+path "pki-nodes/issuers" { capabilities = ["list"] }
+path "pki-nodes/issuer/+" { capabilities = ["read"] }
+path "pki-nodes/config/issuers" { capabilities = ["update"] }
 path "auth/token/revoke-self" { capabilities = ["update"] }
 EOT
     }
@@ -150,6 +221,34 @@ EOT
       bound_service_account_namespaces = ["openbao"]
       audience                         = "openbao"
       token_policies                   = ["pki-ceremony"]
+      token_ttl                        = "10m"
+      token_max_ttl                    = "10m"
+      token_no_default_policy          = true
+    }
+  }
+  # `make k3d-check`'s login for the nodes' CA (scripts/pki.py check-nodes): it signs a
+  # short-lived certificate under the node role, sees it verify and then fail once
+  # revoked, through the API's OCSP. The local cluster only; the enrollment API is what
+  # signs nodes' certificates.
+  request "nodes-check-policy" {
+    operation = "update"
+    path      = "sys/policies/acl/pki-nodes-check"
+    data = {
+      policy = <<EOT
+path "pki-nodes/sign/node" { capabilities = ["update"] }
+path "pki-nodes/revoke" { capabilities = ["update"] }
+path "auth/token/revoke-self" { capabilities = ["update"] }
+EOT
+    }
+  }
+  request "nodes-check-role" {
+    operation = "update"
+    path      = "auth/kubernetes/role/pki-nodes-check"
+    data = {
+      bound_service_account_names      = ["pki-nodes-check"]
+      bound_service_account_namespaces = ["openbao"]
+      audience                         = "openbao"
+      token_policies                   = ["pki-nodes-check"]
       token_ttl                        = "10m"
       token_max_ttl                    = "10m"
       token_no_default_policy          = true

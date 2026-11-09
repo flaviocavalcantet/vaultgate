@@ -112,6 +112,7 @@ class Limits:
         self.share_access = TokenBuckets(
             s.rate_limit_share_access_per_minute, s.rate_limit_share_access_per_minute, clock
         )
+        self.pki = TokenBuckets(s.rate_limit_pki_per_minute, s.rate_limit_pki_per_minute, clock)
         self.auth = FailureBlock(
             s.rate_limit_auth_failures_per_minute, s.rate_limit_auth_block_seconds, clock
         )
@@ -154,6 +155,12 @@ async def limit_share_access(request: Request) -> None:
     """Per-address limit on the share recipients' routes, which have no user."""
     if wait := limits.share_access.take(client_key(request)):
         raise too_many("share_access", wait)
+
+
+async def limit_pki(request: Request) -> None:
+    """Per-address limit on the nodes' CA's public routes, which have no user."""
+    if wait := limits.pki.take(client_key(request)):
+        raise too_many("pki", wait)
 
 
 def client_key(request: Request) -> str:

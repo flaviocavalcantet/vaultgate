@@ -90,6 +90,13 @@ api:
   # /redoc, /openapi.json): off, so a deployment doesn't map its routes for anyone (M10,
   # TM-6). The local cluster turns them on: ZAP scans from the OpenAPI document.
   docs: false
+  # Publish the nodes' CA (M11, ADR 0014) at /pki/nodes/...: its certificate, revocation
+  # lists and OCSP responder, from this OpenBao mount, at openbao.address (verified with
+  # the trust bundle: needs tls.enabled, and the API's egress to OpenBao). Off, those
+  # routes answer 404.
+  nodesCa:
+    enabled: false
+    mount: pki-nodes
   # Set to also publish the public port on every node at this port (an extra NodePort
   # Service with that port only), as the local k3d cluster does; empty behind an Ingress.
   nodePort: ""

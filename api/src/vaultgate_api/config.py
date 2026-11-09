@@ -69,14 +69,16 @@ class Settings(BaseSettings):
     docs_enabled: bool = True
     # Rate limits on the public API (vaultgate_api.ratelimit); 0 turns one off. Per user:
     # starting transfers, and every other request. Per client address: the share
-    # recipients' routes, and failed authentication (then 429 for its failing requests
-    # for rate_limit_auth_block_seconds). The exempt users (usernames) skip the per-user
+    # recipients' routes, the nodes' CA's OCSP and revocation lists, and failed
+    # authentication (then 429 for its failing requests for
+    # rate_limit_auth_block_seconds). The exempt users (usernames) skip the per-user
     # limits: a security scanner, never people.
     rate_limit_per_minute: int = 300
     rate_limit_burst: int = 100
     rate_limit_intents_per_minute: int = 60
     rate_limit_intents_burst: int = 20
     rate_limit_share_access_per_minute: int = 30
+    rate_limit_pki_per_minute: int = 120
     rate_limit_auth_failures_per_minute: int = 20
     rate_limit_auth_block_seconds: int = 300
     rate_limit_exempt_users: list[str] = []
@@ -88,6 +90,11 @@ class Settings(BaseSettings):
     internal_client_ca_file: str | None = None
     internal_gateway_identity: str | None = None
     internal_scanner_identity: str | None = None
+    # The nodes' CA (M11, ADR 0014), published at /pki/nodes/...: its certificate,
+    # revocation lists and OCSP responder, from OpenBao's mount of that name, verified
+    # with the trust store (SSL_CERT_FILE). Unset address: those routes answer 404.
+    openbao_address: str | None = None
+    nodes_pki_mount: str = "pki-nodes"
 
     # Files
     gateway_public_url: str = "http://localhost:8888"
