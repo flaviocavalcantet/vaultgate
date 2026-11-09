@@ -93,7 +93,7 @@ Each row is a threat to an element or flow. The **status** is one of:
 
 | Threat | Against it | Status |
 | --- | --- | --- |
-| A forged or altered access token at the API | Signature against the issuer's JWKS, RS256 only, `iss`, `aud`, `exp` checked on every request (ADR 0002); the negative tests send no token, a non-JWT, a changed payload and `alg: none` to all 30 protected routes | mitigated |
+| A forged or altered access token at the API | Signature against the issuer's JWKS, RS256 only, `iss`, `aud`, `exp` checked on every request (ADR 0002); the negative tests send no token, a non-JWT, a changed payload and `alg: none` to all 33 protected routes | mitigated |
 | A stolen access token | Lives 5 minutes; TLS everywhere; no cookies, so no CSRF; the token is never logged | mitigated |
 | Someone else's intent token at the gateway | 256-bit random, hashed at rest, single use, minutes long, bound to one file and one direction (upload or download); tested by the end-to-end check and the negative tests | mitigated |
 | A guessed share link or code | The link is 256-bit random; the code is 6 digits, valid 10 minutes, 5 attempts each, at most 5 sent an hour, mailed to the recipient's address (ADR 0006) | mitigated |
@@ -102,6 +102,7 @@ Each row is a threat to an element or flow. The **status** is one of:
 | A certificate naming a service, issued to someone else | Only a `Certificate` in VaultGate's namespace can get one (a namespaced Issuer, an OpenBao role bound to it); anyone who can create one there can already read the services' Secrets | accepted (TM-9) |
 | A fake server (the API, PostgreSQL, OpenBao, Keycloak) | Every client verifies the server's certificate against the cluster's trust bundle | mitigated |
 | A machine enrolling as a node it isn't (M11) | An admin approves only once the key's fingerprint matches what the node's operator reads them; the one-time code that completes it signs the request's key only; enrolling needs an `enroll` policy, from the networks it names; requests are limited per address and in number (ADR 0014); `scripts/node_check.py` | mitigated |
+| An admin's enrollment token stolen or reused (M11) | 256 bits, only its SHA-256 stored, shown once; for one node name, an hour by default (a day at most), single use, revocable; sent in a request body, never a URL; enrolling with it still needs an `enroll` policy (ADR 0014); `scripts/node_check.py` | mitigated |
 | A node's Keycloak client used to enroll more than once, or by someone else (M11) | The client authenticates with a JWT the node's key signs (`private_key_jwt`), so no shared secret exists to leak; VaultGate accepts each client's token for one enrollment, ever (its service account recorded, unique); its tokens are for the nodes' audience, so they open no user route (ADR 0014); `scripts/node_check.py` | mitigated |
 | A node's certificate used after it's replaced or revoked | The nodes' port accepts only the node's current certificate of an active node; renewal revokes the previous one, revocation shows in OCSP at once (ADR 0014) | mitigated |
 | A node posing as a service, or a service as a node | The nodes' CA can sign only `spiffe://nodes.vaultgate/...` URIs, the services' CA only `spiffe://vaultgate/...`, as critical name constraints every verifier enforces (`scripts/pki.py check-constraints`) | mitigated |

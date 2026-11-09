@@ -48,6 +48,7 @@ PUBLIC_PATHS = frozenset(
         "/nodes/enrollments/{enrollment_id}",
         "/nodes/enrollments/{enrollment_id}/complete",
         "/nodes/enrollments/by-client",  # a node client's token, not a user's
+        "/nodes/enrollments/by-token",  # an admin's enrollment token
     }
 )
 

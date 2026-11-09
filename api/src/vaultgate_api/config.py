@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     node_code_attempts: int = 5
     node_max_pending_enrollments: int = 100
     node_max_pending_per_address: int = 10
+    # Admins' enrollment tokens: valid this long unless the admin asks for less, and
+    # never longer than the maximum.
+    node_token_ttl_seconds: int = 3600
+    node_token_max_ttl_seconds: int = 86400
     # The nodes' port: mutual TLS, a client certificate from this CA (the root; the
     # name constraints keep node identities to the nodes' CA) naming a node. Renewal is
     # served there. Unset: no nodes' port.

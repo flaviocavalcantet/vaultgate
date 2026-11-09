@@ -8,6 +8,10 @@ The approval answers with a one-time code, shown once; the operator gives it to 
 node, which completes its enrollment with it (vaultgate_api.routers.node_enrollment).
 Approving again replaces the code.
 
+Enrollment tokens are the other first-trust method admins hand out: a token for one node
+name, single use, short lived, shown once (only its SHA-256 is kept). The node enrolls
+with it (vaultgate_api.routers.node_enrollment); an unused one can be revoked.
+
 Revoking a node revokes its current certificate in OpenBao (so OCSP and the lists show
 it), then marks it revoked here, so it can't renew. Its name is free again.
 """
@@ -25,7 +29,7 @@ from sqlalchemy import func, select
 from vaultgate_api import audit, nodes
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
-from vaultgate_api.models import Node, NodeEnrollment
+from vaultgate_api.models import Node, NodeEnrollment, NodeEnrollmentToken
 from vaultgate_api.provisioning import CurrentUserDep
 from vaultgate_api.routers.admin import Limit, Offset, Page, require_admin
 from vaultgate_api.routers.node_enrollment import (
@@ -239,3 +243,120 @@ async def revoke_node(
     await session.commit()
     logger.info("node revoked", extra={"node_id": str(node.id)})
     return node_out(node)
+
+
+class TokenIn(BaseModel):
+    name: str = Field(pattern=nodes.NAME_PATTERN.pattern, max_length=63)
+    # How long the token lasts; at most settings.node_token_max_ttl_seconds.
+    ttl_seconds: int | None = Field(default=None, ge=60)
+
+
+class TokenOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    identity: str
+    created_at: datetime
+    expires_at: datetime
+    used_at: datetime | None
+    revoked_at: datetime | None
+    state: Literal["usable", "used", "revoked", "expired"]
+
+
+class IssuedTokenOut(TokenOut):
+    token: str  # shown once
+
+
+def token_out(row: NodeEnrollmentToken, now: datetime) -> TokenOut:
+    if row.used_at is not None:
+        state = "used"
+    elif row.revoked_at is not None:
+        state = "revoked"
+    elif row.expires_at <= now:
+        state = "expired"
+    else:
+        state = "usable"
+    return TokenOut(
+        id=row.id,
+        name=row.name,
+        identity=nodes.identity(row.name),
+        created_at=row.created_at,
+        expires_at=row.expires_at,
+        used_at=row.used_at,
+        revoked_at=row.revoked_at,
+        state=state,
+    )
+
+
+@router.post("/tokens", status_code=status.HTTP_201_CREATED)
+async def issue_token(body: TokenIn, session: SessionDep, admin: CurrentUserDep) -> IssuedTokenOut:
+    """An enrollment token for the node `name`: give it to the node, which enrolls with it
+    once. The token is in this answer only."""
+    if await active_node(session, body.name) is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "A node of that name is enrolled")
+    ttl = min(
+        body.ttl_seconds or settings.node_token_ttl_seconds, settings.node_token_max_ttl_seconds
+    )
+    now = datetime.now(UTC)
+    token = nodes.new_enrollment_token()
+    row = NodeEnrollmentToken(
+        id=uuid.uuid4(),
+        name=body.name,
+        token_hash=nodes.hash_token(token),
+        created_by=admin.id,
+        created_at=now,
+        expires_at=now + timedelta(seconds=ttl),
+    )
+    session.add(row)
+    await audit.record(
+        session,
+        "node.enrollment_token_issued",
+        actor_id=admin.id,
+        target_kind="node_token",
+        target_id=row.id,
+        details={"name": row.name, "expires_at": row.expires_at.isoformat()},
+    )
+    await session.commit()
+    logger.info("node enrollment token issued", extra={"token_id": str(row.id)})
+    return IssuedTokenOut(**token_out(row, now).model_dump(), token=token)
+
+
+@router.get("/tokens")
+async def list_tokens(
+    session: SessionDep,
+    status_: Annotated[Literal["usable", "all"], Query(alias="status")] = "usable",
+    limit: Limit = 50,
+    offset: Offset = 0,
+) -> Page[TokenOut]:
+    now = datetime.now(UTC)
+    query = select(NodeEnrollmentToken)
+    if status_ == "usable":
+        query = query.where(
+            NodeEnrollmentToken.used_at.is_(None),
+            NodeEnrollmentToken.revoked_at.is_(None),
+            NodeEnrollmentToken.expires_at > now,
+        )
+    total = await session.scalar(select(func.count()).select_from(query.subquery()))
+    rows = await session.scalars(
+        query.order_by(NodeEnrollmentToken.created_at.desc()).limit(limit).offset(offset)
+    )
+    return Page(items=[token_out(t, now) for t in rows], total=total, limit=limit, offset=offset)
+
+
+@router.post("/tokens/{token_id}/revoke", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_token(token_id: uuid.UUID, session: SessionDep, admin: CurrentUserDep) -> None:
+    """An unused token, no longer usable."""
+    row = await session.get(NodeEnrollmentToken, token_id, with_for_update=True)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such token")
+    if row.used_at is not None or row.revoked_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "The token is used or revoked already")
+    row.revoked_at = datetime.now(UTC)
+    await audit.record(
+        session,
+        "node.enrollment_token_revoked",
+        actor_id=admin.id,
+        target_kind="node_token",
+        target_id=row.id,
+        details={"name": row.name},
+    )
+    await session.commit()
