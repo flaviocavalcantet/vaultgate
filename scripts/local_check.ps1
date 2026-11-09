@@ -462,15 +462,15 @@ function Test-Observability {
     $repo = Get-EngineRepoPath
     $checks = @(
         @('run', '--rm', '-v', "$repo/observability/prometheus:/etc/prometheus:ro", '--entrypoint', 'promtool',
-            'prom/prometheus:v3.1.0', 'check', 'config', '/etc/prometheus/prometheus.yml'),
+            'prom/prometheus:v3.16.0', 'check', 'config', '/etc/prometheus/prometheus.yml'),
         @('run', '--rm', '-v', "$repo/observability/prometheus/rules:/rules:ro", '-w', '/rules', '--entrypoint', 'promtool',
-            'prom/prometheus:v3.1.0', 'test', 'rules', 'vaultgate_test.yml'),
+            'prom/prometheus:v3.16.0', 'test', 'rules', 'vaultgate_test.yml'),
         @('run', '--rm', '-v', "$repo/observability/loki/loki.yml:/cfg/loki.yml:ro",
-            'grafana/loki:3.3.2', '-config.file=/cfg/loki.yml', '-verify-config'),
+            'grafana/loki:3.7.9', '-config.file=/cfg/loki.yml', '-verify-config'),
         @('run', '--rm', '-v', "$repo/observability/tempo/tempo.yml:/cfg/tempo.yml:ro",
-            'grafana/tempo:2.6.1', '-config.file=/cfg/tempo.yml', '-config.verify=true'),
-        @('run', '--rm', '-v', "$repo/observability/alloy:/cfg:ro", 'grafana/alloy:v1.5.1', 'fmt', '-t', '/cfg/config.alloy'),
-        @('run', '--rm', '-v', "$repo/observability/alloy:/cfg:ro", 'grafana/alloy:v1.5.1', 'fmt', '-t', '/cfg/kubernetes.alloy')
+            'grafana/tempo:2.10.10', '-config.file=/cfg/tempo.yml', '-config.verify=true'),
+        @('run', '--rm', '-v', "$repo/observability/alloy:/cfg:ro", 'grafana/alloy:v1.21.3', 'fmt', '-t', '/cfg/config.alloy'),
+        @('run', '--rm', '-v', "$repo/observability/alloy:/cfg:ro", 'grafana/alloy:v1.21.3', 'fmt', '-t', '/cfg/kubernetes.alloy')
     )
     $ok = $true
     foreach ($dockerArgs in $checks) { if (-not (Invoke-Docker $dockerArgs)) { $ok = $false } }

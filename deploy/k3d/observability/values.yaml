@@ -2,9 +2,9 @@
 # links to observability/), except Alloy's, which reads pod log files instead of the
 # Docker socket (observability/alloy/kubernetes.alloy).
 images:
-  loki: grafana/loki:3.3.2
-  tempo: grafana/tempo:2.6.1
-  alloy: grafana/alloy:v1.5.1
+  loki: grafana/loki:3.7.9
+  tempo: grafana/tempo:2.10.10
+  alloy: grafana/alloy:v1.21.3
 
 # kube-prometheus-stack's release name (fullnameOverride), for the alias Service the
 # data sources expect (http://prometheus:9090) and the host ports below.

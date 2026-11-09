@@ -28,7 +28,7 @@ services:
   # groups, seed users) is imported from infra/keycloak on every start; dev mode keeps
   # no state between runs.
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0.7
+    image: quay.io/keycloak/keycloak:26.8.2
     command: ["start-dev", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
@@ -93,7 +93,7 @@ services:
   # http://localhost:8025; nothing leaves the machine. The e2e check reads codes from
   # its API.
   mailpit:
-    image: axllent/mailpit:v1.33.0
+    image: axllent/mailpit:v1.33.1
     ports: ["127.0.0.1:8025:8025"]
 
   # PII scanner worker: takes scan requests from the queue, reads and decrypts each
@@ -115,7 +115,7 @@ services:
   # --- Observability (M1.5) ---------------------------------------------------
   # Metrics: Prometheus scrapes each service's private metrics port (9100).
   prometheus:
-    image: prom/prometheus:v3.1.0
+    image: prom/prometheus:v3.16.0
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=7d
@@ -128,7 +128,7 @@ services:
   # Logs: Alloy tails every container in this project and pushes to Loki.
   # Traces: the services send OTLP to Alloy, which forwards it to Tempo (M6).
   loki:
-    image: grafana/loki:3.3.2
+    image: grafana/loki:3.7.9
     command: ["-config.file=/etc/loki/loki.yml"]
     volumes:
       - ./observability/loki/loki.yml:/etc/loki/loki.yml:ro
@@ -137,7 +137,7 @@ services:
     ports: ["127.0.0.1:3100:3100"]
 
   alloy:
-    image: grafana/alloy:v1.5.1
+    image: grafana/alloy:v1.21.3
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
@@ -156,7 +156,7 @@ services:
     depends_on: [loki, tempo]
 
   tempo:
-    image: grafana/tempo:2.6.1
+    image: grafana/tempo:2.10.10
     command: ["-config.file=/etc/tempo/tempo.yml"]
     volumes:
       - ./observability/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
@@ -165,7 +165,7 @@ services:
     ports: ["127.0.0.1:3200:3200"]
 
   grafana:
-    image: grafana/grafana:11.4.0
+    image: grafana/grafana:13.3.0
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
