@@ -116,6 +116,10 @@ jobs:
           curl -sSfL -o /tmp/k3d https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-amd64
           echo "dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e  /tmp/k3d" | sha256sum -c -
           sudo install -m 0755 /tmp/k3d /usr/local/bin/k3d
+      # A software TPM and the TPM tools, for the node enrolled by TPM attestation (M11):
+      # swtpm plays the node's TPM, tpm2-tools and OpenSSL's tpm2 provider use it.
+      - name: Install swtpm and the TPM tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q swtpm swtpm-tools tpm2-tools tpm2-openssl
       - run: make k3d-up
       - run: make k3d-check
       # A short load run with thresholds (M8): no failed request, gateway memory flat,

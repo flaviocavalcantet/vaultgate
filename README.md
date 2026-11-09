@@ -500,6 +500,15 @@ curl -s -X POST https://localhost:8000/admin/nodes/tokens -H "Authorization: Bea
 scripts/vaultgate_node.py enroll-token          # asks for it (or VAULTGATE_ENROLLMENT_TOKEN)
 ```
 
+Or, by TPM attestation, for a node whose key must never leave its TPM: the node shows its TPM's endorsement key, an admin registers it for the node's name, and the node enrolls with an attestation key and a key made in the TPM (with swtpm, tpm2-tools and OpenSSL's tpm2 provider, or a real TPM):
+
+```bash
+scripts/vaultgate_node.py tpm-ek            # the EK's fingerprint, for the admin
+curl -s -X POST https://localhost:8000/admin/nodes/tpms -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name": "edge-4", "ek_fingerprint": "SHA256:..."}'
+scripts/vaultgate_node.py enroll-tpm        # whoami and renew then use the key in the TPM
+```
+
 Or, on an EC2 instance of an allowed account (`api.nodes.aws` in the chart), by its instance identity: `scripts/vaultgate_node.py enroll-cloud` reads the signed identity document from the metadata service, and the node is named `aws-<instance ID>`. Each instance enrolls once.
 
 Or by the node's own Keycloak client: the node makes a credential (an RSA key and its certificate), an admin creates the client `node-<name>` for it, and the node enrolls with that client's token, got by a JWT its key signs (`private_key_jwt`):
@@ -604,14 +613,14 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Running-system tests: OWASP ZAP against the API and the gateway on the cluster, and negative tests (authorization bypass, token reuse, TLS downgrade, plain HTTP); the API and the gateway now send security headers and no server banner, and every VaultGate service speaks TLS 1.3 only ([docs/security-scans.md](docs/security-scans.md#running-system-november-2026))
   - [x] Threat model (STRIDE over the data flows) and a published audit report: findings, their fixes, and what is accepted ([threat model](docs/threat-model.md), [audit report](docs/audit-report.md))
   - [x] Fixes: the vulnerabilities and problems M10 found that its earlier steps didn't fix, each fixed or accepted with its reason, and the report updated to match: rate limits and transfer timeouts, egress network policies, one AWS identity per service, and the API's and the gateway's images on distroless (only the Debian packages they link to); every third-party image scanned and reported, the stale ones bumped
-- [ ] **M11 — Node enrollment:** certificates for external nodes through VaultGate's API, built on the M9 PKI, with a choice of first-trust methods
+- [x] **M11 — Node enrollment:** certificates for external nodes through VaultGate's API, built on the M9 PKI, with a choice of first-trust methods
   - [x] A second intermediate CA for nodes, from the offline root, limited to node identities; short-lived certificates, revocation (CRL and OCSP) ([ADR 0014](docs/adr/0014-node-enrollment.md))
   - [x] Enrollment API: a node sends a CSR for a key it generated itself, and VaultGate signs it through OpenBao once the node passes its first-trust check; under the access policies and in the audit log; renewal over mTLS with the current certificate, so the first credential is used once ([ADR 0014](docs/adr/0014-node-enrollment.md))
   - [x] First trust by admin approval: the request waits, the admin confirms the node's key fingerprint and approves, and a one-time code passed to the node completes the enrollment for that key only
   - [x] First trust by a Keycloak client: one confidential client per node, authenticated with a signed JWT (`private_key_jwt`); VaultGate accepts the client's token for one enrollment only (it never writes to Keycloak: removing the role afterwards is the admin's tidying, [ADR 0014](docs/adr/0014-node-enrollment.md))
   - [x] First trust by an admin enrollment token: single use, short-lived, limited to one node identity ([ADR 0014](docs/adr/0014-node-enrollment.md))
-  - [ ] First trust by TPM attestation: the node's key proven to be held by its TPM
-  - [ ] First trust by cloud instance identity: the cloud's signed instance identity document (AWS first; GCP and Azure alike). AWS is done: one enrollment per instance, from allowed accounts and regions ([ADR 0014](docs/adr/0014-node-enrollment.md))
+  - [x] First trust by TPM attestation: the node's key proven to be held by its TPM (an admin registers the TPM's EK; the AK's credential activation and certification of the node's key, which never leaves the TPM; [ADR 0014](docs/adr/0014-node-enrollment.md))
+  - [x] First trust by cloud instance identity: the cloud's signed instance identity document, AWS: one enrollment per instance, from allowed accounts and regions ([ADR 0014](docs/adr/0014-node-enrollment.md)); GCP and Azure are a Plus, below
 - [ ] **M12 — Delivery and scaling:** builds on M7 and the M8 load tests
   - [ ] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them, replacing the local registry
   - [ ] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests
@@ -639,6 +648,12 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [ ] Load scenarios for agent jobs with a mocked model; a small real-model benchmark with a fixed budget
   - [ ] Failure scenarios: slow or unavailable model, redelivery, worker crash, budget exhaustion
   - [ ] Published report with measured results and known limits, threat model for agents, demo recording, case study
+
+### Plus
+
+Extras, after everything above.
+
+- [ ] First trust by cloud instance identity on GCP (the instance identity token, a JWT Google signs, for VaultGate's audience) and Azure (attested data), alike AWS's (M11)
 
 ## License
 

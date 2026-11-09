@@ -3,8 +3,9 @@
 carol (an admin) approves once the fingerprint matches, the node completes with the
 one-time code, calls the nodes' port with its certificate, renews with a new key, and is
 revoked; then a second node enrolls with its own Keycloak client (private_key_jwt),
-once; a third with carol's enrollment token, once; and a fourth by its (stand-in) AWS
-instance identity, once. What must be refused on the way, is.
+once; a third with carol's enrollment token, once; a fourth by its (stand-in) AWS
+instance identity, once; and a fifth by TPM attestation, with swtpm as its TPM. What must
+be refused on the way, is.
 
     python3 scripts/node_check.py --api URL --nodes URL --keycloak URL
 
@@ -19,8 +20,10 @@ import http.server
 import json
 import os
 import secrets
+import shutil
 import socket
 import ssl
+import subprocess
 import sys
 import tempfile
 import threading
@@ -160,7 +163,60 @@ def main(argv: list[str]) -> int:
     by_client(args.keycloak.rstrip("/"), f"{name}-kc", carol)
     by_token(f"{name}-tok", carol)
     by_cloud(carol)
+    by_tpm(f"{name}-tpm", carol)
     return 0
+
+
+def by_tpm(name: str, carol: str) -> None:
+    """First trust by TPM attestation, with a fresh software TPM (swtpm): carol registers
+    its EK for the name; the node enrolls with a key made in the TPM, calls the nodes' port
+    and renews with that key; the registration enrolls once."""
+    if not shutil.which("swtpm") or not shutil.which("tpm2_createek"):
+        if os.getenv("CI"):
+            raise node.Failure("swtpm and tpm2-tools are needed for the TPM check")
+        print("skip TPM attestation: install swtpm, swtpm-tools, tpm2-tools and tpm2-openssl")
+        return
+    with tempfile.TemporaryDirectory() as directory:
+        state = Path(directory, "tpm")
+        state.mkdir()
+        subprocess.run(["swtpm_setup", "--tpm2", "--tpmstate", str(state), "--create-ek-cert",
+                        "--overwrite"], capture_output=True, check=True)  # fmt: skip
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        swtpm = subprocess.Popen([
+            "swtpm", "socket", "--tpm2", "--tpmstate", f"dir={state}",
+            "--server", f"type=tcp,port={port}", "--ctrl", f"type=tcp,port={port + 1}",
+            "--flags", "not-need-init,startup-clear",
+        ])  # fmt: skip
+        tcti = f"swtpm:host=127.0.0.1,port={port}"
+        os.environ["TPM2TOOLS_TCTI"] = os.environ["TPM2OPENSSL_TCTI"] = tcti
+        try:
+            node.NODE_DIR = Path(directory, "node")
+            ek = node.tpm_ek()
+            status, registered = node.call(f"{node.API}/admin/nodes/tpms", "POST",
+                                           {"name": name, "ek_fingerprint": ek}, token=carol)  # fmt: skip
+            assert status == 201, (status, registered)
+            enrolled = node.enroll_tpm()
+            assert enrolled["identity"] == f"spiffe://nodes.vaultgate/node/{name}", enrolled
+            assert node.whoami()["name"] == name  # mutual TLS with the key in the TPM
+            renewed = node.renew()
+            assert renewed["serial"] != enrolled["serial"]
+            print("ok  enrolled by TPM attestation; the node's port and renewal use the key "
+                  "in the TPM")  # fmt: skip
+            try:
+                node.enroll_tpm()
+            except node.Failure as e:
+                assert " 403 " in f" {e} ", e
+            else:
+                raise node.Failure("the TPM's registration enrolled a second time")
+            assert node.whoami()["name"] == name  # a refused attempt keeps the node's key
+            print("ok  the registration enrolls once, and a refused attempt keeps the key")
+            node.call(f"{node.API}/admin/nodes/{enrolled['node_id']}/revoke", "POST",
+                      token=carol)  # fmt: skip
+        finally:
+            swtpm.terminate()
+            swtpm.wait(timeout=10)
 
 
 def fake_imds(key: Path, document: str) -> http.server.ThreadingHTTPServer:
