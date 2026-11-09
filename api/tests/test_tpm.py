@@ -116,7 +116,7 @@ def test_real_swtpm_output() -> None:
     ak = tpm.parse_public(base64.b64decode(SWTPM["ak_pub"]))
     tpm.check_ak(ak)
     assert ak.name == base64.b64decode(SWTPM["ak_name"])
-    key = tpm.parse_public(base64.b64decode(SWTPM["key_pub"]))
+    key = tpm.parse_public(base64.b64decode(SWTPM["node_public"]))
     attest, signature = base64.b64decode(SWTPM["attest"]), base64.b64decode(SWTPM["signature"])
     tpm.check_key(key, attest, signature, ak)
     # The AK can't stand in for the node's key (restricted), nor the key for the AK.

@@ -1,0 +1,6 @@
+# Findings reviewed and accepted (docs/security-scans.md), each by its exact fingerprint
+# (commit:file:rule:line), so the same rule anywhere else is still reported.
+#
+# A TPM public area (base64) in a test fixture, under a field then named "key_pub": not a
+# secret (a public key's TPM2B_PUBLIC from swtpm). The field is "node_public" since.
+83c964fae6242d7f4df201e8ff968addd87ceaef:api/tests/data/swtpm.json:generic-api-key:6

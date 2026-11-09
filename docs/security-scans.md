@@ -77,6 +77,10 @@ The first run, over the code as of M9.
 - Bandit B104 at `api/src/vaultgate_api/config.py` (listening on `0.0.0.0`): the API
   runs in a container, whose interfaces are its own; the pod network and Kubernetes
   services decide what reaches it.
+- gitleaks `generic-api-key` at `api/tests/data/swtpm.json`, in one commit (M11): a TPM
+  public area (base64) under a field then named `key_pub`, not a secret. Accepted by
+  its fingerprint in `.gitleaksignore` (the history keeps it); the field is
+  `node_public` since.
 - Bandit B105 (a hard-coded password, by the word "token" in a name), at
   `api/src/vaultgate_api/nodes.py` and `routers/node_enrollment.py` (M11): the
   enrollment tokens' public prefix, `vgn_`, and an error message.
