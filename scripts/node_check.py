@@ -2,7 +2,8 @@
 """Node enrollment on the cluster (M11, ADR 0014), for `make k3d-check`: a node asks,
 carol (an admin) approves once the fingerprint matches, the node completes with the
 one-time code, calls the nodes' port with its certificate, renews with a new key, and is
-revoked; what must be refused on the way, is.
+revoked; then a second node enrolls with its own Keycloak client (private_key_jwt),
+once. What must be refused on the way, is.
 
     python3 scripts/node_check.py --api URL --nodes URL --keycloak URL
 
@@ -21,6 +22,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import keycloak_node_client as kc_admin
 import vaultgate_node as node
 from keycloak_smoke import login, wait_for
 
@@ -148,7 +150,39 @@ def main(argv: list[str]) -> int:
         leaf, issuer = split_chain(node.NODE_DIR / "node.crt")
         assert ocsp(leaf, issuer) == "revoked"
         print("ok  carol revoked the node: the nodes' port refuses it, OCSP says revoked")
+
+    by_client(args.keycloak.rstrip("/"), f"{name}-kc", carol)
     return 0
+
+
+def by_client(keycloak: str, name: str, carol: str) -> None:
+    """First trust by a Keycloak client: the node's client, made by Keycloak's admin (the
+    local bootstrap admin), with the node's certificate; a token by private_key_jwt."""
+    node.KEYCLOAK = kc_admin.KEYCLOAK = keycloak
+    with tempfile.TemporaryDirectory() as directory:
+        node.NODE_DIR = Path(directory)
+        node.credential()
+        kc_admin.create(name, str(node.NODE_DIR / "keycloak.crt"))
+        try:
+            issued = node.enroll_client(name)
+            assert issued["identity"] == f"spiffe://nodes.vaultgate/node/{name}", issued
+            assert node.whoami()["name"] == name
+            status, answer = node.call(f"{node.API}/nodes/enrollments/by-client", "POST",
+                                        {"csr": node.csr(node.NODE_DIR / "node.key")},
+                                        token=node.client_token(name))  # fmt: skip
+            assert status == 409, f"the client a second time: {status} {answer}"
+            print("ok  enrolled by its Keycloak client, which enrolls no second node")
+            status, _ = node.call(f"{node.API}/me", token=node.client_token(name))
+            assert status == 401, f"a node client's token on a user route: {status}"
+            print("ok  a node client's token opens no user route")
+            status, _ = node.call(f"{node.API}/nodes/enrollments/by-client", "POST",
+                                  {"csr": node.csr(node.NODE_DIR / "node.key")},
+                                  token=carol)  # fmt: skip
+            assert status == 401, f"a user's token for a node client's: {status}"
+            print("ok  a user's token isn't a node client's")
+            node.call(f"{node.API}/admin/nodes/{issued['node_id']}/revoke", "POST", token=carol)
+        finally:
+            kc_admin.delete(name)
 
 
 if __name__ == "__main__":
