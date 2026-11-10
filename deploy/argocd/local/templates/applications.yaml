@@ -191,6 +191,44 @@ spec:
     syncOptions: ["CreateNamespace=true", "ServerSideApply=true"]
     retry: { limit: 10, backoff: { duration: 15s, factor: 2, maxDuration: 5m } }
 ---
+# KEDA (M12, ADR 0016): the upstream chart at a pinned version, with its CRDs. The
+# gateway's ScaledObject (VaultGate's chart, wave 3) needs them.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  source:
+    repoURL: https://kedacore.github.io/charts
+    chart: keda
+    targetRevision: {{ .Values.keda }}
+    helm:
+      releaseName: keda
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  # KEDA's operator writes its own CA into the metrics API's registration and its
+  # admission webhook: not a drift to undo.
+  ignoreDifferences:
+    - group: apiregistration.k8s.io
+      kind: APIService
+      name: v1beta1.external.metrics.k8s.io
+      jsonPointers: [/spec/caBundle]
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: keda-admission
+      jqPathExpressions: [".webhooks[].clientConfig.caBundle"]
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    # KEDA's CRDs are too large for client-side apply's annotation.
+    syncOptions: ["CreateNamespace=true", "ServerSideApply=true", "RespectIgnoreDifferences=true"]
+    retry: { limit: 10, backoff: { duration: 15s, factor: 2, maxDuration: 5m } }
+---
 # The cluster's certificate issuer (through OpenBao) and trust bundle (deploy/k3d/pki).
 apiVersion: argoproj.io/v1alpha1
 kind: Application

@@ -185,10 +185,10 @@ jobs:
       - if: failure()
         run: |
           kubectl get applications -n argocd -o wide || true
-          kubectl get pods,hpa,networkpolicy -A -o wide || true
+          kubectl get pods,hpa,scaledobject,networkpolicy -A -o wide || true
           kubectl -n argocd get applications -o yaml | grep -A20 "conditions:\|operationState:" || true
           kubectl get certificates,certificaterequests,clusterissuers,bundles -A -o wide || true
-          for ns in vaultgate vaultgate-deps openbao cert-manager monitoring; do kubectl -n $ns logs --all-containers --prefix --tail=200 --max-log-requests=30 -l app.kubernetes.io/name || true; done
+          for ns in vaultgate vaultgate-deps openbao cert-manager monitoring keda; do kubectl -n $ns logs --all-containers --prefix --tail=200 --max-log-requests=30 -l app.kubernetes.io/name || true; done
 
   helm:
     runs-on: ubuntu-latest

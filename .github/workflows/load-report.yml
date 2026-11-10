@@ -45,5 +45,5 @@ jobs:
           done
       - if: failure()
         run: |
-          kubectl get pods,hpa -A -o wide || true
+          kubectl get pods,hpa,scaledobject -A -o wide || true
           df -h || true

@@ -39,8 +39,9 @@ own registry.**
   on its own Service with the public port only, so the internal and metrics ports never
   get one. A real deployment uses the chart's Ingress, with TLS.
 - **Autoscaling on CPU:** the gateway's HorizontalPodAutoscaler (from the chart, 1 to 3
-  pods locally). The checks show that it reads CPU utilization. Scaling on transfers
-  in progress (KEDA) comes later, judged against the M8 load tests (M12).
+  pods locally). The checks show that it reads CPU utilization. (M12 added the
+  transfers in progress as a second signal, with KEDA:
+  [ADR 0016](0016-gateway-autoscaling-on-transfers.md).)
 - **Argo CD from its official manifest,** pinned to a release, with two settings merged
   in: kustomize may read the realm from `infra/keycloak` (one copy for both stacks),
   and the UI runs over plain HTTP for `kubectl port-forward`.

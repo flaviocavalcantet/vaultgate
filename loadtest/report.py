@@ -56,7 +56,14 @@ def nice_step(raw: float) -> float:
     return next(m * power for m in (1, 2, 5, 10) if m * power >= raw)
 
 
-def line_chart(title: str, series: dict, unit: str, start: float, ceiling: float | None = None):
+def line_chart(
+    title: str,
+    series: dict,
+    unit: str,
+    start: float,
+    ceiling: float | None = None,
+    ceiling_label: str = "limit",
+):
     """A small, self-contained SVG line chart: minutes since the run's start on x."""
     width, height, left, right, top, bottom = 720, 260, 60, 170, 30, 40
     plot_w, plot_h = width - left - right, height - top - bottom
@@ -106,7 +113,7 @@ def line_chart(title: str, series: dict, unit: str, start: float, ceiling: float
             f'<line x1="{left}" y1="{y(ceiling):.1f}" x2="{left + plot_w}" y2="{y(ceiling):.1f}" '
             'stroke="#dc2626" stroke-dasharray="4 3"/>'
             f'<text x="{left + plot_w - 4}" y="{y(ceiling) - 4:.1f}" text-anchor="end" '
-            f'fill="#dc2626">limit {ceiling:.3g}</text>'
+            f'fill="#dc2626">{ceiling_label} {ceiling:.3g}</text>'
         )
     for i, (label, values) in enumerate(sorted(series.items())):
         color = COLORS[i % len(COLORS)]
@@ -126,6 +133,12 @@ def line_chart(title: str, series: dict, unit: str, start: float, ceiling: float
 # --- the report ------------------------------------------------------------------------
 
 SCANNER_CONCURRENCY = 2  # deploy/helm/vaultgate/values.yaml, scanner.concurrency
+# The gateway's autoscaler on the cluster (deploy/helm/vaultgate/values-k3d.yaml and the
+# chart's defaults; M12, ADR 0016): pods are added above either target, on average.
+TRANSFERS_PER_POD = 4  # gateway.autoscaling.transfers.perPod
+CPU_TARGET = 0.7 * 0.2  # targetCPUUtilizationPercentage of the 200m request, in cores
+# The ceiling lines that are the autoscaler's targets, not limits.
+TARGETS = {"gateway-cpu", "gateway-transfers"}
 
 CHARTS = [
     # file, title, unit, promql, scale, ceiling
@@ -139,18 +152,29 @@ CHARTS = [
     ),
     (
         "gateway-cpu",
-        "Gateway CPU, per pod (request 200m, HPA target 70%)",
+        "Gateway CPU, per pod (request 200m, autoscaler target 70%)",
         "cores",
         (
             'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="vaultgate",'
             'container="gateway"}[1m]))'
         ),
         1,
-        None,
+        CPU_TARGET,
+    ),
+    (
+        "gateway-transfers",
+        "Transfers in progress, per gateway pod (uploads and downloads)",
+        "transfers",
+        (
+            'vaultgate_gateway_uploads_in_progress{job="gateway"}'
+            ' + vaultgate_gateway_downloads_in_progress{job="gateway"}'
+        ),
+        1,
+        TRANSFERS_PER_POD,
     ),
     (
         "gateway-replicas",
-        "Gateway pods (autoscaler on CPU, 1 to 3)",
+        "Gateway pods (autoscaler on CPU and transfers in progress, 1 to 3)",
         "pods",
         (
             'sum(kube_deployment_status_replicas_available{namespace="vaultgate",'
@@ -180,6 +204,23 @@ CHARTS = [
         None,
     ),
 ]
+
+
+def autoscaler_verdict(peaks: dict) -> str:
+    """Which of the autoscaler's two signals asked for more than one pod, from the peaks:
+    transfers over all the pods against the per-pod target, CPU in one pod against its."""
+    transfers = peaks["transfers-total"] > TRANSFERS_PER_POD
+    cpu = peaks["gateway-cpu"] > CPU_TARGET
+    if transfers and cpu:
+        return "both signals passed their target during the run."
+    if transfers:
+        return (
+            "the transfers passed their target and CPU stayed under its own, so CPU alone "
+            "would not have added a pod."
+        )
+    if cpu:
+        return "CPU passed its target and the transfers stayed under theirs."
+    return "neither signal reached its target at this load."
 
 
 def stats_rows(prefix: str) -> list[dict]:
@@ -269,7 +310,17 @@ def main(argv: list[str]) -> int:
             )
         if name == "throughput":
             peaks["uploads"] = max((v for _, v in scaled.get("uploads", [])), default=0)
-        (charts_dir / f"{name}.svg").write_text(line_chart(title, scaled, unit, start, ceiling))
+        if name == "gateway-transfers":
+            # Over all the pods, at each moment: what the autoscaler divides by the pods.
+            at = {}
+            for values in scaled.values():
+                for t, v in values:
+                    at[t] = at.get(t, 0) + v
+            peaks["transfers-total"] = max(at.values(), default=0)
+        label = "target" if name in TARGETS else "limit"
+        (charts_dir / f"{name}.svg").write_text(
+            line_chart(title, scaled, unit, start, ceiling, label)
+        )
 
     sizes = {"256 KiB": 0.25, "4 MiB": 4, "32 MiB": 32, "128 MiB": 128}
     downloaded = [
@@ -335,6 +386,12 @@ def main(argv: list[str]) -> int:
             )
         ),
         (
+            f"- **Up to {peaks['transfers-total']:.0f} transfers were in progress at once**, "
+            f"{peaks['gateway-transfers']:.0f} in one pod. The autoscaler adds pods above "
+            f"{TRANSFERS_PER_POD} per pod on average, or above {CPU_TARGET:.2f} cores per pod "
+            "(70% of the request), whichever asks for more: " + autoscaler_verdict(peaks)
+        ),
+        (
             f"- **Up to {peaks['scanner']:.0f} scans ran at once** in the one scanner pod "
             f"(its limit is {SCANNER_CONCURRENCY}), "
             + (
@@ -369,6 +426,8 @@ def main(argv: list[str]) -> int:
         "![Gateway memory](load-testing/gateway-memory.svg)",
         "",
         "![Gateway CPU](load-testing/gateway-cpu.svg)",
+        "",
+        "![Transfers in progress](load-testing/gateway-transfers.svg)",
         "",
         "![Gateway pods](load-testing/gateway-replicas.svg)",
         "",

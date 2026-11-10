@@ -582,7 +582,7 @@ What `k3d-check` proves on top of the vault check:
 | PKI | OpenBao is initialized and unsealed and serves TLS that verifies against your root CA; its intermediate CA chains to the root, may sign only leaf certificates, and only for cluster and localhost names |
 | Credentials | each service's OpenBao login may read its own secrets (the API the tokens, the AWS file and its database credentials, the gateway the internal token and AWS file, the scanner the scanner token and AWS file) and nothing else; no Secret holds them and no deployment has one in its environment |
 | TLS | the API's, the gateway's and Keycloak's certificates are issued and come from the intermediate, last at most three days, verify against your root, and plain HTTP gets no answer; the API's connection to PostgreSQL is TLS with the server verified, logged in with short-lived credentials OpenBao issued it, and PostgreSQL refuses one without TLS; every other check talks to them over that TLS |
-| Autoscaler | the gateway's HorizontalPodAutoscaler reads CPU utilization from metrics-server, so it can scale |
+| Autoscaler | KEDA accepted the gateway's ScaledObject, and the HorizontalPodAutoscaler it manages reads CPU utilization from metrics-server and the transfers in progress from Prometheus, so it can scale on either |
 | Network policy | a pod that is neither the gateway nor the scanner reaches the API's public port but not its internal one (8001, which hands out storage keys and wrapped data keys) |
 | Prometheus | scrapes the API, gateway and scanner (through the chart's ServiceMonitors, over TLS verified against the trust bundle) and Loki, Tempo and Alloy, all up |
 | Grafana | has the VaultGate dashboards and the Prometheus, Loki and Tempo data sources, from the same files as compose |
@@ -597,7 +597,7 @@ Every walkthrough above works against the cluster too, since the ports are the s
 
 ```bash
 kubectl get applications -n argocd                          # what Argo CD syncs, and its state
-kubectl -n vaultgate get pods,hpa,networkpolicy
+kubectl -n vaultgate get pods,scaledobject,hpa,networkpolicy
 kubectl -n vaultgate logs deploy/vaultgate-api -f
 kubectl -n argocd port-forward svc/argocd-server 8081:80    # UI on http://localhost:8081 (admin; password below)
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d

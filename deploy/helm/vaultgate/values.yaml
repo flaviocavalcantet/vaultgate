@@ -160,6 +160,20 @@ gateway:
     minReplicas: 2
     maxReplicas: 6
     targetCPUUtilizationPercentage: 70
+    # Scale on the transfers in progress too (M12, ADR 0016): uploads and downloads
+    # streaming now, which CPU misses when clients are slow. Needs KEDA in the cluster
+    # and the gateway's metrics in Prometheus (metrics.serviceMonitor, or a scrape job
+    # that labels them job="gateway"). The chart then creates a KEDA ScaledObject with
+    # both signals, in place of the HorizontalPodAutoscaler: KEDA manages one itself.
+    transfers:
+      enabled: false
+      # Transfers in progress each pod should carry: above it on average, pods are
+      # added. Keep it under the load one pod holds comfortably (docs/load-testing.md).
+      perPod: 8
+      # Prometheus' address, as KEDA's operator reaches it.
+      prometheusAddress: ""
+      # How often KEDA asks Prometheus.
+      pollingIntervalSeconds: 15
 
 scanner:
   replicas: 1

@@ -68,6 +68,12 @@ gateway:
     enabled: true
     minReplicas: 1
     maxReplicas: 3
+    # On transfers in progress too, with KEDA (deploy/argocd/local) reading the count
+    # from the cluster's Prometheus. Low enough for the load tests' 20 users to show it.
+    transfers:
+      enabled: true
+      perPod: 4
+      prometheusAddress: http://kps-prometheus.monitoring:9090
 
 # Where each component may connect besides DNS and the API's internal port: the local
 # cluster's dependencies, by namespace and pod, on their pods' ports.

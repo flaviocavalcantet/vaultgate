@@ -1,8 +1,48 @@
 {{- with .Values.gateway.autoscaling }}
 {{- if .enabled }}
 {{- $ctx := dict "root" $ "name" "gateway" }}
+{{- if .transfers.enabled }}
+# The gateway scales on two signals, whichever asks for more pods (M12, ADR 0016):
+# CPU, which follows the bytes it encrypts and decrypts, and the transfers in progress,
+# which CPU misses when clients are slow: a transfer holds its connection, its buffers
+# and its place under the limits whatever its speed. KEDA (its CRDs installed) reads the
+# count from Prometheus and manages the HorizontalPodAutoscaler, keda-hpa-<name>.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "vaultgate.fullname" $ctx }}
+  minReplicaCount: {{ .minReplicas }}
+  maxReplicaCount: {{ .maxReplicas }}
+  pollingInterval: {{ .transfers.pollingIntervalSeconds }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        # Uploads are long: scale down slowly, so a pod is not removed between bursts.
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies: [{ type: Pods, value: 1, periodSeconds: 60 }]
+  triggers:
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: {{ .targetCPUUtilizationPercentage | quote }}
+    # Uploads and downloads streaming now, over all the pods; the autoscaler divides by
+    # the pods (AverageValue) and aims at `perPod` each. No sample counts as none.
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: {{ required "gateway.autoscaling.transfers.prometheusAddress is needed to scale on transfers" .transfers.prometheusAddress | quote }}
+        query: >-
+          sum(vaultgate_gateway_uploads_in_progress{namespace="{{ $.Release.Namespace }}",job="gateway"})
+          + sum(vaultgate_gateway_downloads_in_progress{namespace="{{ $.Release.Namespace }}",job="gateway"})
+        threshold: {{ .transfers.perPod | quote }}
+{{- else }}
 # The gateway scales with CPU, which follows the bytes it encrypts and decrypts.
-# Scaling on transfers in progress (KEDA) is on the roadmap.
+# gateway.autoscaling.transfers adds the transfers in progress (KEDA).
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -25,5 +65,6 @@ spec:
     scaleDown:
       stabilizationWindowSeconds: 300
       policies: [{ type: Pods, value: 1, periodSeconds: 60 }]
+{{- end }}
 {{- end }}
 {{- end }}
