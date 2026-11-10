@@ -43,6 +43,17 @@ asks for more pods.**
   ([docs/load-testing.md](../load-testing.md)) charts the transfers in progress per pod
   and CPU per pod, each against its target, and says which of the two passed it during
   the run.
+  - **What the run showed (November 2026, a 4-CPU runner):** the gateway scaled from 1
+    to 3 pods, and CPU did it. One pod reached 0.24 cores against a target of 0.14,
+    while at most 3 transfers were in progress at once, under the target of 4 per pod.
+    The load tests' clients are in the cluster, on a fast link: most transfers are over
+    in under a second and the largest (128 MiB) in a few, so few overlap and all of
+    them cost CPU.
+  - **So the two signals cover different loads,** and this run exercised one. CPU
+    scales the gateway for fast transfers, as before. The transfers signal is for
+    clients slow enough to overlap without costing CPU, which the load tests don't
+    simulate yet. On the cluster it is shown to be read (the cluster check), not to
+    have added a pod. A slow-client scenario in the load tests would show that.
 
 ## Consequences
 

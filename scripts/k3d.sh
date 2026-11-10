@@ -433,6 +433,11 @@ check() {
 # its 429s mid-scan look like a change of behaviour to ZAP; the gateway keeps its own,
 # so ZAP reaches it until it answers 429 (its unit tests cover the rest).
 ZAP_IMAGE=zaproxy/zap-stable:2.17.0
+# ZAP's own proxy port, on the host's network. Fixed, and below the kernel's ephemeral
+# range: left to itself the scan script picks a free port from that range and ZAP binds
+# it seconds later, by which time something else on the host may hold it (a run on main
+# ended with "Failed to start the main proxy: Address already in use").
+ZAP_PORT=${VAULTGATE_ZAP_PORT:-8090}
 # Alerts that are false positives on certain URLs only, so the rule still applies to
 # every other route: "Unexpected Content-Type" (100001) on the nodes' CA's routes, which
 # answer with their protocols' own types (a certificate, CRLs, OCSP: application/pkix-*,
@@ -451,7 +456,7 @@ zap() {
 print(login(wait_for("'"$KEYCLOAK"'"), "zap-scanner", "zap-scanner-dev-password")["access_token"])')
   log "ZAP: the API, from its OpenAPI document, as zap-scanner"
   docker run --rm --network host -v "$PWD/$out:/zap/wrk:rw" -e ZAP_AUTH_HEADER=Authorization \
-    -e ZAP_AUTH_HEADER_VALUE="Bearer $token" "$ZAP_IMAGE" zap-api-scan.py \
+    -e ZAP_AUTH_HEADER_VALUE="Bearer $token" "$ZAP_IMAGE" zap-api-scan.py -P "$ZAP_PORT" \
     -t "$API/openapi.json" -f openapi -c api.conf -r api.html -J api.json \
     -z "-config scanner.maxScanDurationInMins=3 $ZAP_API_FILTERS" || status=1
   if ! curl -sf --cacert "$ROOT_CA" -o /dev/null -H "Authorization: Bearer $token" "$API/me"; then
@@ -460,7 +465,7 @@ print(login(wait_for("'"$KEYCLOAK"'"), "zap-scanner", "zap-scanner-dev-password"
   fi
   log "ZAP: the gateway"
   docker run --rm --network host -v "$PWD/$out:/zap/wrk:rw" -e ZAP_AUTH_HEADER=Authorization \
-    -e ZAP_AUTH_HEADER_VALUE="Bearer not-an-intent" "$ZAP_IMAGE" zap-api-scan.py \
+    -e ZAP_AUTH_HEADER_VALUE="Bearer not-an-intent" "$ZAP_IMAGE" zap-api-scan.py -P "$ZAP_PORT" \
     -t /zap/wrk/gateway-openapi.yaml -f openapi -O https://localhost:8888 \
     -c gateway.conf -r gateway.html -J gateway.json || status=1
   return $status
