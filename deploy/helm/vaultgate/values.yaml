@@ -4,9 +4,12 @@
 # cluster, where they run in-cluster too.
 
 image:
-  # Images are named <registry>/vaultgate-<api|gateway|scanner>:<tag>.
+  # Images are named <registry>/vaultgate-<api|gateway|scanner>:<tag>. CI publishes them
+  # to GHCR on every merge to main, tagged with the commit (M12). Argo CD sets the tag to
+  # the commit it syncs (deploy/argocd), so the chart and the images are of one commit;
+  # a plain `helm install` should set it too. `main` is the latest merge, and moves.
   registry: ghcr.io/flaviocavalcantet
-  tag: "0.1.0"
+  tag: main
   pullPolicy: IfNotPresent
 
 # Settings shared by the services that use them.

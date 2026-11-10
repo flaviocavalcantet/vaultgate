@@ -67,6 +67,10 @@ spec:
     helm:
       releaseName: vaultgate
       valueFiles: [values-k3d.yaml]
+      # The images of the commit being synced (M12).
+      parameters:
+        - name: image.tag
+          value: $ARGOCD_APP_REVISION
   destination:
     server: https://kubernetes.default.svc
     namespace: vaultgate

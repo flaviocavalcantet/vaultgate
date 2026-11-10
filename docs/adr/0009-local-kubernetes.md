@@ -28,8 +28,9 @@ own registry.**
   working tree. An app of apps (`deploy/argocd/local`) passes the revision to every
   application, so a branch can be tried before it is merged. The images are the one
   exception: they are built from the working tree, pushed to the cluster's registry,
-  and pulled again when a pod restarts. Publishing them from CI to GHCR, with the chart
-  pinned to them, is on the roadmap (M12).
+  and pulled again when a pod restarts. (M12 replaced the registry: CI publishes the
+  images to GHCR by commit, and local builds are loaded into the node,
+  [ADR 0015](0015-image-delivery.md).)
 - **Host access through NodePorts, on compose's ports:** the API on 8000, the gateway
   on 8888, Keycloak on 8080, LocalStack on 4566 and Mailpit on 8025, all on loopback.
   The scripts, the e2e check and the walkthroughs then work unchanged against either

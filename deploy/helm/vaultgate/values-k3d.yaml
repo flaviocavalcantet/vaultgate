@@ -1,13 +1,9 @@
-# The local k3d cluster (deploy/k3d): images from the cluster's own registry, the
+# The local k3d cluster (deploy/k3d): the
 # dependencies in the vaultgate-deps namespace, and the public ports on the same host
 # ports as docker compose (8000 for the API, 8888 for the gateway). No credentials here:
 # they come from OpenBao.
-image:
-  # The cluster's registry, as its nodes reach it (deploy/k3d/cluster.yaml).
-  registry: vaultgate-registry.localhost:5000
-  tag: dev
-  # Rebuilt images keep the tag: a restarted pod pulls the new one.
-  pullPolicy: Always
+# The images are the chart's own (GHCR, tagged with the commit Argo CD syncs): published
+# by CI for main, built and loaded into the node for anything else (scripts/k3d.sh).
 
 aws:
   endpointUrl: http://localstack.vaultgate-deps:4566

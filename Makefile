@@ -48,10 +48,10 @@ seed-policies: ## Allow every signed-in user everything (local development only;
 tf-local:    ## Apply Terraform against LocalStack (run `make up` first)
 	cd infra/terraform/envs/local && terraform init && terraform apply -auto-approve
 
-k3d-up:      ## Local Kubernetes: k3d cluster, images in its registry, Argo CD syncing this repo (needs Docker, k3d, kubectl, Terraform)
+k3d-up:      ## Local Kubernetes: k3d cluster, images built and loaded into it, Argo CD syncing this repo (needs Docker, k3d, kubectl, Terraform)
 	scripts/k3d.sh up
 
-k3d-images:  ## Rebuild the images, push them to the cluster's registry and restart the pods
+k3d-images:  ## Rebuild the images, load them into the cluster and restart the pods
 	scripts/k3d.sh images
 
 k3d-check:   ## The vault end-to-end check against the cluster, plus Argo CD, autoscaler and network policy checks, and negative tests
