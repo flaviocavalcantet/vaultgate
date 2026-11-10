@@ -5,6 +5,10 @@
 # The images are the chart's own (GHCR, tagged with the commit Argo CD syncs): published
 # by CI for main, built and loaded into the node for anything else (scripts/k3d.sh).
 
+# The web frontend's development server (vaultgate-frontend, `npm run dev`): the origin
+# the local Keycloak client `vaultgate-web` allows too.
+corsOrigins: ["http://localhost:5173"]
+
 aws:
   endpointUrl: http://localstack.vaultgate-deps:4566
 scanQueueUrl: http://localstack.vaultgate-deps:4566/000000000000/vaultgate-local-scans

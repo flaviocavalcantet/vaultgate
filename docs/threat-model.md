@@ -164,6 +164,7 @@ Each row is a threat to an element or flow. The **status** is one of:
 
 | Threat | Against it | Status |
 | --- | --- | --- |
+| Another website's page calls the API or the gateway from a user's browser | CORS names only the listed origins, none by default; no cookies, so no credentials ride along; every route still checks its token (ADR 0017); the negative tests send other origins | mitigated |
 | A user reaches administrator routes | Group membership from the token; the negative tests send alice to all 15 `/admin` routes | mitigated |
 | A user gets around an access policy | Policies are evaluated on every request, deny wins, deny by default (ADR 0004); the gateway's intents are re-checked at the moment of transfer | mitigated |
 | A quarantined file downloaded or shared | Only a clean file, or one an admin released, can be downloaded; a released file still can't be shared (ADR 0005, 0006) | mitigated |

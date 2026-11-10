@@ -27,7 +27,7 @@ import tornado.web
 from opentelemetry import context, trace
 from opentelemetry.trace import SpanKind, StatusCode
 
-from vaultgate_gateway import metrics, tracing
+from vaultgate_gateway import cors, metrics, tracing
 from vaultgate_gateway.api_client import ApiUnavailable, IntentRefused, InternalApi, UploadGrant
 from vaultgate_gateway.clientip import IPNetwork, client_ip
 from vaultgate_gateway.crypto import DecryptionError, Decryptor, Encryptor
@@ -181,6 +181,24 @@ class BaseHandler(tornado.web.RequestHandler):
             return None
         return value.strip() or None
 
+    # The methods a page of an allowed origin may use on this route (CORS preflight).
+    cors_methods: tuple[str, ...] = ()
+
+    def _cors_origin(self) -> str | None:
+        """The request's Origin, if it is one the gateway accepts (vaultgate_gateway.cors)."""
+        origin = self.request.headers.get("Origin")
+        return origin if origin in self.application.settings.get("cors_origins", ()) else None
+
+    def options(self, *_args: str) -> None:
+        """A browser's preflight, before a page of another origin uploads or downloads.
+        It carries no token and spends nothing: no intent, no transfer slot."""
+        if not self.cors_methods or self._cors_origin() is None:
+            raise tornado.web.HTTPError(405)
+        self.set_header("Access-Control-Allow-Methods", ", ".join(self.cors_methods))
+        self.set_header("Access-Control-Allow-Headers", ", ".join(cors.REQUEST_HEADERS))
+        self.set_header("Access-Control-Max-Age", str(cors.MAX_AGE_SECONDS))
+        self.set_status(204)
+
     def set_default_headers(self) -> None:
         # On every response, errors included (M10, docs/security-scans.md): no server
         # name or version, nothing a browser may sniff, render with scripts or frame,
@@ -193,6 +211,13 @@ class BaseHandler(tornado.web.RequestHandler):
         self.set_header("Cache-Control", "no-store")
         if self.request.protocol == "https":
             self.set_header("Strict-Transport-Security", "max-age=63072000")
+        # CORS: an allowed origin's page may read this response, errors included (this
+        # runs again when an error clears the headers). No other origin is named, and
+        # no credentials are allowed: the gateway has no cookies, only intent tokens.
+        self.set_header("Vary", "Origin")
+        if origin := self._cors_origin():
+            self.set_header("Access-Control-Allow-Origin", origin)
+            self.set_header("Access-Control-Expose-Headers", ", ".join(cors.EXPOSED_HEADERS))
 
     def write_error(self, status_code: int, **kwargs) -> None:
         if status_code == 401:  # send_error clears headers set before the error
@@ -294,6 +319,7 @@ class UploadHandler(BaseHandler):
     """
 
     route = "/uploads/{upload_id}"
+    cors_methods = ("PUT",)
     _in_progress = False
 
     async def prepare(self) -> None:
@@ -305,6 +331,8 @@ class UploadHandler(BaseHandler):
         self._finished_ok = False
         self._cleaned_up = False
         self._error: tornado.web.HTTPError | None = None
+        if self.request.method == "OPTIONS":
+            return  # a preflight (BaseHandler.options): no token, no upload
         self.request.connection.set_max_body_size(self.services.max_upload_bytes)
         metrics.UPLOADS_IN_PROGRESS.inc()
         self._in_progress = True
@@ -543,6 +571,7 @@ class DownloadHandler(BaseHandler):
     """
 
     route = "/downloads/{download_id}"
+    cors_methods = ("GET",)
     _in_progress = False
 
     async def get(self, download_id: str) -> None:
@@ -686,7 +715,9 @@ def _b64_hex(hex_digest: str) -> str:
 
 
 def make_app(
-    services: Services | None = None, trusted_proxies: tuple[IPNetwork, ...] = ()
+    services: Services | None = None,
+    trusted_proxies: tuple[IPNetwork, ...] = (),
+    cors_origins: frozenset[str] = frozenset(),
 ) -> tornado.web.Application:
     return tornado.web.Application(
         [
@@ -698,6 +729,7 @@ def make_app(
         log_function=on_request_finished,
         services=services,
         trusted_proxies=trusted_proxies,
+        cors_origins=cors_origins,
     )
 
 
@@ -772,7 +804,9 @@ async def main() -> None:
             client_reloader.run(settings.tls_reload_interval_seconds)
         )
     # xheaders stays off: client addresses come from clientip, against trusted_proxies.
-    make_app(services_from_settings(api_context), settings.trusted_proxies).listen(
+    make_app(
+        services_from_settings(api_context), settings.trusted_proxies, settings.cors_origins
+    ).listen(
         settings.port,
         max_body_size=settings.max_upload_bytes,
         ssl_options=ssl_context,

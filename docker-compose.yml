@@ -63,6 +63,9 @@ services:
       VAULTGATE_AWS_ENDPOINT_URL: http://localstack:4566
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      # The web frontend's development server (vaultgate-frontend, `npm run dev`) may
+      # call the API (CORS, M12.5): the origin Keycloak's vaultgate-web client allows.
+      VAULTGATE_CORS_ORIGINS: http://localhost:5173
       # Share verification codes go to Mailpit, which catches them (UI on :8025).
       VAULTGATE_SMTP_HOST: mailpit
       VAULTGATE_SMTP_PORT: "1025"
@@ -79,6 +82,8 @@ services:
     environment:
       VAULTGATE_API_INTERNAL_URL: http://api:8001
       VAULTGATE_INTERNAL_TOKEN: dev-internal-token-change-me
+      # The web frontend's development server (CORS, M12.5), as on the API.
+      VAULTGATE_CORS_ORIGINS: http://localhost:5173
       # Bucket and key alias are created by `make tf-local` (infra/terraform/envs/local).
       VAULTGATE_BUCKET: vaultgate-local-vault
       VAULTGATE_KMS_KEY_ID: alias/vaultgate-local
