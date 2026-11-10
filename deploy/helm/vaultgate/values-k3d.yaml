@@ -69,7 +69,8 @@ gateway:
     minReplicas: 1
     maxReplicas: 3
     # On transfers in progress too, with KEDA (deploy/argocd/local) reading the count
-    # from the cluster's Prometheus. Low enough for the load tests' 20 users to show it.
+    # from the cluster's Prometheus. Low, for a small cluster; the load tests' transfers
+    # are too quick to reach it (docs/load-testing.md), slow clients would.
     transfers:
       enabled: true
       perPod: 4

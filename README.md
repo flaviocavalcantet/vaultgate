@@ -625,6 +625,10 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
 - [x] **M12 — Delivery and scaling:** builds on M7 and the M8 load tests
   - [x] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them (Argo CD passes the commit it syncs as the tag), replacing the local registry; unmerged code is built and loaded into the local cluster ([ADR 0015](docs/adr/0015-image-delivery.md))
   - [x] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests ([ADR 0016](docs/adr/0016-gateway-autoscaling-on-transfers.md), [docs/load-testing.md](docs/load-testing.md))
+- [ ] **M12.5 — Frontend support:** what the web frontend ([vaultgate-frontend](https://github.com/flaviocavalcantet/vaultgate-frontend), its own repository and plan) needs from the API and the gateway
+  - [ ] Cross-origin requests (CORS) on the API and the gateway: an allow-list of origins, off by default, so a frontend served from another origin can call them
+  - [ ] Downloads a browser can follow as a plain link: the gateway takes the download token in a request header today, so large files can't be handed to the browser's own download
+  - [ ] The frontend deployed by the chart as an optional component, with the local Keycloak client's redirect addresses to match
 - [ ] **M13 — Agent baseline and evaluation:** a single-agent invoice reviewer and a reproducible benchmark that scores task success and safety separately
   - [ ] Japanese PII detectors (My Number, corporate number) and qualified-invoice registration numbers, validated by check digit
   - [ ] Synthetic dataset: invoices and purchase orders with discrepancies, prompt-injection documents, unauthorized requests

@@ -10,15 +10,15 @@
 <line x1="60" y1="68.0" x2="550" y2="68.0" stroke="#eee"/><text x="54" y="72.0" text-anchor="end">20</text>
 <line x1="60" y1="30.0" x2="550" y2="30.0" stroke="#eee"/><text x="54" y="34.0" text-anchor="end">25</text>
 <text x="60.0" y="236" text-anchor="middle">0</text>
-<text x="138.4" y="236" text-anchor="middle">1</text>
-<text x="216.8" y="236" text-anchor="middle">2</text>
-<text x="295.2" y="236" text-anchor="middle">3</text>
-<text x="373.6" y="236" text-anchor="middle">4</text>
-<text x="452.0" y="236" text-anchor="middle">5</text>
-<text x="530.4" y="236" text-anchor="middle">6</text>
+<text x="141.7" y="236" text-anchor="middle">1</text>
+<text x="223.3" y="236" text-anchor="middle">2</text>
+<text x="305.0" y="236" text-anchor="middle">3</text>
+<text x="386.7" y="236" text-anchor="middle">4</text>
+<text x="468.3" y="236" text-anchor="middle">5</text>
+<text x="550.0" y="236" text-anchor="middle">6</text>
 <text x="305.0" y="254" text-anchor="middle">minutes into the run</text><text x="14" y="125.0" transform="rotate(-90 14 125.0)" text-anchor="middle">MiB/s</text>
-<polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="158.0,175.0 177.6,161.3 197.2,126.6 216.8,150.1 236.4,149.4 256.0,163.5 275.6,167.1 295.2,146.2 314.8,176.8 334.4,126.5 354.0,153.2 373.6,138.0 393.2,160.6 412.8,164.3 432.4,145.5 452.0,155.6 471.6,150.1 491.2,172.4 510.8,162.4 530.4,175.2 550.0,185.4"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="80.4,219.3 100.8,213.7 121.2,187.4 141.7,186.6 162.1,186.9 182.5,169.0 202.9,170.0 223.3,170.0 243.8,167.9 264.2,161.6 284.6,156.3 305.0,176.7 325.4,186.1 345.8,147.5 366.2,176.0 386.7,153.6 407.1,165.4 427.5,164.7 447.9,165.4 468.3,173.3 488.8,165.1 509.2,163.7 529.6,153.2 550.0,153.0"/>
 <rect x="562" y="28" width="10" height="3" fill="#2563eb"/><text x="576" y="32">downloads</text>
-<polyline fill="none" stroke="#dc2626" stroke-width="1.5" points="158.0,216.6 177.6,190.6 197.2,192.9 216.8,164.3 236.4,186.5 256.0,98.6 275.6,128.6 295.2,126.6 314.8,217.3 334.4,205.0 354.0,170.1 373.6,128.7 393.2,123.4 412.8,151.5 432.4,187.1 452.0,174.4 471.6,122.4 491.2,103.1 510.8,110.3 530.4,168.5 550.0,192.4"/>
+<polyline fill="none" stroke="#dc2626" stroke-width="1.5" points="80.4,190.9 100.8,168.2 121.2,164.5 141.7,108.6 162.1,139.2 182.5,139.2 202.9,207.8 223.3,207.8 243.8,184.7 264.2,120.9 284.6,117.6 305.0,115.1 325.4,187.4 345.8,183.3 366.2,211.1 386.7,211.1 407.1,155.4 427.5,141.2 447.9,141.2 468.3,179.3 488.8,188.0 509.2,187.2 529.6,201.7 550.0,161.8"/>
 <rect x="562" y="42" width="10" height="3" fill="#dc2626"/><text x="576" y="46">uploads</text>
 </svg>

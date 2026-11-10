@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="260" viewBox="0 0 720 260" font-family="sans-serif" font-size="11">
+<rect width="100%" height="100%" fill="white"/>
+<text x="60" y="18" font-size="13" font-weight="bold">Transfers in progress, per gateway pod (uploads and downloads)</text>
+<line x1="60" y1="220" x2="550" y2="220" stroke="#888"/>
+<line x1="60" y1="30" x2="60" y2="220" stroke="#888"/>
+<line x1="60" y1="220.0" x2="550" y2="220.0" stroke="#eee"/><text x="54" y="224.0" text-anchor="end">0</text>
+<line x1="60" y1="182.0" x2="550" y2="182.0" stroke="#eee"/><text x="54" y="186.0" text-anchor="end">1</text>
+<line x1="60" y1="144.0" x2="550" y2="144.0" stroke="#eee"/><text x="54" y="148.0" text-anchor="end">2</text>
+<line x1="60" y1="106.0" x2="550" y2="106.0" stroke="#eee"/><text x="54" y="110.0" text-anchor="end">3</text>
+<line x1="60" y1="68.0" x2="550" y2="68.0" stroke="#eee"/><text x="54" y="72.0" text-anchor="end">4</text>
+<line x1="60" y1="30.0" x2="550" y2="30.0" stroke="#eee"/><text x="54" y="34.0" text-anchor="end">5</text>
+<text x="60.0" y="236" text-anchor="middle">0</text>
+<text x="141.7" y="236" text-anchor="middle">1</text>
+<text x="223.3" y="236" text-anchor="middle">2</text>
+<text x="305.0" y="236" text-anchor="middle">3</text>
+<text x="386.7" y="236" text-anchor="middle">4</text>
+<text x="468.3" y="236" text-anchor="middle">5</text>
+<text x="550.0" y="236" text-anchor="middle">6</text>
+<text x="305.0" y="254" text-anchor="middle">minutes into the run</text><text x="14" y="125.0" transform="rotate(-90 14 125.0)" text-anchor="middle">transfers</text>
+<line x1="60" y1="68.0" x2="550" y2="68.0" stroke="#dc2626" stroke-dasharray="4 3"/><text x="546" y="64.0" text-anchor="end" fill="#dc2626">target 4</text>
+<polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="202.9,220.0 223.3,220.0 243.8,182.0 264.2,220.0 284.6,220.0 305.0,220.0 325.4,220.0 345.8,220.0 366.2,220.0 386.7,220.0 407.1,182.0 427.5,220.0 447.9,220.0 468.3,144.0 488.8,220.0 509.2,220.0 529.6,220.0 550.0,220.0"/>
+<rect x="562" y="28" width="10" height="3" fill="#2563eb"/><text x="576" y="32">pod gkncw</text>
+<polyline fill="none" stroke="#dc2626" stroke-width="1.5" points="60.0,220.0 80.4,182.0 100.8,182.0 121.2,182.0 141.7,220.0 162.1,220.0 182.5,220.0 202.9,220.0 223.3,220.0 243.8,144.0 264.2,182.0 284.6,220.0 305.0,220.0 325.4,220.0 345.8,220.0 366.2,220.0 386.7,220.0 407.1,220.0 427.5,220.0 447.9,220.0 468.3,220.0 488.8,220.0 509.2,182.0 529.6,220.0 550.0,220.0"/>
+<rect x="562" y="42" width="10" height="3" fill="#dc2626"/><text x="576" y="46">pod h4jnb</text>
+<polyline fill="none" stroke="#16a34a" stroke-width="1.5" points="141.7,220.0 162.1,220.0 182.5,220.0 202.9,220.0 223.3,220.0 243.8,220.0 264.2,220.0 284.6,220.0 305.0,220.0 325.4,220.0 345.8,220.0 366.2,220.0 386.7,220.0 407.1,182.0 427.5,220.0 447.9,220.0 468.3,220.0 488.8,220.0 509.2,220.0 529.6,220.0 550.0,220.0"/>
+<rect x="562" y="56" width="10" height="3" fill="#16a34a"/><text x="576" y="60">pod t8d5w</text>
+</svg>

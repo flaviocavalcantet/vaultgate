@@ -10,12 +10,12 @@
 <line x1="60" y1="68.0" x2="550" y2="68.0" stroke="#eee"/><text x="54" y="72.0" text-anchor="end">2</text>
 <line x1="60" y1="30.0" x2="550" y2="30.0" stroke="#eee"/><text x="54" y="34.0" text-anchor="end">2.5</text>
 <text x="60.0" y="236" text-anchor="middle">0</text>
-<text x="138.4" y="236" text-anchor="middle">1</text>
-<text x="216.8" y="236" text-anchor="middle">2</text>
-<text x="295.2" y="236" text-anchor="middle">3</text>
-<text x="373.6" y="236" text-anchor="middle">4</text>
-<text x="452.0" y="236" text-anchor="middle">5</text>
-<text x="530.4" y="236" text-anchor="middle">6</text>
+<text x="141.7" y="236" text-anchor="middle">1</text>
+<text x="223.3" y="236" text-anchor="middle">2</text>
+<text x="305.0" y="236" text-anchor="middle">3</text>
+<text x="386.7" y="236" text-anchor="middle">4</text>
+<text x="468.3" y="236" text-anchor="middle">5</text>
+<text x="550.0" y="236" text-anchor="middle">6</text>
 <text x="305.0" y="254" text-anchor="middle">minutes into the run</text><text x="14" y="125.0" transform="rotate(-90 14 125.0)" text-anchor="middle">scans</text>
-<polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="138.4,68.0 158.0,68.0 177.6,68.0 197.2,144.0 216.8,68.0 236.4,68.0 256.0,68.0 275.6,68.0 295.2,68.0 314.8,68.0 334.4,68.0 354.0,68.0 373.6,68.0 393.2,68.0 412.8,68.0 432.4,68.0 452.0,68.0 471.6,68.0 491.2,68.0 510.8,68.0 530.4,68.0 550.0,68.0"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="60.0,220.0 80.4,68.0 100.8,68.0 121.2,68.0 141.7,68.0 162.1,68.0 182.5,68.0 202.9,68.0 223.3,68.0 243.8,68.0 264.2,68.0 284.6,68.0 305.0,68.0 325.4,68.0 345.8,68.0 366.2,68.0 386.7,68.0 407.1,68.0 427.5,68.0 447.9,68.0 468.3,68.0 488.8,68.0 509.2,68.0 529.6,68.0 550.0,68.0"/>
 </svg>

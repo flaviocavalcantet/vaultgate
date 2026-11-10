@@ -1,24 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="260" viewBox="0 0 720 260" font-family="sans-serif" font-size="11">
 <rect width="100%" height="100%" fill="white"/>
-<text x="60" y="18" font-size="13" font-weight="bold">Gateway CPU, per pod (request 200m, HPA target 70%)</text>
+<text x="60" y="18" font-size="13" font-weight="bold">Gateway CPU, per pod (request 200m, autoscaler target 70%)</text>
 <line x1="60" y1="220" x2="550" y2="220" stroke="#888"/>
 <line x1="60" y1="30" x2="60" y2="220" stroke="#888"/>
 <line x1="60" y1="220.0" x2="550" y2="220.0" stroke="#eee"/><text x="54" y="224.0" text-anchor="end">0</text>
-<line x1="60" y1="182.0" x2="550" y2="182.0" stroke="#eee"/><text x="54" y="186.0" text-anchor="end">0.05</text>
-<line x1="60" y1="144.0" x2="550" y2="144.0" stroke="#eee"/><text x="54" y="148.0" text-anchor="end">0.1</text>
-<line x1="60" y1="106.0" x2="550" y2="106.0" stroke="#eee"/><text x="54" y="110.0" text-anchor="end">0.15</text>
-<line x1="60" y1="68.0" x2="550" y2="68.0" stroke="#eee"/><text x="54" y="72.0" text-anchor="end">0.2</text>
-<line x1="60" y1="30.0" x2="550" y2="30.0" stroke="#eee"/><text x="54" y="34.0" text-anchor="end">0.25</text>
+<line x1="60" y1="182.0" x2="550" y2="182.0" stroke="#eee"/><text x="54" y="186.0" text-anchor="end">0.1</text>
+<line x1="60" y1="144.0" x2="550" y2="144.0" stroke="#eee"/><text x="54" y="148.0" text-anchor="end">0.2</text>
+<line x1="60" y1="106.0" x2="550" y2="106.0" stroke="#eee"/><text x="54" y="110.0" text-anchor="end">0.3</text>
+<line x1="60" y1="68.0" x2="550" y2="68.0" stroke="#eee"/><text x="54" y="72.0" text-anchor="end">0.4</text>
+<line x1="60" y1="30.0" x2="550" y2="30.0" stroke="#eee"/><text x="54" y="34.0" text-anchor="end">0.5</text>
 <text x="60.0" y="236" text-anchor="middle">0</text>
-<text x="138.4" y="236" text-anchor="middle">1</text>
-<text x="216.8" y="236" text-anchor="middle">2</text>
-<text x="295.2" y="236" text-anchor="middle">3</text>
-<text x="373.6" y="236" text-anchor="middle">4</text>
-<text x="452.0" y="236" text-anchor="middle">5</text>
-<text x="530.4" y="236" text-anchor="middle">6</text>
+<text x="141.7" y="236" text-anchor="middle">1</text>
+<text x="223.3" y="236" text-anchor="middle">2</text>
+<text x="305.0" y="236" text-anchor="middle">3</text>
+<text x="386.7" y="236" text-anchor="middle">4</text>
+<text x="468.3" y="236" text-anchor="middle">5</text>
+<text x="550.0" y="236" text-anchor="middle">6</text>
 <text x="305.0" y="254" text-anchor="middle">minutes into the run</text><text x="14" y="125.0" transform="rotate(-90 14 125.0)" text-anchor="middle">cores</text>
-<polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="138.4,181.2 158.0,194.6 177.6,195.0 197.2,219.6 216.8,219.6 236.4,219.6 256.0,219.6 275.6,219.6 295.2,219.6 314.8,219.6 334.4,219.6 354.0,219.6 373.6,219.6 393.2,219.6 412.8,219.6 432.4,219.6 452.0,219.6 471.6,219.6 491.2,219.6 510.8,219.6 530.4,219.6 550.0,219.7"/>
-<rect x="562" y="28" width="10" height="3" fill="#2563eb"/><text x="576" y="32">pod 7m7lz</text>
-<polyline fill="none" stroke="#dc2626" stroke-width="1.5" points="60.0,219.7 79.6,193.9 99.2,107.2 118.8,124.1 138.4,122.5 158.0,177.7 177.6,182.6 197.2,171.8 216.8,172.1 236.4,128.0 256.0,118.2 275.6,144.5 295.2,166.0 314.8,191.2 334.4,156.1 354.0,131.3 373.6,104.2 393.2,124.3 412.8,145.8 432.4,156.3 452.0,168.6 471.6,101.1 491.2,110.8 510.8,131.4 530.4,142.7 550.0,184.4"/>
-<rect x="562" y="42" width="10" height="3" fill="#dc2626"/><text x="576" y="46">pod hcl2b</text>
+<line x1="60" y1="166.8" x2="550" y2="166.8" stroke="#dc2626" stroke-dasharray="4 3"/><text x="546" y="162.8" text-anchor="end" fill="#dc2626">target 0.14</text>
+<polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="202.9,200.1 223.3,207.4 243.8,185.2 264.2,184.5 284.6,178.2 305.0,185.2 325.4,188.2 345.8,198.4 366.2,216.9 386.7,213.5 407.1,195.2 427.5,187.7 447.9,194.5 468.3,210.7 488.8,211.9 509.2,211.3 529.6,208.0 550.0,208.4"/>
+<rect x="562" y="28" width="10" height="3" fill="#2563eb"/><text x="576" y="32">pod gkncw</text>
+<polyline fill="none" stroke="#dc2626" stroke-width="1.5" points="80.4,202.3 100.8,173.2 121.2,171.2 141.7,127.0 162.1,146.6 182.5,148.9 202.9,198.7 223.3,200.0 243.8,204.8 264.2,204.6 284.6,144.3 305.0,166.5 325.4,176.9 345.8,206.3 366.2,203.9 386.7,203.6 407.1,190.1 427.5,186.6 447.9,187.8 468.3,188.3 488.8,193.1 509.2,186.8 529.6,197.6 550.0,184.0"/>
+<rect x="562" y="42" width="10" height="3" fill="#dc2626"/><text x="576" y="46">pod h4jnb</text>
+<polyline fill="none" stroke="#16a34a" stroke-width="1.5" points="141.7,206.0 162.1,206.3 182.5,207.7 202.9,219.6 223.3,219.6 243.8,218.3 264.2,218.2 284.6,218.0 305.0,219.1 325.4,219.4 345.8,219.4 366.2,218.7 386.7,213.6 407.1,210.3 427.5,212.0 447.9,217.3 468.3,219.4 488.8,218.0 509.2,217.5 529.6,215.5 550.0,203.9"/>
+<rect x="562" y="56" width="10" height="3" fill="#16a34a"/><text x="576" y="60">pod t8d5w</text>
 </svg>
