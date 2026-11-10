@@ -110,25 +110,31 @@ jobs:
       contents: read
       packages: write
     strategy:
+      # Each image reports for itself: one failing doesn't hide the others' results.
+      fail-fast: false
       matrix:
         service: [api, gateway, scanner]
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/vaultgate-${{ matrix.service }}
     steps:
       - uses: actions/checkout@v7
-      - name: Build
-        run: |
-          docker build -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:main" \
-            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            ${{ matrix.service }}
-      - name: Publish
+      # Built and pushed by BuildKit itself (a docker-container builder), as one plain
+      # image manifest. The Docker daemon's own push was refused by GHCR ("denied", on the
+      # manifest, after the layers). The cause is not established; this avoids the two things
+      # that push did differently: it mounted layers it had seen in other repositories
+      # (the runner's preloaded images share the distroless base's) and pushed an index
+      # with a provenance attestation.
+      - name: Build and publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker push "$IMAGE:$GITHUB_SHA"
-          docker push "$IMAGE:main"
+          docker buildx create --use --name publish
+          docker buildx build --push --provenance=false \
+            -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:main" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            ${{ matrix.service }}
 
   # The whole system on Kubernetes (M7): a k3d cluster, Argo CD syncing this commit from
   # GitHub, running this commit's images, then the vault end-to-end check and the
