@@ -7,3 +7,5 @@ kubePrometheusStack: 92.21.1
 # cert-manager and trust-manager (M9, ADR 0012), likewise.
 certManager: v1.21.3
 trustManager: v0.25.0
+# KEDA (M12, ADR 0016), likewise: the gateway's autoscaler on transfers in progress.
+keda: 2.21.0

@@ -16,7 +16,8 @@
 #                          Tempo and logs in Loki included), plus cluster checks: Argo CD
 #                          in sync, OpenBao unsealed with its CA chained to the root, TLS on
 #                          the API, gateway, Keycloak and PostgreSQL, the
-#                          gateway's autoscaler reading CPU, the network policy closing the
+#                          gateway's autoscaler reading CPU and the transfers in
+#                          progress (KEDA), the network policy closing the
 #                          API's internal port, Prometheus scraping every service,
 #                          Grafana's dashboards, and Alertmanager's mail; then negative
 #                          tests: what the API, the gateway and the cluster must refuse
@@ -281,7 +282,7 @@ up() {
   wait_for 900 "vaultgate-deps to be synced and healthy" app_ready vaultgate-deps
   secrets_rotate
   aws_setup
-  for app in cert-manager kube-prometheus-stack trust-manager vaultgate-observability \
+  for app in cert-manager kube-prometheus-stack trust-manager keda vaultgate-observability \
     vaultgate-pki vaultgate; do
     wait_for 900 "$app to be synced and healthy" app_ready "$app"
   done
@@ -298,7 +299,7 @@ restart() {
 check_cluster() {
   log "Argo CD: every application synced and healthy"
   for app in vaultgate-local vaultgate-deps vaultgate-openbao cert-manager trust-manager \
-    vaultgate-pki kube-prometheus-stack vaultgate-observability vaultgate; do
+    vaultgate-pki kube-prometheus-stack keda vaultgate-observability vaultgate; do
     app_ready "$app" || {
       kubectl -n argocd get application "$app" -o yaml >&2
       return 1
@@ -306,11 +307,21 @@ check_cluster() {
     echo "ok  $app is Synced and Healthy"
   done
 
-  log "the gateway's autoscaler reads CPU"
-  wait_for 300 "the HPA to report CPU utilization" \
-    sh -c "kubectl -n vaultgate get hpa vaultgate-gateway -o jsonpath='{.status.currentMetrics[0].resource.current.averageUtilization}' | grep -q '[0-9]'"
-  kubectl -n vaultgate get hpa vaultgate-gateway
-  echo "ok  the gateway scales on CPU"
+  # KEDA (M12) manages the gateway's HorizontalPodAutoscaler from the chart's
+  # ScaledObject: it must have accepted both triggers, and the autoscaler must have a
+  # current value for each, CPU from metrics-server and the transfers from Prometheus
+  # through KEDA's metrics server.
+  log "the gateway's autoscaler reads CPU and the transfers in progress (KEDA)"
+  local hpa=keda-hpa-vaultgate-gateway
+  wait_for 300 "KEDA to accept the gateway's ScaledObject" \
+    sh -c "kubectl -n vaultgate get scaledobject vaultgate-gateway -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' | grep -q True"
+  wait_for 300 "the autoscaler to report CPU utilization" \
+    sh -c "kubectl -n vaultgate get hpa $hpa -o jsonpath='{.status.currentMetrics[?(@.type==\"Resource\")].resource.current.averageUtilization}' | grep -q '[0-9]'"
+  wait_for 300 "the autoscaler to report the transfers in progress" \
+    sh -c "kubectl -n vaultgate get hpa $hpa -o jsonpath='{.status.currentMetrics[?(@.type==\"External\")].external.current.averageValue}' | grep -q '[0-9]'"
+  kubectl -n vaultgate get scaledobject vaultgate-gateway
+  kubectl -n vaultgate get hpa "$hpa"
+  echo "ok  the gateway scales on CPU and on transfers in progress"
 
   log "network policy: only the gateway and the scanner reach the API's internal port"
   local probe=(kubectl -n vaultgate run "netpol-probe-$RANDOM" --rm -i --restart=Never --quiet

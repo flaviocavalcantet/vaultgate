@@ -15,7 +15,8 @@ It also keeps a short run in CI, so a change that breaks the claims shows up on 
 users, judged with Prometheus's view of the same minutes.**
 
 - **Against the k3d cluster** (ADR 0009, 0010): the deployment shape, with the
-  gateway's CPU autoscaler active and Prometheus recording memory, CPU and latency per
+  gateway's autoscaler active (on CPU, and since M12 on transfers in progress too,
+  ADR 0016) and Prometheus recording memory, CPU and latency per
   pod. Results come from one machine, a laptop or a CI runner, and the report says
   which. They measure VaultGate's own behaviour (flat memory, scaling, where it
   saturates), not what production hardware would do.

@@ -27,6 +27,8 @@ render() {
     --repo https://charts.jetstack.io --version "$(pinned certManager)"
   helm template trust-manager trust-manager --skip-tests -n cert-manager --kube-version "$kube" \
     --repo https://charts.jetstack.io --version "$(pinned trustManager)"
+  helm template keda keda --skip-tests -n keda --kube-version "$kube" \
+    --repo https://kedacore.github.io/charts --version "$(pinned keda)"
   grep -h -- '--image=' scripts/k3d.sh
 }
 

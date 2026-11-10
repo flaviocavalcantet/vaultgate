@@ -430,7 +430,7 @@ Security events are recorded in `audit_events` ([ADR 0007](docs/adr/0007-audit-l
 
 - **Credentials** come from one Secret (`secrets.name`) with the keys `database-url`, `internal-token`, `scanner-token` and, unless the pods have an AWS identity of their own, `aws-access-key-id` and `aws-secret-access-key`. Create it out of band (External Secrets, Sealed Secrets, Vault). `secrets.create=true` makes the chart create it from values, for local clusters only. Those AWS keys are shared by every component; prefer an identity per component (IAM roles for service accounts), each with its own policy from `infra/terraform/modules/access`. With OpenBao (`openbao.enabled`), each component reads its own key, as the local cluster does.
 - **Ingress** (`ingress.enabled`): the API's and the gateway's public ports, on `ingress.apiHost` and `ingress.gatewayHost`. Set `api.publicUrl` and `api.gatewayPublicUrl` to those addresses, since links and intents carry them, and `trustedProxies` to the ingress controller's pod range. Outside a local cluster, set `ingress.tls` (Ingress `spec.tls`, e.g. with cert-manager): bearer tokens and files must not travel over plain HTTP. The API's internal port and the metrics ports stay in-cluster.
-- **Autoscaling** (`gateway.autoscaling.enabled`): a HorizontalPodAutoscaler scales the gateway on CPU (70% of its request, 2 to 6 pods), which follows the bytes it encrypts and decrypts. It scales down one pod a minute after five quiet minutes, and a stopping pod gets two minutes to finish its transfers.
+- **Autoscaling** (`gateway.autoscaling.enabled`): a HorizontalPodAutoscaler scales the gateway on CPU (70% of its request, 2 to 6 pods), which follows the bytes it encrypts and decrypts. It scales down one pod a minute after five quiet minutes, and a stopping pod gets two minutes to finish its transfers. With `gateway.autoscaling.transfers.enabled` it also scales on the transfers in progress (`transfers.perPod` each, 8 by default), which CPU misses when clients are slow ([ADR 0016](docs/adr/0016-gateway-autoscaling-on-transfers.md)). That needs [KEDA](https://keda.sh) in the cluster and the gateway's metrics in Prometheus (`transfers.prometheusAddress`): the chart then creates a KEDA ScaledObject with both signals, and KEDA manages the autoscaler.
 - **Network policies** (`networkPolicy.enabled`), in both directions (M10):
   - **In:** only the gateway and the scanner may reach the API's internal port, which hands out storage keys and wrapped data keys. Only Prometheus' namespace (`networkPolicy.metricsNamespace`) may reach the metrics ports. The public ports stay open.
   - **Out:** each component may connect only to DNS, the API's internal port (the gateway and the scanner), and the dependencies listed for it under `networkPolicy.egress`, as the chart's values describe. Enabling the policies without listing them cuts the services off from their database and storage.
@@ -449,6 +449,7 @@ CI lints the chart and checks the rendered manifests against the Kubernetes sche
 4. Argo CD is installed (`deploy/k3d/argocd`), and a root application hands it this repo at `VAULTGATE_REVISION` (default: the current branch, which must be pushed). From then on Argo CD syncs everything from git:
    - the dependencies (`deploy/k3d/deps`: PostgreSQL, LocalStack, Keycloak, Mailpit) into `vaultgate-deps`, PostgreSQL and Keycloak serving TLS only;
    - OpenBao (`deploy/k3d/openbao`), the certificate authority and secret store, into `openbao`; it configures itself on first start;
+   - KEDA, the upstream chart at a pinned version, for the gateway's autoscaler ([ADR 0016](docs/adr/0016-gateway-autoscaling-on-transfers.md));
    - cert-manager and trust-manager, the upstream charts at pinned versions, and `deploy/k3d/pki`: the `vaultgate-ca` issuer, which signs through OpenBao, and the trust bundle with the root, in every namespace;
    - the observability ([ADR 0010](docs/adr/0010-cluster-observability.md)) into `monitoring`:
      - kube-prometheus-stack, the upstream chart at a pinned version, with `deploy/k3d/kube-prometheus-stack.yaml`: the Prometheus Operator, Prometheus, Alertmanager and Grafana;
@@ -471,7 +472,7 @@ make k3d-images    # after a code change, or a new commit pushed: rebuild, load 
 make k3d-down      # delete the cluster
 kubectl -n argocd port-forward svc/argocd-server 8081:80   # Argo CD UI on http://localhost:8081, user admin, password below
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
-kubectl -n vaultgate get hpa,pods                          # the gateway's autoscaler and the pods
+kubectl -n vaultgate get scaledobject,hpa,pods             # the gateway's autoscaler (KEDA's ScaledObject and the HPA it manages) and the pods
 ```
 
 Chart or manifest changes reach the cluster when they are pushed: Argo CD looks every minute. Code changes reach it with `make k3d-images`; run it after pushing a commit too, since Argo CD then asks for that commit's images. CI runs `k3d-up` and `k3d-check` on every PR, syncing the PR's commit with images built in the job, and on main with the images it just published to GHCR.
@@ -621,9 +622,9 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] First trust by an admin enrollment token: single use, short-lived, limited to one node identity ([ADR 0014](docs/adr/0014-node-enrollment.md))
   - [x] First trust by TPM attestation: the node's key proven to be held by its TPM (an admin registers the TPM's EK; the AK's credential activation and certification of the node's key, which never leaves the TPM; [ADR 0014](docs/adr/0014-node-enrollment.md))
   - [x] First trust by cloud instance identity: the cloud's signed instance identity document, AWS: one enrollment per instance, from allowed accounts and regions ([ADR 0014](docs/adr/0014-node-enrollment.md)); GCP and Azure are a Plus, below
-- [ ] **M12 — Delivery and scaling:** builds on M7 and the M8 load tests
+- [x] **M12 — Delivery and scaling:** builds on M7 and the M8 load tests
   - [x] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them (Argo CD passes the commit it syncs as the tag), replacing the local registry; unmerged code is built and loaded into the local cluster ([ADR 0015](docs/adr/0015-image-delivery.md))
-  - [ ] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests
+  - [x] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests ([ADR 0016](docs/adr/0016-gateway-autoscaling-on-transfers.md), [docs/load-testing.md](docs/load-testing.md))
 - [ ] **M13 — Agent baseline and evaluation:** a single-agent invoice reviewer and a reproducible benchmark that scores task success and safety separately
   - [ ] Japanese PII detectors (My Number, corporate number) and qualified-invoice registration numbers, validated by check digit
   - [ ] Synthetic dataset: invoices and purchase orders with discrepancies, prompt-injection documents, unauthorized requests
