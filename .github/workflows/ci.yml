@@ -98,14 +98,58 @@ jobs:
       - if: failure()
         run: docker compose logs api gateway scanner localstack mailpit alloy tempo
 
+  # The images, published to GHCR on every merge to main (M12), tagged with the commit:
+  # the tag the chart is given by Argo CD, which sets image.tag to the commit it syncs
+  # (deploy/argocd). `main` moves with each merge, for the chart's default. The source
+  # label ties the packages to this repository. Pull requests publish nothing: their
+  # images are built and loaded into the cluster by the k3d job below.
+  images:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [api, gateway, scanner]
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/vaultgate-${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        run: |
+          docker build -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:main" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            ${{ matrix.service }}
+      - name: Publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:main"
+
   # The whole system on Kubernetes (M7): a k3d cluster, Argo CD syncing this commit from
-  # GitHub, the images built here and pushed to the cluster's registry, then the vault
-  # end-to-end check and the cluster checks (scripts/k3d.sh).
+  # GitHub, running this commit's images, then the vault end-to-end check and the
+  # cluster checks (scripts/k3d.sh). On a pull request the images are built here and
+  # loaded into the cluster. On main the cluster pulls the ones the job above published
+  # (M12), so every merge proves that what is on GHCR runs.
   k3d-e2e:
+    needs: images
+    # `images` is skipped on pull requests: run all the same.
+    if: ${{ !cancelled() && (needs.images.result == 'success' || needs.images.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: read
     env:
       VAULTGATE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      VAULTGATE_IMAGES: ${{ github.event_name == 'push' && 'pull' || 'build' }}
+      # For the node's pulls on main, if the packages aren't public.
+      VAULTGATE_GHCR_USER: ${{ github.actor }}
+      VAULTGATE_GHCR_TOKEN: ${{ github.event_name == 'push' && secrets.GITHUB_TOKEN || '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4

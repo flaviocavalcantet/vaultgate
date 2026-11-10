@@ -443,8 +443,8 @@ CI lints the chart and checks the rendered manifests against the Kubernetes sche
 
 `make k3d-up` runs the whole system on a local Kubernetes cluster, deployed the GitOps way ([ADR 0009](docs/adr/0009-local-kubernetes.md)). Stop compose first: the cluster uses the same host ports.
 
-1. k3d creates the cluster `vaultgate` (`deploy/k3d/cluster.yaml`), with its own image registry at `localhost:5050`.
-2. The API, gateway and scanner images are built from your working tree and pushed there.
+1. k3d creates the cluster `vaultgate` (`deploy/k3d/cluster.yaml`).
+2. The API, gateway and scanner images are built from your working tree and loaded into the cluster's node, named as the published ones are: `ghcr.io/flaviocavalcantet/vaultgate-<service>:<commit>`, the commit Argo CD will sync ([ADR 0015](docs/adr/0015-image-delivery.md)). With `VAULTGATE_IMAGES=pull` nothing is built, and the node pulls the images CI published for that commit (commits on main have them).
 3. The root CA is created, unless you have one ([ADR 0012](docs/adr/0012-pki-and-key-management.md)). It is kept in `~/.vaultgate/pki`, outside the cluster, with its key encrypted by a passphrase: `k3d-up` asks for it, or reads `VAULTGATE_PKI_PASSPHRASE`. The root signs OpenBao's TLS certificate, which goes into the cluster as a Secret next to OpenBao's seal key.
 4. Argo CD is installed (`deploy/k3d/argocd`), and a root application hands it this repo at `VAULTGATE_REVISION` (default: the current branch, which must be pushed). From then on Argo CD syncs everything from git:
    - the dependencies (`deploy/k3d/deps`: PostgreSQL, LocalStack, Keycloak, Mailpit) into `vaultgate-deps`, PostgreSQL and Keycloak serving TLS only;
@@ -467,14 +467,14 @@ Alertmanager routes every alert by email to Mailpit: `oncall@vaultgate.local` fo
 
 ```bash
 make k3d-check     # vault e2e against the cluster, traces included; Argo CD synced, OpenBao and its CA, TLS, autoscaler, network policies (in and out), scrape targets, dashboards, Alertmanager mail
-make k3d-images    # after a code change: rebuild, push, restart the pods
+make k3d-images    # after a code change, or a new commit pushed: rebuild, load into the cluster, restart the pods
 make k3d-down      # delete the cluster
 kubectl -n argocd port-forward svc/argocd-server 8081:80   # Argo CD UI on http://localhost:8081, user admin, password below
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
 kubectl -n vaultgate get hpa,pods                          # the gateway's autoscaler and the pods
 ```
 
-Chart or manifest changes reach the cluster when they are pushed: Argo CD looks every minute. Code changes reach it with `make k3d-images`. CI runs `k3d-up` and `k3d-check` on every PR, syncing the PR's commit.
+Chart or manifest changes reach the cluster when they are pushed: Argo CD looks every minute. Code changes reach it with `make k3d-images`; run it after pushing a commit too, since Argo CD then asks for that commit's images. CI runs `k3d-up` and `k3d-check` on every PR, syncing the PR's commit with images built in the job, and on main with the images it just published to GHCR.
 
 ### Node enrollment
 
@@ -622,7 +622,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] First trust by TPM attestation: the node's key proven to be held by its TPM (an admin registers the TPM's EK; the AK's credential activation and certification of the node's key, which never leaves the TPM; [ADR 0014](docs/adr/0014-node-enrollment.md))
   - [x] First trust by cloud instance identity: the cloud's signed instance identity document, AWS: one enrollment per instance, from allowed accounts and regions ([ADR 0014](docs/adr/0014-node-enrollment.md)); GCP and Azure are a Plus, below
 - [ ] **M12 — Delivery and scaling:** builds on M7 and the M8 load tests
-  - [ ] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them, replacing the local registry
+  - [x] Images built and published by CI to GHCR on every merge, tagged by commit, with the chart pinned to them (Argo CD passes the commit it syncs as the tag), replacing the local registry; unmerged code is built and loaded into the local cluster ([ADR 0015](docs/adr/0015-image-delivery.md))
   - [ ] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests
 - [ ] **M13 — Agent baseline and evaluation:** a single-agent invoice reviewer and a reproducible benchmark that scores task success and safety separately
   - [ ] Japanese PII detectors (My Number, corporate number) and qualified-invoice registration numbers, validated by check digit

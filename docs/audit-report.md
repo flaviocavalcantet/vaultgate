@@ -87,7 +87,7 @@ on every pull request, so a regression fails the build.
 | TM-8 | A share is as safe as the recipient's mailbox | Medium | Shares expire, count downloads and can be revoked at once; more would need recipients to have accounts (ADR 0006) |
 | TM-10 | A superuser can rewrite the audit log and the logs together | Medium | External write-once anchoring is the audit log's next step, outside M10 (ADR 0007) |
 | TM-9 | Anyone who may create a `Certificate` in VaultGate's namespace can get a service's identity | Low | They can already read the services' Secrets; pod-bound identities would take SPIRE or the CSI driver, which M11 considers (ADR 0013) |
-| TM-11 | Images aren't signed or pinned by digest | Low | M12 publishes them to GHCR, pinned in the chart; signing and provenance belong there |
+| TM-11 | Images aren't signed or pinned by digest | Low | M12 publishes them to GHCR, run by commit tag (ADR 0015); signing, provenance and digests are still to do |
 | TM-12 | The local cluster's shortcuts: a seal key in a Secret, Keycloak in development mode with a bootstrap password, Secrets not encrypted at rest | Low | The local cluster is for development and CI; production uses a KMS seal, a real identity provider and the platform's encryption |
 
 Further findings were accepted in the scans' triage as false positives or tooling-only:

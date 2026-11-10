@@ -10,6 +10,11 @@ spec:
     repoURL: https://github.com/flaviocavalcantet/vaultgate
     targetRevision: main
     path: deploy/helm/vaultgate
+    helm:
+      # The images of the commit being synced (M12): CI publishes them tagged with it.
+      parameters:
+        - name: image.tag
+          value: $ARGOCD_APP_REVISION
   destination:
     server: https://kubernetes.default.svc
     namespace: vaultgate

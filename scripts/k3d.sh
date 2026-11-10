@@ -2,14 +2,16 @@
 # The local Kubernetes cluster (M7, deploy/k3d): k3d, Argo CD syncing this repo, and
 # VaultGate with its dependencies in the cluster.
 #
-#   scripts/k3d.sh up      create the cluster, build and push the images, give OpenBao its
+#   scripts/k3d.sh up      create the cluster, build the images and load them into it (or
+#                          have it pull the published ones), give OpenBao its
 #                          TLS certificate (from the offline root) and seal key, install
 #                          Argo CD, hand it the repo, wait until everything is synced and
 #                          healthy, install the intermediate CA (the PKI ceremony), seed
 #                          the services' credentials, create the bucket, key, queues and
 #                          one IAM user per service (Terraform) and give each service its
 #                          own AWS key, then seed the local access policy
-#   scripts/k3d.sh images  rebuild and push the images, and restart the pods to pull them
+#   scripts/k3d.sh images  rebuild the images, load them into the cluster and restart the
+#                          pods
 #   scripts/k3d.sh check   the vault end-to-end check against the cluster (traces in
 #                          Tempo and logs in Loki included), plus cluster checks: Argo CD
 #                          in sync, OpenBao unsealed with its CA chained to the root, TLS on
@@ -20,12 +22,18 @@
 #                          tests: what the API, the gateway and the cluster must refuse
 #   scripts/k3d.sh zap     OWASP ZAP against the API and the gateway (passive and active
 #                          scans); its reports go to VAULTGATE_ZAP_DIR (zap-reports)
-#   scripts/k3d.sh down    delete the cluster (and its registry)
+#   scripts/k3d.sh down    delete the cluster
 #
 # Argo CD deploys what is in git, not the working tree: it syncs VAULTGATE_REVISION
-# (default: the current branch, which must be pushed) from VAULTGATE_REPO. The images
-# are the exception: they are built from the working tree and pushed to the cluster's
-# registry (localhost:5050).
+# (default: the current branch, which must be pushed) from VAULTGATE_REPO, and runs the
+# images tagged with that commit (M12): ghcr.io/flaviocavalcantet/vaultgate-<service>:<commit>.
+# CI publishes those on every merge to main. For anything else the images are the
+# exception to "what is in git": they are built from the working tree under that same
+# name and loaded straight into the cluster's node (`k3d image import`), which then has
+# no reason to pull. VAULTGATE_IMAGES=pull builds nothing and has the node pull the
+# published images instead (VAULTGATE_GHCR_TOKEN, with VAULTGATE_GHCR_USER, if the
+# packages are private). After a new commit is pushed, Argo CD wants that commit's
+# images: run `make k3d-images` again.
 #
 # The root CA (ADR 0012) is kept in ~/.vaultgate/pki (VAULTGATE_PKI_DIR), its key
 # encrypted with a passphrase that `up` asks for, or takes from VAULTGATE_PKI_PASSPHRASE.
@@ -38,9 +46,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 CLUSTER=vaultgate
-REGISTRY=localhost:5050
+# The chart's default registry (deploy/helm/vaultgate/values.yaml).
+REGISTRY=ghcr.io/flaviocavalcantet
 REPO=${VAULTGATE_REPO:-https://github.com/flaviocavalcantet/vaultgate}
 REVISION=${VAULTGATE_REVISION:-$(git rev-parse --abbrev-ref HEAD)}
+IMAGES=${VAULTGATE_IMAGES:-build}
 if [[ -n ${CI:-} ]]; then
   export VAULTGATE_PKI_DIR=${VAULTGATE_PKI_DIR:-${RUNNER_TEMP:-/tmp}/vaultgate-pki}
 fi
@@ -65,11 +75,49 @@ wait_for() { # wait_for <seconds> <description> <command...>
   done
 }
 
+# The images' tag: the commit Argo CD syncs, which it passes to the chart as image.tag
+# (deploy/argocd). A branch is resolved where Argo CD resolves it: on the remote.
+image_tag() {
+  if [[ $REVISION =~ ^[0-9a-f]{40}$ ]]; then
+    echo "$REVISION"
+    return
+  fi
+  local commit
+  commit=$(git ls-remote "$REPO" "refs/heads/$REVISION" | cut -f1)
+  if [[ -z $commit ]]; then
+    echo "$REVISION is not a branch of $REPO: push it first (Argo CD syncs what is pushed)" >&2
+    return 1
+  fi
+  echo "$commit"
+}
+
 images() {
+  local tag service names=()
+  tag=$(image_tag)
+  if [[ $IMAGES == pull ]]; then
+    # The node pulls the published images itself, now: a missing image or a registry
+    # problem fails here with its reason, not as pods stuck in ImagePullBackOff behind a
+    # long wait.
+    local creds=()
+    if [[ -n ${VAULTGATE_GHCR_TOKEN:-} ]]; then
+      creds=(--creds "${VAULTGATE_GHCR_USER:-vaultgate}:$VAULTGATE_GHCR_TOKEN")
+    fi
+    for service in api gateway scanner; do
+      log "image $REGISTRY/vaultgate-$service:$tag, pulled by the node"
+      docker exec "k3d-$CLUSTER-server-0" crictl pull "${creds[@]}" "$REGISTRY/vaultgate-$service:$tag"
+    done
+    return
+  fi
   for service in api gateway scanner; do
-    log "image vaultgate-$service"
-    docker build -t "$REGISTRY/vaultgate-$service:dev" "$service"
-    docker push "$REGISTRY/vaultgate-$service:dev"
+    log "image vaultgate-$service, from the working tree, as $tag"
+    docker build -t "$REGISTRY/vaultgate-$service:$tag" "$service"
+    names+=("$REGISTRY/vaultgate-$service:$tag")
+  done
+  log "loading the images into the cluster"
+  k3d image import --cluster "$CLUSTER" "${names[@]}"
+  # k3d reports a failed import as a warning: make sure the node has them.
+  for name in "${names[@]}"; do
+    docker exec "k3d-$CLUSTER-server-0" crictl inspecti "$name" >/dev/null
   done
 }
 
@@ -202,9 +250,6 @@ up() {
     k3d cluster create --config deploy/k3d/cluster.yaml
   fi
   images
-  # The node pulls one image itself, so a registry problem fails here with its reason,
-  # not as pods stuck in ImagePullBackOff behind a long wait.
-  docker exec "k3d-$CLUSTER-server-0" crictl pull "vaultgate-registry.localhost:5000/vaultgate-api:dev"
 
   pki_bootstrap
 

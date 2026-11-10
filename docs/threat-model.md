@@ -121,7 +121,7 @@ Each row is a threat to an element or flow. The **status** is one of:
 | An audit event changed or deleted | A trigger refuses it for every role; a hash chain whose head is anchored in the logs (ADR 0007) | mitigated |
 | The audit log and the logs rewritten together by someone with superuser rights | Not prevented: external write-once anchoring is future work (ADR 0007) | accepted (TM-10) |
 | Manifests changed in the cluster | Argo CD syncs from git and reverts drift | mitigated |
-| A tampered image | Built from the repository, scanned by Trivy, pulled from the cluster's own registry; not signed, and not pinned by digest | accepted (TM-11) |
+| A tampered image | Built from the repository by CI, scanned by Trivy, published to GHCR and run by commit tag (ADR 0015); not signed, and not pinned by digest | accepted (TM-11) |
 
 ### Repudiation
 
@@ -268,8 +268,9 @@ Each row is a threat to an element or flow. The **status** is one of:
 - **TM-10. A superuser can rewrite the audit log and the logs together** (ADR 0007).
   External write-once anchoring, signed with the M9 PKI's keys, is the next step for
   the audit log, outside M10.
-- **TM-11. Images aren't signed or pinned by digest.** M12 moves them to GHCR with the
-  chart pinned to them; signing and provenance belong there.
+- **TM-11. Images aren't signed or pinned by digest.** M12 publishes them to GHCR and
+  the chart runs them by commit tag (ADR 0015). A tag can be moved by whoever can write
+  the packages: signing, provenance and digests are still to do.
 - **TM-12. The local cluster's own shortcuts.**
   - OpenBao's seal key is a Kubernetes Secret.
   - Keycloak runs in development mode with a bootstrap admin password in its manifest.
