@@ -1,0 +1,9 @@
+{
+ "_about": "Real TPM 2.0 output (swtpm 0.7, tpm2-tools 5.6): an RSA EK, an RSA AK (tpm2_createak), an ECC P-256 key made in the TPM (fixedtpm|fixedparent|sensitivedataorigin|sign), and the AK's certification of it (tpm2_certify -g sha256 -f plain).",
+ "ek_pem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAukX9vSKY/FaLe+poP0ff\n0aVTgO0bpkshBbWCW5O9cy4bzhLBHqCARPHaKSeqxcIyW+R58M2pIEpewegJH6Eq\nxtlJTgo/Mm3lePnlMiGcn07UL2NH50qd02zfntyTjH2BmrFYVn/rIpM5p0nS2tJN\np04LwkeaKem44dYNHDzX7mfpjZ0bKgQT8l2zx+o6f16+B18fzaQcxEp/DqALHgW+\nngX6rHW2xpNOtsa+8+C+dOL6zfFM1RXVtl+3gM3MDAfQRqmA5Kw5lHhFBEm5st8+\nO4FX7d1uLSRAAzgET07G37Azz6rjQICJ32UkVlce5ENwTZ7oPiv/wTpykY6GOlkg\nVwIDAQAB\n-----END PUBLIC KEY-----\n",
+ "ak_pub": "ARgAAQALAAUAcgAAABAAFAALCAAAAAAAAQCq4Ca5dkKtmFngsscGj/XciojXmqXr1GgGvqL+9i56R756Wnsajo3Uyaps2Kb0H5RzA2mYW5SODerhUI3An2cVY1opNohXNA8y4lkzSA0nPDmM0AtB5C8Uj9insk8ByQN7SepDue6bPWs9rS3lAQNsXN/9oU0whAbDuxEp+df2dUBghngV7PQUA9zHRblc/UlhSKGMfbE32tr2B5Rp/zeNoD6VmNnMeAz69QFAUidTZT1BqaLajJ2RTU+C2OT1RMzC+ur9JVKWIAYfjvkwDfSdFhc//6Y9VWt2LE3o5lfSNvdZZeFG+zOZ17/NkRE3jcTUCHh8W3VgI7kkU8iN6Rwz",
+ "ak_name": "AAuuGzoM5ZAcysyu8wiJdJwsPh3wENfsl8cu45ZeQM6OTQ==",
+ "node_public": "AFgAIwALAAQAcgAAABAAGAALAAMAEAAgvT4GCeHnj2QliGHGlYsCRjGH9dolU8bjS5Bs5nnN5bEAINECT+Uy+o1U25un7A6hN4fmfpnvHr9Q9mzPc7LoXtql",
+ "attest": "/1RDR4AXACIAC2noME7dQI93iDZX93hit1WBq9S0A0W/cTxLl4JoiP6GAAQA/1WqAAAAAAAAKzUAAAACAAAAAAEgGRAjABY2NgAiAAu0l6NeG7GUJppxfjSWPRLveG+HsLr175O4vjZAy8LH5QAiAAvDWP+dWnjfGiVjCL3bidcc6qT9Ax1RzGHTtL4dh9EEQQ==",
+ "signature": "Dg4afIODdWTtFk8rxXfYe7Hm59wR8xf4mgiZDPnoP0bvUlltfrMDQTxqWfaiIlLJDUy+zggYtOFfnTBcFuq3qIrjQLqkHy6bo7QrsYXBlnxptaY0AGjJZ+JbIwjtiMiinUdnUF9oJWrFouKEy3u0y5PKby/9blKdoA2OKGv2O2LIUIEPpj6HZCJPEJ9wgJOYUQ/iFaNKjjsglNkq1hcuWfGR284POZ4iB9zlfBGbdiXoQfdtB00sciVIcGIOhFBXEIgkee5CiP7xIMPXCc50gMZqwuLErZqyM9P6ByPH4dmhtGC/PyMTR5Ib4XfoIkOVlUBv3FG9sB3hgBr820Z81w=="
+}

@@ -2,8 +2,8 @@
 
 **Status:** Accepted (M11, in steps: the nodes' CA; then enrollment, with admin approval
 as its first first-trust method; then first trust by a Keycloak client, and by an
-admin's enrollment token, and by cloud instance identity (AWS); the other methods
-follow, and extend this record)
+admin's enrollment token, by cloud instance identity (AWS), and by TPM attestation,
+which completes M11; GCP's and Azure's instance identity are a later extra)
 
 ## Context
 
@@ -188,6 +188,72 @@ once.**
 - **The node's client** reads the token from `VAULTGATE_ENROLLMENT_TOKEN`, or asks for
   it, and never takes it as a command-line argument, which shell history would keep.
 
+### First trust by TPM attestation
+
+**A node whose TPM an admin registered enrolls with a key its TPM proves it holds, and can
+never give away.** This is TPM 2.0's attestation chain, as Keylime and SPIRE's TPM
+attestors use it.
+
+- **The TPM is registered by its endorsement key (EK).** The node shows the EK's
+  fingerprint (`vaultgate_node.py tpm-ek`: SHA-256 over its SubjectPublicKeyInfo), and
+  an admin registers it for one node name (`POST /admin/nodes/tpms`). The admin learns
+  it out of band, as for an approval's fingerprint.
+  - A registration lasts a week, enrolls once, and can be revoked.
+  - A TPM has one usable registration at a time.
+  - EK certificates from TPM manufacturers aren't checked: the admin's registration pins
+    the very TPM, which says more than "a genuine TPM".
+- **Step 1** (`POST /nodes/enrollments/by-tpm`): the node sends:
+  - the EK;
+  - an attestation key (AK), a restricted RSA signing key the node made in its TPM;
+  - the node's key, ECDSA P-256, made in the TPM, with its public area;
+  - the AK's certification of that key (`TPM2_Certify`: a `TPMS_ATTEST` and the AK's
+    signature);
+  - a CSR for the key.
+
+  VaultGate (`vaultgate_api.tpm`) parses the TPM's own structures and checks that:
+  - the EK is registered;
+  - the AK is a restricted signing key fixed to its TPM;
+  - the node's key is fixed to its TPM (`fixedTPM`, `fixedParent`), was made there
+    (`sensitiveDataOrigin`), and is an unrestricted signing key;
+  - the AK's signature verifies, and certifies the node's key's name;
+  - the CSR is for that key.
+
+  It then answers with a credential: `TPM2_MakeCredential`, done in the API with no TPM.
+  It holds a random secret, encrypted to the EK and bound to the AK's name, in the file
+  format `tpm2_activatecredential` reads.
+- **Step 2** (`POST /nodes/enrollments/by-tpm/{id}/complete`): the node's TPM decrypts
+  the credential. A TPM does that only if it holds that EK, and an AK of that name. The
+  node sends the secret back: it has 5 minutes and 3 tries. The stored CSR is signed,
+  and the registration is used.
+- **What it proves together:**
+  - the AK is in the registered TPM (activation);
+  - the node's key is in the same TPM, for good (certification);
+  - the certificate is for that key.
+
+  A node's key can't be copied off the machine to impersonate it, as a software key
+  could.
+- **Renewal keeps the key.** A node enrolled by TPM attestation renews only for the same
+  key (`/renew` refuses another, 409). A new key would come with no TPM's proof.
+- **Supported:** an RSA EK (the TCG's default template, and swtpm's), an RSA AK
+  (RSASSA, SHA-256), and the node's key on P-256. Everything else is refused with its
+  reason.
+- **The node's side** (`vaultgate_node.py enroll-tpm`) runs on tpm2-tools and OpenSSL's
+  tpm2 provider:
+  - The node's key is kept at a persistent handle. A new one is built at a staging
+    handle and moved only once its certificate is issued, so a refused attempt leaves
+    the current key working.
+  - The node builds its CSR's DER itself, signed in the TPM. The provider's own CSRs
+    give ecdsa-with-SHA256 a NULL parameter, which RFC 5758 forbids and strict parsers,
+    VaultGate's among them, refuse.
+  - For mutual TLS it uses `openssl s_client` with the key in the TPM, preferring the
+    default provider for everything else. Otherwise the handshake's other keys would
+    fill the TPM's few object slots.
+- **Tested:**
+  - against real TPM output: a fixture from swtpm and tpm2-tools;
+  - with a fake TPM in the unit tests, which also opens the credential as a TPM would;
+  - on the cluster: `node_check.py` runs a fresh swtpm as the node's TPM, and CI's k3d
+    job installs swtpm, tpm2-tools and the provider.
+
 ### First trust by cloud instance identity
 
 **An instance of an allowed cloud account enrolls with the identity document its cloud
@@ -318,6 +384,11 @@ once and once.**
   enrolls with it, and then:
   - the token is refused a second time;
   - a token carol revoked enrolls nothing.
+- **The TPM check:** `scripts/node_check.py` also starts a fresh swtpm, and carol
+  registers its EK. Then:
+  - the node enrolls with a key made in the TPM;
+  - it calls the nodes' port and renews with that key, over mutual TLS;
+  - a second enrollment is refused, and the node's key still works after it.
 - **The cloud identity check:** `scripts/node_check.py` also enrolls a fourth node, from
   a fake metadata service, with the stand-in's signature. Then:
   - the instance can't enroll a second node;

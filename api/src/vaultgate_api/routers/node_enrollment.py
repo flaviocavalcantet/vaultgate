@@ -18,6 +18,13 @@ Or, first trust by an admin's enrollment token: POST /nodes/enrollments/by-token
 a token an admin issued for one node name (vaultgate_api.routers.admin_nodes): single
 use, short lived. The token names the node, and the certificate comes back at once.
 
+Or, first trust by TPM attestation, in two steps: POST /nodes/enrollments/by-tpm with the
+TPM's endorsement key (registered by an admin for one node name), an attestation key,
+the node's key and the AK's certification of it (TPM2_Certify), and a CSR for that key;
+the answer is a credential only that TPM, with that AK, can decrypt
+(vaultgate_api.tpm). POST /nodes/enrollments/by-tpm/{id}/complete with what it decrypted
+gives the certificate.
+
 Or, first trust by cloud instance identity: POST /nodes/enrollments/by-cloud, with the
 instance's identity document and its signature from the cloud (vaultgate_api.cloud;
 AWS), from an allowed account and region. The node is named after its instance, and
@@ -37,11 +44,19 @@ GET /nodes/enrollments/{id} tells a waiting node where its request is. Its ID is
 random UUID the node got back; the answer holds nothing a stranger could use.
 """
 
+import base64
+import binascii
+import hashlib
+import hmac
 import logging
+import os
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -49,12 +64,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vaultgate_api import audit, cloud, nodes, policies
+from vaultgate_api import audit, cloud, nodes, policies, tpm
 from vaultgate_api.auth import Principal, TokenError, _unauthorized
 from vaultgate_api.clientip import client_ip_var
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
-from vaultgate_api.models import Node, NodeEnrollment, NodeEnrollmentToken
+from vaultgate_api.models import Node, NodeEnrollment, NodeEnrollmentToken, NodeTpm
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +248,11 @@ async def complete_enrollment(
 
     if not (await enroll_allowed(session)).allowed:
         raise await refuse("policy", status.HTTP_403_FORBIDDEN, NOT_ALLOWED)
-    if state(enrollment, now) != "approved" or enrollment.code_hash is None:
+    if (
+        enrollment.method != "admin_approval"
+        or state(enrollment, now) != "approved"
+        or enrollment.code_hash is None
+    ):
         await session.rollback()  # nothing to try a code against: not audited, unbounded
         raise HTTPException(status.HTTP_409_CONFLICT, "The enrollment isn't waiting for a code")
     if enrollment.code_expires_at <= now:
@@ -676,6 +695,230 @@ async def enroll_by_cloud(
             status.HTTP_409_CONFLICT, "This instance has enrolled a node already"
         ) from None
     logger.info("node enrolled by cloud identity", extra={"node_id": str(node.id)})
+    return CertificateOut(
+        node_id=node.id,
+        identity=identity,
+        certificate=issued.certificate,
+        chain=issued.chain,
+        serial=issued.serial,
+        expires_at=issued.expires_at,
+    )
+
+
+def usable_tpm():
+    """The conditions of a TPM registration that may still enroll."""
+    now = datetime.now(UTC)
+    return (NodeTpm.used_at.is_(None), NodeTpm.revoked_at.is_(None), NodeTpm.expires_at > now)
+
+
+TPM_ATTEMPTS = 3  # tries at the credential's secret
+
+
+class TpmEnrollmentIn(BaseModel):
+    ek: str = Field(max_length=4096)  # the EK's public key, PEM
+    ak: str = Field(max_length=2048)  # the AK's TPM2B_PUBLIC, base64
+    key: str = Field(max_length=2048)  # the node's key's TPM2B_PUBLIC, base64
+    attest: str = Field(max_length=2048)  # TPM2_Certify's TPMS_ATTEST, base64
+    signature: str = Field(max_length=2048)  # the AK's signature over it, base64
+    csr: str = Field(max_length=nodes.MAX_CSR_BYTES)
+
+
+class TpmChallengeOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    identity: str
+    credential: str  # base64, for tpm2_activatecredential
+    expires_at: datetime
+
+
+def _b64(value: str) -> bytes:
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        raise tpm.InvalidAttestation("not base64") from None
+
+
+@router.post("/by-tpm", status_code=status.HTTP_202_ACCEPTED)
+async def start_tpm_enrollment(body: TpmEnrollmentIn, session: SessionDep) -> TpmChallengeOut:
+    """TPM attestation, first step: the TPM's keys and certification are checked, and
+    the answer is a credential sealed to the TPM's EK for its AK."""
+    try:
+        ek = serialization.load_pem_public_key(body.ek.encode())
+    except ValueError:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "The EK isn't a PEM key"
+        ) from None
+    ek_fingerprint = nodes.fingerprint(ek)
+    registration = await session.scalar(
+        select(NodeTpm).where(NodeTpm.ek_fingerprint == ek_fingerprint, *usable_tpm())
+    )
+    if registration is None:
+        # Not audited: anyone can send any key, as often as the address limit lets them.
+        await session.rollback()
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a registered TPM")
+    name = registration.name
+    details = {"method": "tpm", "ek_fingerprint": ek_fingerprint, "name": name}
+
+    async def refuse(result: str, code: int, detail: str) -> HTTPException:
+        await session.rollback()
+        await audit.record_refusal(
+            session, "node.enrollment_requested", actor_kind="node",
+            details=details | {"result": result},
+        )  # fmt: skip
+        logger.info("TPM enrollment refused", extra={"result": result})
+        return HTTPException(code, detail)
+
+    try:
+        ak = tpm.parse_public(_b64(body.ak))
+        tpm.check_ak(ak)
+        key = tpm.parse_public(_b64(body.key))
+        tpm.check_key(key, _b64(body.attest), _b64(body.signature), ak)
+        fingerprint = nodes.check_csr(body.csr)
+        if not tpm.same_key(key, x509.load_pem_x509_csr(body.csr.encode()).public_key()):
+            raise tpm.InvalidAttestation("the CSR isn't for the certified key")
+        credential_secret = os.urandom(32)
+        credential = tpm.make_credential(ek, ak.name, credential_secret)
+    except (tpm.InvalidAttestation, nodes.InvalidCSR) as e:
+        raise await refuse(f"attestation: {e}", status.HTTP_403_FORBIDDEN, str(e)) from None
+    details["key_fingerprint"] = fingerprint
+    if not (await enroll_allowed(session)).allowed:
+        raise await refuse("policy", status.HTTP_403_FORBIDDEN, NOT_ALLOWED)
+    if await active_node(session, name) is not None:
+        raise await refuse(
+            "name taken", status.HTTP_409_CONFLICT, "A node of that name is enrolled"
+        )
+    now = datetime.now(UTC)
+    salt = secrets.token_hex(16)
+    enrollment = NodeEnrollment(
+        id=uuid.uuid4(),
+        name=name,
+        method="tpm",
+        csr=body.csr,
+        key_fingerprint=fingerprint,
+        status="pending",
+        client_ip=client_ip_var.get(),
+        expires_at=now + timedelta(seconds=settings.node_tpm_challenge_seconds),
+        code_salt=salt,
+        code_hash=hashlib.sha256(salt.encode() + credential_secret).hexdigest(),
+        code_expires_at=now + timedelta(seconds=settings.node_tpm_challenge_seconds),
+        client_id=f"tpm:{ek_fingerprint}",
+    )
+    session.add(enrollment)
+    await audit.record(
+        session,
+        "node.enrollment_requested",
+        actor_kind="node",
+        target_kind="node_enrollment",
+        target_id=enrollment.id,
+        details=details,
+    )
+    await session.commit()
+    return TpmChallengeOut(
+        id=enrollment.id,
+        name=name,
+        identity=nodes.identity(name),
+        credential=base64.b64encode(credential).decode(),
+        expires_at=enrollment.expires_at,
+    )
+
+
+class TpmCompleteIn(BaseModel):
+    secret: str = Field(max_length=128)  # what tpm2_activatecredential gave, base64
+
+
+@router.post("/by-tpm/{enrollment_id}/complete", status_code=status.HTTP_201_CREATED)
+async def complete_tpm_enrollment(
+    enrollment_id: uuid.UUID, body: TpmCompleteIn, session: SessionDep, signer: SignerDep
+) -> CertificateOut:
+    """TPM attestation, second step: the credential's secret, which only the registered
+    TPM could decrypt, for the node's certificate."""
+    enrollment = await session.get(NodeEnrollment, enrollment_id, with_for_update=True)
+    if enrollment is None or enrollment.method != "tpm":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such enrollment")
+    now = datetime.now(UTC)
+    if state(enrollment, now) != "pending" or enrollment.code_hash is None:
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "The enrollment isn't waiting for its TPM")
+    ek_fingerprint = (enrollment.client_id or "").removeprefix("tpm:")
+    details = {"method": "tpm", "ek_fingerprint": ek_fingerprint, "name": enrollment.name}
+    target = {"target_kind": "node_enrollment", "target_id": enrollment.id}
+
+    async def refuse(result: str, code: int, detail: str) -> HTTPException:
+        await audit.record(
+            session, "node.enrollment_completed", outcome="denied", actor_kind="node",
+            details=details | {"result": result}, **target,
+        )  # fmt: skip
+        await session.commit()
+        logger.info("TPM enrollment refused", extra={"result": result})
+        return HTTPException(code, detail)
+
+    try:
+        secret = base64.b64decode(body.secret, validate=True)
+    except (binascii.Error, ValueError):
+        secret = b""
+    expected = hashlib.sha256(enrollment.code_salt.encode() + secret).hexdigest()
+    if not hmac.compare_digest(expected, enrollment.code_hash):
+        enrollment.code_attempts += 1
+        if enrollment.code_attempts >= TPM_ATTEMPTS:
+            enrollment.status = "rejected"
+            enrollment.code_hash = enrollment.code_salt = None
+        raise await refuse("wrong secret", status.HTTP_403_FORBIDDEN, "Not the credential's secret")
+    registration = await session.scalar(
+        select(NodeTpm)
+        .where(NodeTpm.ek_fingerprint == ek_fingerprint, *usable_tpm())
+        .with_for_update()
+    )
+    if registration is None or registration.name != enrollment.name:
+        enrollment.status = "rejected"
+        enrollment.code_hash = enrollment.code_salt = None
+        raise await refuse("registration gone", status.HTTP_403_FORBIDDEN, "Not a registered TPM")
+    if not (await enroll_allowed(session)).allowed:
+        raise await refuse("policy", status.HTTP_403_FORBIDDEN, NOT_ALLOWED)
+    if await active_node(session, enrollment.name) is not None:
+        raise await refuse(
+            "name taken", status.HTTP_409_CONFLICT, "A node of that name is enrolled"
+        )
+
+    identity = nodes.identity(enrollment.name)
+    try:
+        issued = await signer.sign(enrollment.csr, identity)
+    except nodes.SignerError:
+        logger.exception("node certificate not signed")
+        await session.rollback()  # nothing used up: the same secret works once OpenBao does
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "The CA is unavailable") from None
+    node = Node(
+        id=uuid.uuid4(),
+        name=enrollment.name,
+        status="active",
+        key_fingerprint=enrollment.key_fingerprint,
+        cert_serial=issued.serial,
+        cert_expires_at=issued.expires_at,
+        enrolled_at=now,
+        enrolled_by=registration.created_by,
+    )
+    session.add(node)
+    await session.flush()
+    enrollment.status = "completed"
+    enrollment.completed_at = now
+    enrollment.node_id = node.id
+    enrollment.code_hash = enrollment.code_salt = None
+    registration.used_at = now
+    registration.enrollment_id = enrollment.id
+    await audit.record(
+        session,
+        "node.enrollment_completed",
+        actor_kind="node",
+        actor_id=node.id,
+        details=details | {"node_id": str(node.id), "serial": issued.serial},
+        **target,
+    )
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        await _revoke_quietly(signer, issued.serial)
+        raise HTTPException(status.HTTP_409_CONFLICT, "A node of that name is enrolled") from None
+    logger.info("node enrolled by TPM attestation", extra={"node_id": str(node.id)})
     return CertificateOut(
         node_id=node.id,
         identity=identity,

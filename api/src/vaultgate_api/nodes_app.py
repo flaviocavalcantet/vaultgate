@@ -13,7 +13,9 @@ People never use this port: browsers and the frontend stay on the public port, w
 their identity provider's tokens.
 
 POST /renew: a CSR (the same key or a new one) for a new certificate; the presented one
-is revoked once the new one is issued, so each certificate renews once.
+is revoked once the new one is issued, so each certificate renews once. A node enrolled
+by TPM attestation renews for the same key only: its TPM proved that key, and a new one
+would come with no such proof.
 GET /whoami: the node, as VaultGate sees it.
 """
 
@@ -35,7 +37,7 @@ from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
 from vaultgate_api.headers import SecurityHeadersMiddleware
 from vaultgate_api.logs import RequestContextMiddleware
-from vaultgate_api.models import Node
+from vaultgate_api.models import Node, NodeEnrollment
 from vaultgate_api.mtls import client_identities, client_serial
 from vaultgate_api.routers.admin_nodes import NodeOut, node_out
 from vaultgate_api.routers.node_enrollment import NOT_ALLOWED, SignerDep, enroll_allowed
@@ -71,6 +73,15 @@ async def current_node(request: Request, session: SessionDep) -> Node:
 
 NodeDep = Annotated[Node, Depends(current_node)]
 
+
+async def _tpm_bound(session, node: Node) -> bool:
+    """Whether the node was enrolled by TPM attestation, so its key is the TPM's."""
+    method = await session.scalar(
+        select(NodeEnrollment.method).where(NodeEnrollment.node_id == node.id)
+    )
+    return method == "tpm"
+
+
 router = APIRouter()
 
 
@@ -99,6 +110,11 @@ async def renew(body: RenewIn, node: NodeDep, session: SessionDep, signer: Signe
         fingerprint = nodes.check_csr(body.csr)
     except nodes.InvalidCSR as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from None
+    if fingerprint != node.key_fingerprint and await _tpm_bound(session, node):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This node's key is attested to be in its TPM: renew for the same key",
+        )
     fields = {
         "actor_kind": "node",
         "actor_id": node.id,

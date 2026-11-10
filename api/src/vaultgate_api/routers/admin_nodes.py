@@ -12,6 +12,9 @@ Enrollment tokens are the other first-trust method admins hand out: a token for 
 name, single use, short lived, shown once (only its SHA-256 is kept). The node enrolls
 with it (vaultgate_api.routers.node_enrollment); an unused one can be revoked.
 
+TPM registrations are the third: an admin registers a TPM, by its endorsement key's
+fingerprint, for one node name; the node then enrolls by TPM attestation, once.
+
 Revoking a node revokes its current certificate in OpenBao (so OCSP and the lists show
 it), then marks it revoked here, so it can't renew. Its name is free again.
 """
@@ -25,11 +28,12 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from vaultgate_api import audit, nodes
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
-from vaultgate_api.models import Node, NodeEnrollment, NodeEnrollmentToken
+from vaultgate_api.models import Node, NodeEnrollment, NodeEnrollmentToken, NodeTpm
 from vaultgate_api.provisioning import CurrentUserDep
 from vaultgate_api.routers.admin import Limit, Offset, Page, require_admin
 from vaultgate_api.routers.node_enrollment import (
@@ -38,6 +42,7 @@ from vaultgate_api.routers.node_enrollment import (
     active_node,
     enrollment_out,
     state,
+    usable_tpm,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +101,8 @@ async def _waiting(session, enrollment_id: uuid.UUID) -> NodeEnrollment:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such enrollment")
     if state(enrollment, datetime.now(UTC)) not in ("pending", "approved"):
         raise HTTPException(status.HTTP_409_CONFLICT, "The enrollment isn't waiting")
+    if enrollment.method != "admin_approval":  # a TPM's waits for its TPM, not an admin
+        raise HTTPException(status.HTTP_409_CONFLICT, "The enrollment isn't waiting for approval")
     return enrollment
 
 
@@ -358,5 +365,129 @@ async def revoke_token(token_id: uuid.UUID, session: SessionDep, admin: CurrentU
         target_kind="node_token",
         target_id=row.id,
         details={"name": row.name},
+    )
+    await session.commit()
+
+
+class TpmIn(BaseModel):
+    name: str = Field(pattern=nodes.NAME_PATTERN.pattern, max_length=63)
+    # SHA-256 over the EK's SubjectPublicKeyInfo, as `vaultgate_node.py tpm-ek` shows it.
+    ek_fingerprint: str = Field(pattern=r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+
+class TpmOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    identity: str
+    ek_fingerprint: str
+    created_at: datetime
+    expires_at: datetime
+    used_at: datetime | None
+    revoked_at: datetime | None
+    state: Literal["usable", "used", "revoked", "expired"]
+
+
+def tpm_out(row: NodeTpm, now: datetime) -> TpmOut:
+    if row.used_at is not None:
+        state_ = "used"
+    elif row.revoked_at is not None:
+        state_ = "revoked"
+    elif row.expires_at <= now:
+        state_ = "expired"
+    else:
+        state_ = "usable"
+    return TpmOut(
+        id=row.id,
+        name=row.name,
+        identity=nodes.identity(row.name),
+        ek_fingerprint=row.ek_fingerprint,
+        created_at=row.created_at,
+        expires_at=row.expires_at,
+        used_at=row.used_at,
+        revoked_at=row.revoked_at,
+        state=state_,
+    )
+
+
+@router.post("/tpms", status_code=status.HTTP_201_CREATED)
+async def register_tpm(body: TpmIn, session: SessionDep, admin: CurrentUserDep) -> TpmOut:
+    """Register a TPM, by its EK's fingerprint, for the node `name`: that TPM may then
+    enroll the node by attestation, once."""
+    if await active_node(session, body.name) is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "A node of that name is enrolled")
+    now = datetime.now(UTC)
+    # An open registration of this TPM blocks a new one (a unique index, so also when two
+    # admins register it at once), unless it has expired: that one is closed first.
+    open_ = await session.scalars(
+        select(NodeTpm)
+        .where(
+            NodeTpm.ek_fingerprint == body.ek_fingerprint,
+            NodeTpm.used_at.is_(None),
+            NodeTpm.revoked_at.is_(None),
+        )
+        .with_for_update()
+    )
+    for row in open_:
+        if row.expires_at > now:
+            raise HTTPException(status.HTTP_409_CONFLICT, "That TPM is registered already")
+        row.revoked_at = now
+    row = NodeTpm(
+        id=uuid.uuid4(),
+        name=body.name,
+        ek_fingerprint=body.ek_fingerprint,
+        created_by=admin.id,
+        created_at=now,
+        expires_at=now + timedelta(seconds=settings.node_tpm_registration_ttl_seconds),
+    )
+    session.add(row)
+    await audit.record(
+        session,
+        "node.tpm_registered",
+        actor_id=admin.id,
+        target_kind="node_tpm",
+        target_id=row.id,
+        details={"name": row.name, "ek_fingerprint": row.ek_fingerprint},
+    )
+    try:
+        await session.commit()
+    except IntegrityError:  # registered by a concurrent request
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "That TPM is registered already") from None
+    return tpm_out(row, now)
+
+
+@router.get("/tpms")
+async def list_tpms(
+    session: SessionDep,
+    status_: Annotated[Literal["usable", "all"], Query(alias="status")] = "usable",
+    limit: Limit = 50,
+    offset: Offset = 0,
+) -> Page[TpmOut]:
+    query = select(NodeTpm)
+    if status_ == "usable":
+        query = query.where(*usable_tpm())
+    total = await session.scalar(select(func.count()).select_from(query.subquery()))
+    rows = await session.scalars(
+        query.order_by(NodeTpm.created_at.desc()).limit(limit).offset(offset)
+    )
+    now = datetime.now(UTC)
+    return Page(items=[tpm_out(t, now) for t in rows], total=total, limit=limit, offset=offset)
+
+
+@router.post("/tpms/{tpm_id}/revoke", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_tpm(tpm_id: uuid.UUID, session: SessionDep, admin: CurrentUserDep) -> None:
+    row = await session.get(NodeTpm, tpm_id, with_for_update=True)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such TPM registration")
+    if row.used_at is not None or row.revoked_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "The registration is used or revoked already")
+    row.revoked_at = datetime.now(UTC)
+    await audit.record(
+        session,
+        "node.tpm_revoked",
+        actor_id=admin.id,
+        target_kind="node_tpm",
+        target_id=row.id,
+        details={"name": row.name, "ek_fingerprint": row.ek_fingerprint},
     )
     await session.commit()

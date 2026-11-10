@@ -19,6 +19,14 @@ DIR/node.key (mode 0600), and only a CSR is sent.
                                         enroll with the instance's signed identity document,
                                         from the instance metadata service (IMDSv2); the node
                                         is named after its instance (aws-<instance ID>)
+    vaultgate_node.py tpm-ek            first trust by TPM attestation instead: the TPM's
+                                        endorsement key's fingerprint, which an admin
+                                        registers for the node's name
+    vaultgate_node.py enroll-tpm        enroll by TPM attestation: an attestation key and the
+                                        node's key, made in the TPM (the node's key never
+                                        leaves it), the AK's certification of it, and the
+                                        credential the TPM decrypts; then whoami and renew
+                                        use the key in the TPM (OpenSSL's tpm2 provider)
     vaultgate_node.py credential        first trust by a Keycloak client instead: make the
                                         node's Keycloak credential, an RSA key and a
                                         certificate for it (DIR/keycloak.crt), which an admin
@@ -39,6 +47,9 @@ Settings, from the environment:
     VAULTGATE_KEYCLOAK   Keycloak's address, for enroll-client (https://localhost:8080)
     VAULTGATE_IMDS       the instance metadata service, for enroll-cloud
                          (http://169.254.169.254, AWS's)
+    TPM2TOOLS_TCTI,      the TPM, for tpm-ek and enroll-tpm (tpm2-tools' and the tpm2
+    TPM2OPENSSL_TCTI     provider's; their default is the device /dev/tpmrm0)
+    VAULTGATE_TPM_HANDLE the persistent handle of the node's key in the TPM (0x81000101)
     SSL_CERT_FILE        the CA bundle to verify the API with (VaultGate's root, locally)
 
 Standard library and OpenSSL 3 only (VAULTGATE_OPENSSL names the command).
@@ -65,6 +76,12 @@ NODES_URL = os.getenv("VAULTGATE_NODES_URL", "https://localhost:8002").rstrip("/
 OPENSSL = os.getenv("VAULTGATE_OPENSSL", "openssl")
 KEYCLOAK = os.getenv("VAULTGATE_KEYCLOAK", "https://localhost:8080").rstrip("/")
 IMDS = os.getenv("VAULTGATE_IMDS", "http://169.254.169.254").rstrip("/")
+TPM_HANDLE = os.getenv("VAULTGATE_TPM_HANDLE", "0x81000101")
+# OpenSSL with the tpm2 provider: preferring it, to make and sign with the key in the TPM;
+# for TLS, preferring the default one, so that only the node's own key uses the TPM (the
+# handshake's other keys, in the TPM, would soon fill its few object slots).
+TPM2 = ["-provider", "tpm2", "-provider", "default", "-propquery", "?provider=tpm2"]
+TPM2_TLS = ["-provider", "tpm2", "-provider", "default", "-propquery", "?provider=default"]
 REALM = os.getenv("VAULTGATE_KEYCLOAK_REALM", "vaultgate")
 
 
@@ -300,15 +317,214 @@ def enroll_client(name: str) -> dict:
     return answer
 
 
+# --- TPM attestation ----------------------------------------------------------------------
+
+
+def tpm2(*args: str) -> bytes:
+    """A tpm2-tools command, then the TPM's transient objects and sessions flushed (a
+    TPM holds only a few)."""
+    result = subprocess.run(["tpm2_" + args[0], *args[1:]], capture_output=True, check=False)
+    for kind in ("-t", "-s"):
+        subprocess.run(["tpm2_flushcontext", kind], capture_output=True, check=False)
+    if result.returncode != 0:
+        raise Failure(f"tpm2_{args[0]}: {result.stderr.decode().strip()[-300:]}")
+    return result.stdout
+
+
+def tpm_ek() -> str:
+    """The TPM's endorsement key (RSA, the TCG's default template), and its fingerprint."""
+    NODE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tpm2("createek", "-c", str(NODE_DIR / "ek.ctx"), "-G", "rsa", "-f", "pem",
+         "-u", str(NODE_DIR / "ek.pem"))  # fmt: skip
+    print_ek = fingerprint_pem(NODE_DIR / "ek.pem")
+    print(f"ok  the TPM's endorsement key: {print_ek}")
+    print("    an admin registers it for the node's name (POST /admin/nodes/tpms)")
+    return print_ek
+
+
+def fingerprint_pem(path: Path) -> str:
+    spki = openssl("pkey", "-pubin", "-in", str(path), "-outform", "DER")
+    return "SHA256:" + base64.b64encode(hashlib.sha256(spki).digest()).decode().rstrip("=")
+
+
+def _der(tag: int, body: bytes) -> bytes:
+    n = len(body)
+    length = (
+        bytes([n])
+        if n < 128
+        else bytes([0x80 | ((n.bit_length() + 7) // 8)])
+        + n.to_bytes((n.bit_length() + 7) // 8, "big")
+    )
+    return bytes([tag]) + length + body
+
+
+def tpm_csr(handle: str) -> str:
+    """A CSR for the key in the TPM, signed there. Built here rather than by `openssl
+    req`, whose tpm2 provider writes ecdsa-with-SHA256 with a NULL parameter, which RFC
+    5758 forbids and strict parsers (VaultGate's among them) refuse."""
+    spki = openssl("pkey", *TPM2, "-in", f"handle:{handle}", "-pubout", "-outform", "DER")
+    info = _der(0x30, _der(0x02, b"\0") + _der(0x30, b"") + spki + _der(0xA0, b""))
+    signature = openssl("dgst", *TPM2, "-sha256", "-sign", f"handle:{handle}", data=info)
+    ecdsa_sha256 = _der(0x30, _der(0x06, bytes.fromhex("2a8648ce3d040302")))
+    der = _der(0x30, info + ecdsa_sha256 + _der(0x03, b"\0" + signature))
+    body = base64.encodebytes(der).decode()
+    return f"-----BEGIN CERTIFICATE REQUEST-----\n{body}-----END CERTIFICATE REQUEST-----\n"
+
+
+def enroll_tpm() -> dict:
+    NODE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    d = NODE_DIR
+    if not (d / "ek.ctx").exists():
+        tpm_ek()
+    tpm2("createak", "-C", str(d / "ek.ctx"), "-c", str(d / "ak.ctx"), "-G", "rsa",
+         "-g", "sha256", "-s", "rsassa", "-u", str(d / "ak.pub"), "-r", str(d / "ak.priv"))  # fmt: skip
+    # The node's key: made in the TPM, never to leave it. Kept at a staging handle until
+    # its certificate is issued, then moved to TPM_HANDLE: a failed enrollment leaves the
+    # node's current key and certificate as they were.
+    staging = hex(int(TPM_HANDLE, 16) + 1)
+    tpm2("createprimary", "-C", "o", "-g", "sha256", "-G", "ecc", "-c", str(d / "primary.ctx"))
+    tpm2("create", "-C", str(d / "primary.ctx"), "-G", "ecc256:ecdsa",
+         "-a", "fixedtpm|fixedparent|sensitivedataorigin|userwithauth|sign",
+         "-u", str(d / "new-key.pub"), "-r", str(d / "new-key.priv"))  # fmt: skip
+    persist(d / "new-key", staging)
+    tpm2("certify", "-c", staging, "-C", str(d / "ak.ctx"), "-g", "sha256",
+         "-o", str(d / "attest.out"), "-s", str(d / "sig.out"), "-f", "plain")  # fmt: skip
+
+    def b64(name: str) -> str:
+        return base64.b64encode((d / name).read_bytes()).decode()
+
+    body = {
+        "ek": (d / "ek.pem").read_text(), "ak": b64("ak.pub"), "key": b64("new-key.pub"),
+        "attest": b64("attest.out"), "signature": b64("sig.out"), "csr": tpm_csr(staging),
+    }  # fmt: skip
+    code, challenge = call(f"{API}/nodes/enrollments/by-tpm", "POST", body)
+    if code != 202:
+        raise Failure(f"TPM attestation: {code} {challenge.get('detail')}")
+    (d / "credential.out").write_bytes(base64.b64decode(challenge["credential"]))
+    # The EK's use needs the endorsement hierarchy's authorization: a policy session, used
+    # by the next two commands, so not flushed between them.
+    session = str(d / "session.ctx")
+    try:
+        for command in (
+            ["tpm2_startauthsession", "--policy-session", "-S", session],
+            ["tpm2_policysecret", "-S", session, "-c", "e"],
+            ["tpm2_activatecredential", "-c", str(d / "ak.ctx"), "-C", str(d / "ek.ctx"),
+             "-i", str(d / "credential.out"), "-o", str(d / "secret.out"),
+             "-P", f"session:{session}"],
+        ):  # fmt: skip
+            result = subprocess.run(command, capture_output=True, check=False)
+            if result.returncode != 0:
+                raise Failure(f"{command[0]}: {result.stderr.decode().strip()[-300:]}")
+    finally:
+        for flush in ([session], ["-t"], ["-s"]):
+            subprocess.run(["tpm2_flushcontext", *flush], capture_output=True, check=False)
+    secret = base64.b64encode((d / "secret.out").read_bytes()).decode()
+    (d / "secret.out").unlink()
+    code, answer = call(f"{API}/nodes/enrollments/by-tpm/{challenge['id']}/complete", "POST",
+                        {"secret": secret})  # fmt: skip
+    if code != 201:
+        raise Failure(f"completing the TPM enrollment: {code} {answer.get('detail')}")
+    save(answer)  # first: the node is enrolled now, whatever happens to the handles
+    try:
+        persist(d / "new-key", TPM_HANDLE)  # the certified key, at the node's handle now
+    except Failure as e:
+        raise Failure(
+            f"enrolled, and the certificate saved, but its key is still at {staging}: "
+            f"move it with tpm2_evictcontrol to {TPM_HANDLE} ({e})"
+        ) from None
+    evict(staging)
+    for part in ("pub", "priv"):
+        (d / f"new-key.{part}").replace(d / f"key.{part}")
+    print(f"ok  enrolled as {answer['identity']} by TPM attestation, certificate "
+          f"{answer['serial']} until {answer['expires_at']}; its key is in the TPM "
+          f"({TPM_HANDLE})")  # fmt: skip
+    return answer
+
+
+def evict(handle: str) -> None:
+    try:
+        tpm2("evictcontrol", "-C", "o", "-c", handle)
+    except Failure:
+        pass  # nothing there
+
+
+def persist(key: Path, handle: str) -> None:
+    """The key (its .pub and .priv, under the owner's primary key, which the same template
+    makes again) at the persistent `handle`, in place of whatever was there."""
+    tpm2("load", "-C", str(NODE_DIR / "primary.ctx"), "-u", f"{key}.pub", "-r", f"{key}.priv",
+         "-c", str(NODE_DIR / "loaded.ctx"))  # fmt: skip
+    evict(handle)
+    tpm2("evictcontrol", "-C", "o", "-c", str(NODE_DIR / "loaded.ctx"), handle)
+
+
+def tpm_call(path: str, method: str = "GET", body: dict | None = None) -> tuple[int, dict]:
+    """A request to the nodes' port with the key in the TPM: through `openssl s_client`
+    and the tpm2 provider (Python's ssl can't use a key it can't read)."""
+    url = urllib.parse.urlparse(NODES_URL)
+    payload = json.dumps(body).encode() if body is not None else b""
+    request = (
+        f"{method} {path} HTTP/1.1\r\nHost: {url.hostname}\r\nConnection: close\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {len(payload)}\r\n\r\n"
+    ).encode() + payload
+    ca = ["-CAfile", os.environ["SSL_CERT_FILE"]] if os.getenv("SSL_CERT_FILE") else []
+    result = subprocess.run(
+        # -ign_eof: read the answer after the request ends; -cert_chain: send the nodes'
+        # CA too, as a client's chain must be.
+        [OPENSSL, "s_client", *TPM2_TLS, "-quiet", "-ign_eof",
+         "-connect", f"{url.hostname}:{url.port}", "-servername", url.hostname,
+         "-verify_return_error", "-verify_hostname", url.hostname, *ca,
+         "-cert", str(NODE_DIR / "node.crt"),
+         "-cert_chain", str(NODE_DIR / "node.crt"), "-key", f"handle:{TPM_HANDLE}"],
+        input=request, capture_output=True, check=False, timeout=30,
+    )  # fmt: skip
+    head, _, raw = result.stdout.partition(b"\r\n\r\n")
+    if not head.startswith(b"HTTP/1.1 "):
+        raise Failure(f"the nodes' port: {result.stderr.decode().strip()[-300:]}")
+    status_ = int(head.split()[1])
+    if b"transfer-encoding: chunked" in head.lower():
+        raw = _unchunk(raw)
+    return status_, json.loads(raw) if raw.strip() else {}
+
+
+def _unchunk(raw: bytes) -> bytes:
+    out = b""
+    while raw:
+        size_line, _, raw = raw.partition(b"\r\n")
+        size = int(size_line.split(b";")[0], 16)
+        if size == 0:
+            break
+        out, raw = out + raw[:size], raw[size + 2 :]
+    return out
+
+
 def whoami() -> dict:
-    code, answer = call(f"{NODES_URL}/whoami", client=True)
+    if in_tpm():
+        code, answer = tpm_call("/whoami")
+    else:
+        code, answer = call(f"{NODES_URL}/whoami", client=True)
     if code != 200:
         raise Failure(f"whoami: {code} {answer.get('detail')}")
     print(f"ok  {answer['identity']} ({answer['status']}), certificate {answer['cert_serial']}")
     return answer
 
 
+def in_tpm() -> bool:
+    """Whether the node's key is in its TPM (enrolled by TPM attestation)."""
+    return not (NODE_DIR / "node.key").exists() and (NODE_DIR / "key.pub").exists()
+
+
 def renew(rotate_key: bool = False) -> dict:
+    if in_tpm():
+        # The same key, the TPM's: VaultGate renews a TPM-attested node for no other.
+        if rotate_key:
+            raise Failure("the node's key is in its TPM: renew without --new-key")
+        code, answer = tpm_call("/renew", "POST", {"csr": tpm_csr(TPM_HANDLE)})
+        if code != 200:
+            raise Failure(f"renewal: {code} {answer.get('detail')}")
+        save(answer)
+        print(f"ok  renewed: certificate {answer['serial']} until {answer['expires_at']}, "
+              "the key in the TPM")  # fmt: skip
+        return answer
     key = NODE_DIR / "node.key"
     if rotate_key:
         new_key(NODE_DIR / "node.key.new")
@@ -337,6 +553,10 @@ def main(argv: list[str]) -> int:
                 enroll_token()
             case ["enroll-cloud"]:
                 enroll_cloud()
+            case ["tpm-ek"]:
+                tpm_ek()
+            case ["enroll-tpm"]:
+                enroll_tpm()
             case ["credential"]:
                 credential()
             case ["enroll-client", name]:
