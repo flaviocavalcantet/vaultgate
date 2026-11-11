@@ -5,9 +5,20 @@
 # The images are the chart's own (GHCR, tagged with the commit Argo CD syncs): published
 # by CI for main, built and loaded into the node for anything else (scripts/k3d.sh).
 
-# The web frontend's development server (vaultgate-frontend, `npm run dev`): the origin
-# the local Keycloak client `vaultgate-web` allows too.
-corsOrigins: ["http://localhost:5173"]
+# The web frontend: its development server (vaultgate-frontend, `npm run dev`) and the
+# cluster's own (frontend below), the origins the local Keycloak client `vaultgate-web`
+# allows too.
+corsOrigins: ["http://localhost:5173", "http://localhost:5174"]
+
+# The web frontend in the cluster (M12.5, ADR 0019), on http://localhost:5174. Plain HTTP
+# on loopback: a browser treats localhost as secure, and the files are public. The image
+# is the frontend repository's, at a pinned commit: bump it on purpose.
+frontend:
+  enabled: true
+  image:
+    tag: FRONTEND_COMMIT
+  replicas: 1
+  nodePort: 30174
 
 aws:
   endpointUrl: http://localstack.vaultgate-deps:4566

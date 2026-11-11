@@ -60,6 +60,7 @@ ROOT_CA=${VAULTGATE_PKI_DIR:-$HOME/.vaultgate/pki}/root-ca.crt
 # root (Python's ssl reads SSL_CERT_FILE, Python's requests REQUESTS_CA_BUNDLE).
 API=https://localhost:8000
 KEYCLOAK=https://localhost:8080
+FRONTEND=http://localhost:5174
 host_trust() { SSL_CERT_FILE=$ROOT_CA REQUESTS_CA_BUNDLE=$ROOT_CA "$@"; }
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -288,7 +289,7 @@ up() {
   done
 
   host_trust python3 scripts/seed_policies.py --api "$API" --keycloak "$KEYCLOAK"
-  log "ready: OpenBao https://localhost:8200, API $API, gateway https://localhost:8888 (TLS: trust $ROOT_CA), Keycloak $KEYCLOAK, Mailpit http://localhost:8025, Grafana http://localhost:3000 (admin/admin), Prometheus http://localhost:9090, Alertmanager http://localhost:9093"
+  log "ready: web app $FRONTEND, OpenBao https://localhost:8200, API $API, gateway https://localhost:8888 (TLS: trust $ROOT_CA), Keycloak $KEYCLOAK, Mailpit http://localhost:8025, Grafana http://localhost:3000 (admin/admin), Prometheus http://localhost:9090, Alertmanager http://localhost:9093"
 }
 
 restart() {
@@ -342,6 +343,25 @@ check_cluster() {
   echo "ok  another pod reaches the public port, not the internal or the metrics one"
   log "network policy: each component connects only where its policy lets it (TM-1)"
   kubectl -n vaultgate exec -i deploy/vaultgate-api -c api -- python - <scripts/egress_check.py
+
+  # The web frontend (M12.5, ADR 0019): the app, this cluster's settings, and a
+  # Content-Security-Policy that names this cluster's API, gateway and Keycloak.
+  log "web frontend: served on $FRONTEND with this cluster's settings and policy"
+  local headers config
+  headers=$(curl -sfI "$FRONTEND/files")
+  config=$(curl -sf "$FRONTEND/config.json")
+  grep -q "\"apiUrl\": \"$API\"" <<<"$config" || { echo "$config" >&2; return 1; }
+  grep -qi "^content-security-policy: .*connect-src 'self' $API https://localhost:8888 $KEYCLOAK" \
+    <<<"$headers" || { echo "$headers" >&2; return 1; }
+  grep -qi "form-action https://localhost:8888" <<<"$headers" || { echo "$headers" >&2; return 1; }
+  echo "ok  the frontend serves the app, its settings point at this cluster, its policy names it"
+  # Its origin is the one the API and the gateway allow (CORS, ADR 0017).
+  local allowed
+  allowed=$(curl -s --cacert "$ROOT_CA" -o /dev/null -D - -X OPTIONS "$API/me" -H "Origin: $FRONTEND" \
+    -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: authorization" |
+    tr -d '\r' | sed -n 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin: //p')
+  [[ $allowed == "$FRONTEND" ]] || { echo "the API doesn't allow $FRONTEND: '$allowed'" >&2; return 1; }
+  echo "ok  the API allows the frontend's origin"
 }
 
 check_observability() {

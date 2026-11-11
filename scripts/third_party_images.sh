@@ -39,5 +39,5 @@ render() {
 render \
   | grep -oE "(image: *|--image=|--prometheus-config-reloader=)[\"']?[a-z0-9][^\"' ]*" \
   | sed -E "s/^[^:=]*[:=] *[\"']?//" \
-  | grep -vE '^vaultgate-|/vaultgate-(api|gateway|scanner)(:|$)' \
+  | grep -vE '^vaultgate-|/vaultgate-(api|gateway|scanner|frontend)(:|$)' \
   | sort -u

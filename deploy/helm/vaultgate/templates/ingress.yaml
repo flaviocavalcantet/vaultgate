@@ -16,7 +16,7 @@ spec:
   duration: {{ .Values.tls.duration }}
   privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
   usages: [digital signature, server auth]
-  dnsNames: [{{ $ing.apiHost }}, {{ $ing.gatewayHost }}]
+  dnsNames: [{{ $ing.apiHost }}, {{ $ing.gatewayHost }}{{ if .Values.frontend.enabled }}, {{ $ing.frontendHost }}{{ end }}]
 ---
 {{- end }}
 # The public ports only: the API's internal port and every metrics port stay in-cluster.
@@ -37,7 +37,7 @@ spec:
   {{- if $issued }}
   tls:
     - secretName: {{ .Release.Name }}-ingress-tls
-      hosts: [{{ $ing.apiHost }}, {{ $ing.gatewayHost }}]
+      hosts: [{{ $ing.apiHost }}, {{ $ing.gatewayHost }}{{ if .Values.frontend.enabled }}, {{ $ing.frontendHost }}{{ end }}]
   {{- else }}
   {{- with $ing.tls }}
   tls: {{- toYaml . | nindent 4 }}
@@ -56,4 +56,12 @@ spec:
           - path: /
             pathType: Prefix
             backend: { service: { name: {{ .Release.Name }}-gateway, port: { name: http } } }
+    {{- if .Values.frontend.enabled }}
+    - host: {{ $ing.frontendHost }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: {{ .Release.Name }}-frontend, port: { name: http } } }
+    {{- end }}
 {{- end }}
