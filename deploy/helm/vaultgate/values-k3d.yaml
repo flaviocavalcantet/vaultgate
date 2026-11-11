@@ -16,7 +16,7 @@ corsOrigins: ["http://localhost:5173", "http://localhost:5174"]
 frontend:
   enabled: true
   image:
-    tag: FRONTEND_COMMIT
+    tag: 606e068a158ee9979939c56492985b7156eb4052
   replicas: 1
   nodePort: 30174
 
