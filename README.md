@@ -272,7 +272,7 @@ Missing or invalid tokens get `401` with a `WWW-Authenticate: Bearer` challenge;
 
 The identity provider is the source of truth. On every authenticated request the API looks up the caller by `(issuer, subject)` and creates or updates their record to match the token: login name, email and display name, and group memberships, which are set to exactly the token's `groups` (groups are created the first time any token names them). Unchanged callers cost one read; `last_login_at` is refreshed at most every 5 minutes.
 
-- `GET /me` returns the caller's stored record: `id`, `issuer`, `subject`, `username`, `email`, `name`, `groups`, `is_active`, `created_at`, `last_login_at`.
+- `GET /me` returns the caller's stored record: `id`, `issuer`, `subject`, `username`, `email`, `name`, `groups`, `is_admin`, `is_active`, `created_at`, `last_login_at`. `is_admin` says whether the caller is in one of the API's admin groups, so a client knows whether to show the admin pages; the admin routes check it themselves on every request.
 - A user whose `is_active` is set to false in the database is refused with `403` even with a valid token: a local kill switch that works without touching the identity provider.
 - `GET /admin/users`, `GET /admin/users/{id}` and `GET /admin/groups` (with member counts) are read-only and paginated (`limit` up to 100, `offset`). They require membership in one of `VAULTGATE_ADMIN_GROUPS` (default `["/vaultgate-admins"]`), so admin rights are granted and revoked in the identity provider.
 
@@ -628,6 +628,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] Gateway autoscaling on transfers in progress (KEDA on the gateway's metrics) next to the CPU autoscaler, judged against the load tests ([ADR 0016](docs/adr/0016-gateway-autoscaling-on-transfers.md), [docs/load-testing.md](docs/load-testing.md))
 - [ ] **M12.5 — Frontend support:** what the web frontend ([vaultgate-frontend](https://github.com/flaviocavalcantet/vaultgate-frontend), its own repository and plan) needs from the API and the gateway
   - [x] Cross-origin requests (CORS) on the API and the gateway: an exact allow-list of origins, off by default, so a frontend served from another origin can call them; no credentials, and every request still needs its token ([ADR 0017](docs/adr/0017-cross-origin-requests.md))
+  - [x] `GET /me` says whether the caller is an administrator (`is_admin`), by the API's own admin groups, so the frontend doesn't keep a copy of that setting
   - [ ] Downloads a browser can follow as a plain link: the gateway takes the download token in a request header today, so large files can't be handed to the browser's own download
   - [ ] The frontend deployed by the chart as an optional component, with the local Keycloak client's redirect addresses to match
 - [ ] **M13 — Agent baseline and evaluation:** a single-agent invoice reviewer and a reproducible benchmark that scores task success and safety separately
