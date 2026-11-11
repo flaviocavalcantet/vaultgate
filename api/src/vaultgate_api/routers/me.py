@@ -4,6 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from vaultgate_api.admins import is_admin
 from vaultgate_api.models import User
 from vaultgate_api.provisioning import CurrentUserDep
 
@@ -18,6 +19,10 @@ class UserOut(BaseModel):
     email: str | None
     name: str | None
     groups: list[str]
+    # In one of the API's admin groups (settings.admin_groups): what a client shows
+    # the user, such as the admin pages. The admin routes check it themselves on
+    # every request, whatever a client believes.
+    is_admin: bool
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None
@@ -32,6 +37,7 @@ class UserOut(BaseModel):
             email=user.email,
             name=user.display_name,
             groups=sorted(g.name for g in user.groups),
+            is_admin=is_admin(user),
             is_active=user.is_active,
             created_at=user.created_at,
             last_login_at=user.last_login_at,

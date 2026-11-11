@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from vaultgate_api.config import settings
+from vaultgate_api.admins import is_admin
 from vaultgate_api.db import SessionDep
 from vaultgate_api.models import Group, User, user_groups
 from vaultgate_api.provisioning import CurrentUserDep
@@ -21,7 +21,7 @@ from vaultgate_api.routers.me import UserOut
 
 
 async def require_admin(user: CurrentUserDep) -> User:
-    if not {g.name for g in user.groups} & set(settings.admin_groups):
+    if not is_admin(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Administrator access required")
     return user
 

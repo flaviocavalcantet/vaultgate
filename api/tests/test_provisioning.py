@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tests.conftest import requires_db
 from tests.fake_oidc import ISSUER, FakeProvider, make_validator
 from vaultgate_api.auth import Principal
+from vaultgate_api.config import settings
 from vaultgate_api.db import get_session
 from vaultgate_api.main import app
 from vaultgate_api.models import Group, User
@@ -135,6 +136,7 @@ async def test_me_returns_the_provisioned_user(provider, api) -> None:
     assert body["subject"] == "user-123"
     assert body["username"] == "alice"
     assert body["groups"] == ["/finance", "/legal"]
+    assert body["is_admin"] is False
     assert body["is_active"] is True
 
     again = (await api.get("/me", headers=bearer(provider))).json()
@@ -146,6 +148,24 @@ async def test_deactivated_user_is_refused(provider, api, session) -> None:
     await session.execute(update(User).values(is_active=False))
     response = await api.get("/me", headers=bearer(provider))
     assert response.status_code == 403
+
+
+async def test_me_says_whether_the_caller_is_an_administrator(provider, api, monkeypatch) -> None:
+    """By the API's admin groups, the same test the admin routes apply, and from the
+    token's groups at this request: leaving the group ends it."""
+    carol = {"sub": "carol", "preferred_username": "carol"}
+    admin = bearer(provider, **carol, groups=["/finance", "/vaultgate-admins"])
+    assert (await api.get("/me", headers=admin)).json()["is_admin"] is True
+    assert (await api.get("/admin/users", headers=admin)).status_code == 200
+
+    demoted = bearer(provider, **carol, groups=["/finance"])
+    assert (await api.get("/me", headers=demoted)).json()["is_admin"] is False
+    assert (await api.get("/admin/users", headers=demoted)).status_code == 403
+
+    # The setting decides, not the group's name.
+    monkeypatch.setattr(settings, "admin_groups", ["/finance"])
+    assert (await api.get("/me", headers=demoted)).json()["is_admin"] is True
+    assert (await api.get("/admin/users", headers=demoted)).status_code == 200
 
 
 async def test_admin_endpoints_need_the_admin_group(provider, api) -> None:
@@ -164,6 +184,8 @@ async def test_admin_lists_users_and_groups(provider, api) -> None:
     assert page["total"] == 2
     # Both rows share created_at here (one test transaction), so compare as a set.
     assert sorted(u["subject"] for u in page["items"]) == ["alice", "carol"]
+    # The list says who the administrators are.
+    assert {u["subject"]: u["is_admin"] for u in page["items"]} == {"alice": False, "carol": True}
 
     groups = (await api.get("/admin/groups", headers=carol)).json()
     assert {g["name"]: g["members"] for g in groups["items"]} == {
