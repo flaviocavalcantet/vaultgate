@@ -24,6 +24,11 @@ scanQueueUrl: ""
 # Reverse proxies (the ingress controller) whose X-Forwarded-For is believed,
 # comma-separated networks. Proxy addresses only, never client networks.
 trustedProxies: ""
+# Web origins whose pages may call the API and the gateway (CORS, M12.5): where the web
+# frontend is served, each as scheme://host[:port], e.g. ["https://vault.example.com"].
+# An exact list, no wildcards. Empty: no page of another origin gets an answer it may
+# read. Being listed grants nothing else: every request still needs its token.
+corsOrigins: []
 
 # Credentials, read from one Secret with the keys:
 #   database-url           PostgreSQL URL for the API (postgresql+asyncpg://...)

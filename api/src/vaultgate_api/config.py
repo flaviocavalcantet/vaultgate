@@ -5,6 +5,7 @@ from pydantic import IPvAnyNetwork, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from vaultgate_api.clientip import parse_networks
+from vaultgate_api.cors import parse_origins
 
 
 class Settings(BaseSettings):
@@ -36,6 +37,9 @@ class Settings(BaseSettings):
     # networks ("10.0.0.0/8, 192.0.2.10/32"). Proxy addresses only, never client
     # networks; empty means the TCP peer is the client (see vaultgate_api.clientip).
     trusted_proxies: Annotated[list[IPvAnyNetwork], NoDecode] = []
+    # Web origins whose pages may call the API (CORS, vaultgate_api.cors), as a
+    # comma-separated list ("https://vault.example.com"). Empty: none, the default.
+    cors_origins: Annotated[list[str], NoDecode] = []
     # Prometheus scrape endpoint; kept off the public port on purpose.
     metrics_port: int = 9100
     log_level: str = "INFO"
@@ -213,6 +217,11 @@ class Settings(BaseSettings):
     @classmethod
     def split_networks(cls, value):
         return parse_networks(value) if isinstance(value, str) else value
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def split_origins(cls, value):
+        return parse_origins(value)
 
     @field_validator("quarantine_kinds", "node_aws_accounts", "node_aws_regions", mode="before")
     @classmethod

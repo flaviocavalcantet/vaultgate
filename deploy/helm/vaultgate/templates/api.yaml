@@ -89,6 +89,10 @@ spec:
             - name: VAULTGATE_TRUSTED_PROXIES
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.corsOrigins }}
+            - name: VAULTGATE_CORS_ORIGINS
+              value: {{ join "," . | quote }}
+            {{- end }}
             {{- with $api.smtp.host }}
             - name: VAULTGATE_SMTP_HOST
               value: {{ . | quote }}

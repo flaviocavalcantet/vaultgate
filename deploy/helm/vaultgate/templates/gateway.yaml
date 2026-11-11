@@ -47,6 +47,10 @@ spec:
             - name: VAULTGATE_TRUSTED_PROXIES
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.corsOrigins }}
+            - name: VAULTGATE_CORS_ORIGINS
+              value: {{ join "," . | quote }}
+            {{- end }}
             {{- include "vaultgate.credentialEnv" (dict "root" . "env" "VAULTGATE_INTERNAL_TOKEN" "key" "internal-token") | nindent 12 }}
             {{- include "vaultgate.extraEnv" $gw.env | nindent 12 }}
           ports:

@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass, field
 
 from vaultgate_gateway.clientip import IPNetwork, parse_networks
+from vaultgate_gateway.cors import parse_origins
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -49,6 +50,9 @@ class Settings:
     # Reverse proxies whose X-Forwarded-For is believed, comma-separated networks.
     # Proxy addresses only, never client networks (see vaultgate_gateway.clientip).
     trusted_proxies: tuple[IPNetwork, ...] = tuple(parse_networks(_env("TRUSTED_PROXIES", "")))
+    # Web origins whose pages may upload and download (CORS, vaultgate_gateway.cors),
+    # comma-separated ("https://vault.example.com"). Empty: none, the default.
+    cors_origins: frozenset[str] = parse_origins(_env("CORS_ORIGINS", ""))
     # The API's internal endpoint (never the public one) and the shared secret for it.
     # Over https, the API's certificate is verified against the system's trust store,
     # which SSL_CERT_FILE replaces (the cluster's trust bundle).

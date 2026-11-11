@@ -17,6 +17,10 @@ end-to-end check, from the host, trusting the root (SSL_CERT_FILE).
    Retry-After once past his burst.
 5. TLS: the API, the gateway, Keycloak and OpenBao speak TLS 1.3 and nothing older, and
    no plain HTTP.
+6. Cross-origin pages (CORS, M12.5): the one origin the cluster lists passes a preflight
+   on the API and the gateway and is named in their answers; any other origin, or one
+   that only starts like it, is refused and never named; and the listed origin still
+   gets nothing without a token.
 
     python3 scripts/negative_checks.py [--api URL] [--gateway URL] [--keycloak URL]
                                        [--openbao URL]
@@ -41,6 +45,8 @@ from keycloak_smoke import login, wait_for
 # recipients' (their link's token and an emailed code), the nodes' CA's certificate,
 # revocation lists and OCSP (signed, public by nature), and node enrollment (a node has
 # no credential yet: per-address limits and the `enroll` policies; M11, ADR 0014).
+# The one web origin the local cluster allows (deploy/helm/vaultgate/values-k3d.yaml).
+FRONTEND_ORIGIN = "http://localhost:5173"
 PUBLIC = ("/healthz", "/readyz", "/shares/access", "/pki/nodes/", "/nodes/enrollments")
 
 
@@ -52,11 +58,16 @@ def request(
 
 
 def request_full(
-    base: str, method: str, path: str, token: str | None = None, body=None
+    base: str,
+    method: str,
+    path: str,
+    token: str | None = None,
+    body=None,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, bytes, http.client.HTTPMessage]:
     parts = urllib.parse.urlsplit(base)
     conn = http.client.HTTPSConnection(parts.hostname, parts.port, timeout=30)
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"} | (headers or {})
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
     data = body if isinstance(body, bytes) else json.dumps(body).encode() if body else None
@@ -167,6 +178,55 @@ def check_intents(gateway: str, file_id: str, upload: dict) -> None:
     print("intent to download, and those refusals left the intent to upload once")
 
 
+def preflight(base: str, path: str, origin: str, method: str) -> tuple[int, str | None]:
+    """A browser's CORS preflight: the status, and the origin the answer allows."""
+    parts = urllib.parse.urlsplit(base)
+    conn = http.client.HTTPSConnection(parts.hostname, parts.port, timeout=30)
+    try:
+        conn.request(
+            "OPTIONS",
+            path,
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": method,
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+        response = conn.getresponse()
+        response.read()
+        return response.status, response.headers.get("Access-Control-Allow-Origin")
+    finally:
+        conn.close()
+
+
+def check_cors(api: str, gateway: str) -> None:
+    """Cross-origin pages (M12.5): only the listed origin passes a preflight and is
+    named, on the API and on the gateway; and being named opens nothing without a
+    token."""
+    upload = f"/uploads/{uuid.uuid4()}"
+    for name, base, path, method in (
+        ("API", api, "/me", "GET"),
+        ("gateway", gateway, upload, "PUT"),
+    ):
+        status, allowed = preflight(base, path, FRONTEND_ORIGIN, method)
+        assert status in (200, 204) and allowed == FRONTEND_ORIGIN, (name, status, allowed)
+        status, allowed = preflight(base, path, "https://evil.example", method)
+        assert status >= 400 and allowed is None, (name, status, allowed)
+        status, allowed = preflight(base, path, FRONTEND_ORIGIN + ".evil.example", method)
+        assert status >= 400 and allowed is None, (name, status, allowed)
+    status, _, headers = request_full(api, "GET", "/me", headers={"Origin": FRONTEND_ORIGIN})
+    # 401, or 429 once this address's failed logins above are counted: refused either way.
+    assert status in (401, 429), status
+    assert headers.get("Access-Control-Allow-Origin") == FRONTEND_ORIGIN
+    assert headers.get("Access-Control-Allow-Credentials") is None
+    status, _, headers = request_full(api, "GET", "/me", headers={"Origin": "https://evil.example"})
+    assert status in (401, 429) and headers.get("Access-Control-Allow-Origin") is None
+    print(
+        f"ok  CORS: only {FRONTEND_ORIGIN} passes a preflight on the API and the gateway, "
+        "and still needs a token"
+    )
+
+
 def check_rate_limit(api: str, bob: str) -> None:
     for sent in range(1, 301):
         status, _, headers = request_full(api, "GET", "/me", bob)
@@ -228,6 +288,7 @@ def main(argv: list[str]) -> int:
     file_id, upload = check_authorization(args.api, alice, bob)
     check_intents(args.gateway, file_id, upload)
     check_rate_limit(args.api, bob)
+    check_cors(args.api, args.gateway)
     check_tls(
         {
             "API": args.api,

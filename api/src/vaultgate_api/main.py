@@ -16,6 +16,7 @@ from vaultgate_api import nodes
 from vaultgate_api.auth import build_validator, get_principal
 from vaultgate_api.clientip import ClientAddressMiddleware
 from vaultgate_api.config import settings
+from vaultgate_api.cors import install_cors
 from vaultgate_api.headers import SecurityHeadersMiddleware
 from vaultgate_api.logs import RequestContextMiddleware
 from vaultgate_api.metrics import BUILD_INFO, MetricsMiddleware
@@ -108,6 +109,8 @@ BUILD_INFO.info({"service": "api", "version": app.version})
 # before anything reads it, the request's span is open before the access log line is
 # written (so the line carries its trace ID), and the request ID is assigned before
 # metrics and handlers.
+# CORS innermost, so a preflight it answers is still counted, logged and traced.
+install_cors(app, settings.cors_origins)
 app.add_middleware(MetricsMiddleware)
 app.add_middleware(RequestContextMiddleware)
 # Public: a client's own trace context is ignored (vaultgate_api.tracing).
