@@ -60,7 +60,7 @@ ROOT_CA=${VAULTGATE_PKI_DIR:-$HOME/.vaultgate/pki}/root-ca.crt
 # root (Python's ssl reads SSL_CERT_FILE, Python's requests REQUESTS_CA_BUNDLE).
 API=https://localhost:8000
 KEYCLOAK=https://localhost:8080
-FRONTEND=http://localhost:5174
+FRONTEND=https://localhost:5174
 host_trust() { SSL_CERT_FILE=$ROOT_CA REQUESTS_CA_BUNDLE=$ROOT_CA "$@"; }
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -348,13 +348,19 @@ check_cluster() {
   # Content-Security-Policy that names this cluster's API, gateway and Keycloak.
   log "web frontend: served on $FRONTEND with this cluster's settings and policy"
   local headers config
-  headers=$(curl -sfI "$FRONTEND/files")
-  config=$(curl -sf "$FRONTEND/config.json")
+  # Over TLS from the cluster's CA, 1.3 only, like the other components.
+  headers=$(curl -sfI --cacert "$ROOT_CA" "$FRONTEND/files")
+  config=$(curl -sf --cacert "$ROOT_CA" "$FRONTEND/config.json")
+  if curl -s --cacert "$ROOT_CA" --tls-max 1.2 -o /dev/null "$FRONTEND/"; then
+    echo "the frontend accepted TLS 1.2" >&2
+    return 1
+  fi
+  grep -qi "^strict-transport-security:" <<<"$headers" || { echo "$headers" >&2; return 1; }
   grep -q "\"apiUrl\": \"$API\"" <<<"$config" || { echo "$config" >&2; return 1; }
   grep -qi "^content-security-policy: .*connect-src 'self' $API https://localhost:8888 $KEYCLOAK" \
     <<<"$headers" || { echo "$headers" >&2; return 1; }
   grep -qi "form-action https://localhost:8888" <<<"$headers" || { echo "$headers" >&2; return 1; }
-  echo "ok  the frontend serves the app, its settings point at this cluster, its policy names it"
+  echo "ok  the frontend serves the app over TLS 1.3, its settings point at this cluster, its policy names it"
   # Its origin is the one the API and the gateway allow (CORS, ADR 0017).
   local allowed
   allowed=$(curl -s --cacert "$ROOT_CA" -o /dev/null -D - -X OPTIONS "$API/me" -H "Origin: $FRONTEND" \

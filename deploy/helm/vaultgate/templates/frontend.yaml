@@ -5,7 +5,8 @@
 # The web frontend (M12.5, ADR 0019): the vaultgate-frontend image, a static app served
 # by nginx as a non-root user. It holds nothing secret and connects to nothing: the
 # browser does, to the addresses below, which the image also puts in its
-# Content-Security-Policy.
+# Content-Security-Policy. With tls.enabled it serves HTTPS like the other components:
+# the JavaScript it serves holds the user's tokens and must arrive unaltered on every hop.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,17 +36,32 @@ spec:
               value: {{ $api.oidc.issuer | quote }}
             - name: VAULTGATE_OIDC_CLIENT_ID
               value: {{ $fe.oidcClientId | quote }}
+            {{- if .Values.tls.enabled }}
+            # Its certificate from cert-manager, reloaded by the image when renewed.
+            - name: VAULTGATE_TLS_CERT_FILE
+              value: /etc/vaultgate/tls/tls.crt
+            - name: VAULTGATE_TLS_KEY_FILE
+              value: /etc/vaultgate/tls/tls.key
+            {{- end }}
           ports:
             - { name: http, containerPort: {{ $fe.port }} }
-          readinessProbe: { httpGet: { path: /healthz, port: http } }
-          livenessProbe: { httpGet: { path: /healthz, port: http } }
+          {{- $scheme := ternary "HTTPS" "HTTP" .Values.tls.enabled }}
+          readinessProbe: { httpGet: { path: /healthz, port: http, scheme: {{ $scheme }} } }
+          livenessProbe: { httpGet: { path: /healthz, port: http, scheme: {{ $scheme }} } }
           securityContext: {{- include "vaultgate.containerSecurityContext" . | nindent 12 }}
           resources: {{- toYaml $fe.resources | nindent 12 }}
           volumeMounts:
             # The settings and headers written at start, and nginx's own files.
             - { name: tmp, mountPath: /tmp }
+            {{- if .Values.tls.enabled }}
+            - { name: tls, mountPath: /etc/vaultgate/tls, readOnly: true }
+            {{- end }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: 16Mi } }
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret: { secretName: {{ include "vaultgate.fullname" $ctx }}-tls, defaultMode: 0440 }
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

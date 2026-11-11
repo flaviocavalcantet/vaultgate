@@ -26,12 +26,19 @@ knows.**
   intents and token checks. The image writes its `/config.json` and its
   Content-Security-Policy from them at start (connections to those three only, forms
   to the gateway only, no inline code, no frames).
+- **TLS like the rest.** With `tls.enabled`, the chart issues the frontend a
+  short-lived certificate from the cluster's issuer, as it does the API and the gateway,
+  and the image serves HTTPS, TLS 1.3 only, reloading the certificate when cert-manager
+  renews it. The files are public, but their integrity isn't optional: the JavaScript
+  holds the user's tokens and decides where they go, so a plain-HTTP hop, even inside
+  the cluster, would let anyone on the pod network serve a modified app.
 - **Hardened like the rest:** non-root, read-only root filesystem, all capabilities
   dropped, a disruption budget, and a network policy that lets anyone reach its port and
   lets it reach nothing (not even DNS): it serves files, and the browser makes every
   call.
 - **The ingress** gets a third host (`ingress.frontendHost`), on the same certificate.
-- **The local cluster** runs it on http://localhost:5174, and lists that origin in
+- **The local cluster** runs it on https://localhost:5174 (trusted through the cluster's
+  root, like the API), and lists that origin in
   `corsOrigins` and in Keycloak's `vaultgate-web` client (redirect, web origin,
   post-logout). The cluster check confirms the app is served with this cluster's
   settings and policy, and that the API allows its origin.
@@ -46,8 +53,8 @@ knows.**
 - Updating the frontend in a VaultGate deployment is a change of
   `frontend.image.tag` here, after the frontend's own CI has built, checked and scanned
   that commit.
-- In the local cluster the frontend is served over plain HTTP on loopback; behind the
-  chart's Ingress it is served over TLS like the rest. The hop from the ingress to the
-  frontend's pod is plain HTTP inside the cluster, which carries public files only.
+- Every hop to the frontend is TLS, as for the API and the gateway: the browser to the
+  Ingress, and the Ingress to the pod (the controller verifying the pod's certificate
+  with the trust bundle, as `ingress.serviceAnnotations` describes for the others).
 - The frontend's image is scanned in its own repository, so this repository's
   third-party image scan leaves it out, as it does VaultGate's own.
