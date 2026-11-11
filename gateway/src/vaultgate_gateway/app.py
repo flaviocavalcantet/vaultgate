@@ -14,6 +14,7 @@ import math
 import os
 import ssl
 import time
+import urllib.parse
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -554,10 +555,17 @@ class UploadHandler(BaseHandler):
             metrics.UPLOADS_IN_PROGRESS.dec()
 
 
+@tornado.web.stream_request_body
 class DownloadHandler(BaseHandler):
     """Serves one file, decrypted on the fly.
 
-    GET /downloads/{file_id} with `Authorization: Bearer <download intent token>`.
+    GET /downloads/{file_id} with `Authorization: Bearer <download intent token>`, or,
+    for a browser (M12.5, ADR 0018), POST /downloads/{file_id} with the token as an
+    HTML form field: `token=<download intent token>`, application/x-www-form-urlencoded.
+    A page can't put a header on a navigation, and a fetch would hold the whole file in
+    the page's memory; a submitted form hands the response to the browser's own
+    downloader, which streams it to disk. The token travels in the body, never in the
+    address, so it doesn't land in the browser's history, a proxy's logs or a Referer.
 
     The API consumes the intent and returns the wrapped data key; KMS unwraps it (bound
     to this file ID). The object is then read from S3 in pieces, decrypted and written
@@ -573,15 +581,40 @@ class DownloadHandler(BaseHandler):
     route = "/downloads/{download_id}"
     cors_methods = ("GET",)
     _in_progress = False
+    _form: bytearray | None = None
+
+    async def prepare(self) -> None:
+        super().prepare()
+        if self.request.method != "POST":
+            return
+        # The form is one short field: refuse anything else before reading a byte of it,
+        # so no body is ever buffered beyond FORM_MAX_BYTES.
+        content_type = self.request.headers.get("Content-Type", "")
+        if content_type.split(";")[0].strip().lower() != "application/x-www-form-urlencoded":
+            raise tornado.web.HTTPError(415)
+        self.request.connection.set_max_body_size(FORM_MAX_BYTES)
+        self._form = bytearray()
+
+    def data_received(self, chunk: bytes) -> None:
+        if self._form is None:  # a GET with a body: ignored, as before
+            return
+        self._form += chunk
+        if len(self._form) > FORM_MAX_BYTES:
+            raise tornado.web.HTTPError(413)
 
     async def get(self, download_id: str) -> None:
+        await self._serve(download_id, self._bearer_token())
+
+    async def post(self, download_id: str) -> None:
+        await self._serve(download_id, form_token(bytes(self._form or b"")))
+
+    async def _serve(self, download_id: str, token: str | None) -> None:
         services: Services = self.application.settings["services"]
         try:
             file_id = uuid.UUID(download_id)
         except ValueError:
             raise tornado.web.HTTPError(404) from None
         self._span.set_attribute("vaultgate.file_id", str(file_id))
-        token = self._bearer_token()
         if token is None:
             raise tornado.web.HTTPError(401)
         client = self._start_transfer(services.limits)
@@ -692,6 +725,24 @@ class DownloadHandler(BaseHandler):
         if self._in_progress:
             self._in_progress = False
             metrics.DOWNLOADS_IN_PROGRESS.dec()
+
+
+# A download form's body: one token field, a few hundred bytes. Anything longer is refused.
+FORM_MAX_BYTES = 4096
+
+
+def form_token(body: bytes) -> str | None:
+    """The `token` field of a download form, if the form is exactly that one field."""
+    try:
+        fields = urllib.parse.parse_qs(
+            body.decode("ascii"), keep_blank_values=True, strict_parsing=True
+        )
+    except (UnicodeDecodeError, ValueError):
+        return None
+    values = fields.get("token")
+    if set(fields) != {"token"} or values is None or len(values) != 1 or not values[0]:
+        return None
+    return values[0]
 
 
 class _ClientGone(Exception):

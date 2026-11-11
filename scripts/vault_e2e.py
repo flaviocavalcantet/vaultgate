@@ -126,10 +126,20 @@ def upload(url: str, token: str, pieces, size: int) -> tuple[int, dict | None]:
     return response.status, json.loads(body) if response.status == 201 else None
 
 
-def download(url: str, token: str) -> tuple[int, dict, str, int]:
-    """GET and hash the body as it streams; returns status, headers, sha256, size."""
+def download(url: str, token: str, form: bool = False) -> tuple[int, dict, str, int]:
+    """GET and hash the body as it streams; returns status, headers, sha256, size.
+    With `form`, as a browser's page does it (M12.5, ADR 0018): the token in a POSTed
+    form, which the browser's own downloader follows."""
     connection, path = _connection(url)
-    connection.request("GET", path, headers={"Authorization": f"Bearer {token}"})
+    if form:
+        connection.request(
+            "POST",
+            path,
+            body=urllib.parse.urlencode({"token": token}),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    else:
+        connection.request("GET", path, headers={"Authorization": f"Bearer {token}"})
     response = connection.getresponse()
     digest, size = hashlib.sha256(), 0
     while piece := response.read(MiB):
@@ -455,12 +465,17 @@ def check_shares(args, file_id: str, sha256: str, alice: str) -> None:
         api, "POST", "/shares/access/downloads", {"token": token, "grant": grant}
     )
     assert status == 201, f"share download intent: {status}"
-    status, _, got_sha256, _ = download(intent["url"], intent["token"])
+    # The recipient's page would hand this to the browser: a form, not a header.
+    status, headers, got_sha256, _ = download(intent["url"], intent["token"], form=True)
     assert (status, got_sha256) == (200, sha256), (status, got_sha256)
+    assert headers.get("Content-Disposition", "").startswith("attachment;"), headers
     status, listed = api_call(api, "GET", f"/files/{file_id}/shares", alice)
     [counted] = [s for s in listed if s["id"] == share["id"]]
     assert counted["downloads"] == 1, counted
-    print("ok  shares: an external recipient proves the address by email code and downloads")
+    print(
+        "ok  shares: an external recipient proves the address by email code and downloads, "
+        "as a browser does (the token in a form)"
+    )
 
     path = f"/files/{file_id}/shares/{share['id']}"
     assert api_call(api, "DELETE", path, alice)[0] == 204, "revoke"

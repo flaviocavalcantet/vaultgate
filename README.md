@@ -312,7 +312,11 @@ On any failure after the intent is consumed, the multipart upload is aborted and
 curl -X POST -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:8000/files/$FILE_ID/download
 # 201 {"url": "http://localhost:8888/downloads/<id>", "token": "...", "expires_at": "..."}
 curl -OJ -H "Authorization: Bearer $DOWNLOAD_TOKEN" http://localhost:8888/downloads/$FILE_ID
+# or as a browser does it: the token as a form field, which its downloader follows
+curl -OJ --data-urlencode "token=$DOWNLOAD_TOKEN" http://localhost:8888/downloads/$FILE_ID
 ```
+
+A web page can't put a header on a navigation, so the gateway also takes the token as the one field of a POSTed form (`application/x-www-form-urlencoded`, at most 4 KiB): the page submits a form to the intent's `url`, and the browser's downloader streams the file to disk. The token is never accepted in the address, where history, proxy logs and `Referer` would keep it ([ADR 0018](docs/adr/0018-browser-downloads.md)).
 
 Only the owner gets a download intent, and only for an `uploaded` file whose PII scan is clean or released ([PII scanning](#pii-scanning)). It is single use and lasts 5 minutes (`VAULTGATE_DOWNLOAD_INTENT_TTL_SECONDS`). The gateway consumes it, has KMS unwrap the file's data key (bound to the file ID), and streams the object from S3, decrypting in `VAULTGATE_READ_SIZE` pieces (256 KiB). It waits for each piece to reach the client before reading the next, so a slow client never makes the gateway buffer the file. In a local run, a 100 MiB download raised the gateway's resident memory from 64 to 74 MiB, at full speed and throttled alike.
 
@@ -629,7 +633,7 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
 - [ ] **M12.5 — Frontend support:** what the web frontend ([vaultgate-frontend](https://github.com/flaviocavalcantet/vaultgate-frontend), its own repository and plan) needs from the API and the gateway
   - [x] Cross-origin requests (CORS) on the API and the gateway: an exact allow-list of origins, off by default, so a frontend served from another origin can call them; no credentials, and every request still needs its token ([ADR 0017](docs/adr/0017-cross-origin-requests.md))
   - [x] `GET /me` says whether the caller is an administrator (`is_admin`), by the API's own admin groups, so the frontend doesn't keep a copy of that setting
-  - [ ] Downloads a browser can follow as a plain link: the gateway takes the download token in a request header today, so large files can't be handed to the browser's own download
+  - [x] Downloads a browser can follow: the download token as the one field of a POSTed form, which the browser's downloader streams to disk; never in the address ([ADR 0018](docs/adr/0018-browser-downloads.md))
   - [ ] The frontend deployed by the chart as an optional component, with the local Keycloak client's redirect addresses to match
 - [ ] **M13 — Agent baseline and evaluation:** a single-agent invoice reviewer and a reproducible benchmark that scores task success and safety separately
   - [ ] Japanese PII detectors (My Number, corporate number) and qualified-invoice registration numbers, validated by check digit

@@ -96,6 +96,7 @@ Each row is a threat to an element or flow. The **status** is one of:
 | A forged or altered access token at the API | Signature against the issuer's JWKS, RS256 only, `iss`, `aud`, `exp` checked on every request (ADR 0002); the negative tests send no token, a non-JWT, a changed payload and `alg: none` to all 36 protected routes | mitigated |
 | A stolen access token | Lives 5 minutes; TLS everywhere; no cookies, so no CSRF; the token is never logged | mitigated |
 | Someone else's intent token at the gateway | 256-bit random, hashed at rest, single use, minutes long, bound to one file and one direction (upload or download); tested by the end-to-end check and the negative tests | mitigated |
+| An intent token kept in a browser's history, a proxy's logs or a `Referer` | The gateway never accepts a token in the address: a browser's download carries it in a POSTed form, at most 4 KiB (ADR 0018); access logs record the path only | mitigated |
 | A guessed share link or code | The link is 256-bit random; the code is 6 digits, valid 10 minutes, 5 attempts each, at most 5 sent an hour, mailed to the recipient's address (ADR 0006) | mitigated |
 | A recipient's mailbox taken over | The share is as safe as that mailbox; shares expire, count downloads and can be revoked at once | accepted (TM-8) |
 | Something else posing as the gateway or the scanner on the internal port | Network policy, a client certificate from VaultGate's root naming the caller, and the caller's token (ADR 0013); `scripts/mtls_check.py` | mitigated |
