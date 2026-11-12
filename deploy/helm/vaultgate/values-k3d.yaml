@@ -8,7 +8,7 @@
 # The web frontend: its development server (vaultgate-frontend, `npm run dev`) and the
 # cluster's own (frontend below), the origins the local Keycloak client `vaultgate-web`
 # allows too.
-corsOrigins: ["http://localhost:5173", "https://localhost:5174"]
+corsOrigins: ["http://localhost:5173", "https://localhost:5173", "https://localhost:5174"]
 
 # The web frontend in the cluster (M12.5, ADR 0019), on https://localhost:5174, with a
 # certificate from the cluster's CA like the API and the gateway. The image is the

@@ -475,11 +475,14 @@ Alertmanager routes every alert by email to Mailpit: `oncall@vaultgate.local` fo
 ```bash
 make k3d-check     # vault e2e against the cluster, traces included; Argo CD synced, OpenBao and its CA, TLS, autoscaler, network policies (in and out), scrape targets, dashboards, Alertmanager mail
 make k3d-images    # after a code change, or a new commit pushed: rebuild, load into the cluster, restart the pods
+make dev-cert      # the cluster's localhost certificate to ~/.vaultgate/dev-tls, for the frontend's development server over HTTPS
 make k3d-down      # delete the cluster
 kubectl -n argocd port-forward svc/argocd-server 8081:80   # Argo CD UI on http://localhost:8081, user admin, password below
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
 kubectl -n vaultgate get scaledobject,hpa,pods             # the gateway's autoscaler (KEDA's ScaledObject and the HPA it manages) and the pods
 ```
+
+To develop the frontend against the cluster, its development server runs over HTTPS on https://localhost:5173 (`npm run dev:k3d` in vaultgate-frontend), an origin the cluster allows (`corsOrigins` in `values-k3d.yaml`, Keycloak's `vaultgate-web` client). Its certificate is issued in the cluster by `vaultgate-ca`, for `localhost` only, and renewed like the others (`deploy/k3d/pki`); `make dev-cert` copies it out, key included (readable only by you), after checking it verifies for `localhost` against the root. It lasts a day: run `make dev-cert` again when the browser says it has expired. There is nothing new to trust: it chains to the root the browser already trusts for the cluster. Compose keeps `http://localhost:5173` for the plain `npm run dev`.
 
 Chart or manifest changes reach the cluster when they are pushed: Argo CD looks every minute. Code changes reach it with `make k3d-images`; run it after pushing a commit too, since Argo CD then asks for that commit's images. CI runs `k3d-up` and `k3d-check` on every PR, syncing the PR's commit with images built in the job, and on main with the images it just published to GHCR.
 

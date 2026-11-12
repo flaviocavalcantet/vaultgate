@@ -53,6 +53,21 @@ spec:
         role: cert-manager
         serviceAccountRef: { name: openbao-issuer }
 ---
+# The frontend's development server over HTTPS (vaultgate-frontend's `npm run dev:k3d`):
+# a localhost certificate from the same issuer, renewed like the others, which
+# `make dev-cert` copies to the developer's machine. Local cluster only.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vaultgate-dev-localhost
+spec:
+  secretName: vaultgate-dev-localhost-tls
+  issuerRef: { kind: ClusterIssuer, name: vaultgate-ca }
+  duration: 24h
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  usages: [digital signature, server auth]
+  dnsNames: [localhost]
+---
 # What VaultGate's clients trust: the root, and the public CAs (Debian's bundle, for
 # anything outside the cluster), as one file in a ConfigMap in every namespace.
 apiVersion: trust.cert-manager.io/v1alpha1
