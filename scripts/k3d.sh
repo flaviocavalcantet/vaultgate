@@ -23,6 +23,9 @@
 #                          tests: what the API, the gateway and the cluster must refuse
 #   scripts/k3d.sh zap     OWASP ZAP against the API and the gateway (passive and active
 #                          scans); its reports go to VAULTGATE_ZAP_DIR (zap-reports)
+#   scripts/k3d.sh browser the web app's browser tests (vaultgate-frontend's Playwright and
+#                          axe suite) against the cluster, at the commit whose image the
+#                          cluster runs (VAULTGATE_FRONTEND_TESTS_REF to choose another)
 #   scripts/k3d.sh dev-cert  copy the cluster's localhost certificate and key to
 #                          VAULTGATE_DEV_TLS_DIR (~/.vaultgate/dev-tls), for the
 #                          frontend's development server over HTTPS (`npm run dev:k3d`)
@@ -323,6 +326,36 @@ dev_cert() { # dev_cert <dir>
   echo "localhost certificate in $dir, $(openssl x509 -in "$dir/tls.crt" -noout -enddate)"
 }
 
+# The frontend's commit the chart deploys on this cluster (values-k3d.yaml).
+frontend_tag() {
+  awk '/^frontend:/ {f = 1; next} f && /^[^ #]/ {f = 0} f && $1 == "tag:" {print $2; exit}' \
+    deploy/helm/vaultgate/values-k3d.yaml
+}
+
+# The web app's browser tests against the cluster: vaultgate-frontend's e2e suite, at
+# the commit whose image the cluster runs, so the tests and the app match. Chromium
+# trusts the cluster's root the way a person's browser does (its certificate store),
+# rather than ignoring certificate errors. Needs Node 22 and certutil (libnss3-tools).
+browser() {
+  local ref dir=${VAULTGATE_FRONTEND_DIR:-.frontend-e2e}
+  ref=${VAULTGATE_FRONTEND_TESTS_REF:-$(frontend_tag)}
+  [[ -n $ref ]] || { echo "no frontend commit in values-k3d.yaml" >&2; return 1; }
+  log "the web app's browser tests, vaultgate-frontend at $ref"
+  if [[ ! -d $dir/.git ]]; then
+    git init -q "$dir"
+    git -C "$dir" remote add origin https://github.com/flaviocavalcantet/vaultgate-frontend
+  fi
+  git -C "$dir" fetch -q --depth 1 origin "$ref"
+  git -C "$dir" checkout -q --force FETCH_HEAD
+  (cd "$dir" && npm ci --no-audit --no-fund && npx playwright install ${CI:+--with-deps} chromium)
+  mkdir -p "$HOME/.pki/nssdb"
+  [[ -f $HOME/.pki/nssdb/cert9.db ]] || certutil -d "sql:$HOME/.pki/nssdb" -N --empty-password
+  certutil -d "sql:$HOME/.pki/nssdb" -D -n vaultgate-local 2>/dev/null || true
+  certutil -d "sql:$HOME/.pki/nssdb" -A -t C,, -n vaultgate-local -i "$ROOT_CA"
+  (cd "$dir" && VAULTGATE_E2E_URL=$FRONTEND VAULTGATE_E2E_MAILPIT=http://localhost:8025 \
+    npm run e2e)
+}
+
 restart() {
   kubectl -n vaultgate rollout restart deployment
   kubectl -n vaultgate rollout status deployment --timeout=300s
@@ -538,6 +571,7 @@ up) up ;;
 images) images && restart ;;
 check) check ;;
 zap) zap ;;
+browser) browser ;;
 dev-cert) dev_cert "${VAULTGATE_DEV_TLS_DIR:-$HOME/.vaultgate/dev-tls}" ;;
 down) k3d cluster delete "$CLUSTER" ;;
 *)

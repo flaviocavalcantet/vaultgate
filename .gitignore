@@ -232,3 +232,6 @@ __marimo__/
 # Load test results (make load-test, load-smoke)
 loadtest/results/
 zap-reports/
+
+# The web app's browser tests, checked out by scripts/k3d.sh browser
+.frontend-e2e/

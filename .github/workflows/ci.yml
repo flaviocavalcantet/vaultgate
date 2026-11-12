@@ -175,6 +175,24 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q swtpm swtpm-tools tpm2-tools tpm2-openssl
       - run: make k3d-up
       - run: make k3d-check
+      # The web app's browser tests (vaultgate-frontend's Playwright and axe suite), at the
+      # commit whose image the cluster runs, before the load and ZAP runs leave their files.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install certutil, for Chromium to trust the cluster's root
+        run: sudo apt-get install -y -q libnss3-tools
+      - run: make k3d-browser
+        env:
+          # The suite's own pull request, checked against the image main published: the
+          # suite changes no app code. Removed once that pull request is merged and pinned.
+          VAULTGATE_FRONTEND_TESTS_REF: 24b42612a298a7eb36da3ddd0bb92a569b3b6e19
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-tests
+          path: .frontend-e2e/e2e-report
+          if-no-files-found: ignore
       # A short load run with thresholds (M8): no failed request, gateway memory flat,
       # no pod restarts (loadtest/check.py).
       - uses: actions/setup-python@v7
