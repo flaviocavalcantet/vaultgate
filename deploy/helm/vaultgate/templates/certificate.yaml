@@ -1,5 +1,7 @@
 {{- if .Values.tls.enabled }}
-{{- range $name := list "api" "gateway" "scanner" }}
+{{- $names := list "api" "gateway" "scanner" }}
+{{- if .Values.frontend.enabled }}{{ $names = append $names "frontend" }}{{ end }}
+{{- range $name := $names }}
 {{- $ctx := dict "root" $ "name" $name }}
 {{- $fullname := include "vaultgate.fullname" $ctx }}
 ---

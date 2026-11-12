@@ -189,6 +189,29 @@ scanner:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { memory: 1536Mi }
 
+# The web frontend (vaultgate-frontend, M12.5, ADR 0019), optional: its own image, a
+# static app served by nginx as a non-root user. It is told the API's, the gateway's and
+# the identity provider's addresses (api.publicUrl, api.gatewayPublicUrl,
+# api.oidc.issuer) and sends a Content-Security-Policy that allows only those. Its
+# public address must also be in corsOrigins, and among the redirect addresses of the
+# identity provider's client.
+frontend:
+  enabled: false
+  image:
+    # The frontend's own repository publishes it, tagged with its commit: a pinned tag,
+    # bumped on purpose, not VaultGate's image.tag.
+    repository: ghcr.io/flaviocavalcantet/vaultgate-frontend
+    tag: ""
+  # The OpenID Connect public client the app signs in with (PKCE).
+  oidcClientId: vaultgate-web
+  replicas: 2
+  port: 8080
+  resources:
+    requests: { cpu: 10m, memory: 16Mi }
+    limits: { memory: 64Mi }
+  # As the API's: an extra NodePort Service for local clusters; empty behind an Ingress.
+  nodePort: ""
+
 # TLS on the API's ports and the gateway's (M9, ADR 0012), with certificates from
 # cert-manager (its CRDs installed), and the trust bundle every VaultGate client
 # verifies against. Off, the services speak plain HTTP.
@@ -223,6 +246,8 @@ ingress:
   annotations: {}
   apiHost: api.vaultgate.localhost
   gatewayHost: gateway.vaultgate.localhost
+  # The frontend's host, when frontend.enabled.
+  frontendHost: vaultgate.localhost
   # TLS for those hosts, as Ingress spec.tls: [{ secretName: ..., hosts: [...] }].
   # Anywhere but a local cluster, bearer tokens and files must not travel in plain HTTP:
   # set it (cert-manager issues the certificate from it, with its annotation above).

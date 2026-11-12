@@ -1,0 +1,125 @@
+{{- if .Values.frontend.enabled }}
+{{- $ctx := dict "root" . "name" "frontend" }}
+{{- $fe := .Values.frontend }}
+{{- $api := .Values.api }}
+# The web frontend (M12.5, ADR 0019): the vaultgate-frontend image, a static app served
+# by nginx as a non-root user. It holds nothing secret and connects to nothing: the
+# browser does, to the addresses below, which the image also puts in its
+# Content-Security-Policy. With tls.enabled it serves HTTPS like the other components:
+# the JavaScript it serves holds the user's tokens and must arrive unaltered on every hop.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  replicas: {{ $fe.replicas }}
+  selector:
+    matchLabels: {{- include "vaultgate.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "vaultgate.labels" $ctx | nindent 8 }}
+    spec:
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      automountServiceAccountToken: false
+      {{- include "vaultgate.affinity" $ctx | nindent 6 }}
+      containers:
+        - name: frontend
+          image: "{{ $fe.image.repository }}:{{ required "frontend.image.tag is needed: the frontend's commit to run" $fe.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: VAULTGATE_API_URL
+              value: {{ $api.publicUrl | quote }}
+            - name: VAULTGATE_GATEWAY_URL
+              value: {{ $api.gatewayPublicUrl | quote }}
+            - name: VAULTGATE_OIDC_AUTHORITY
+              value: {{ $api.oidc.issuer | quote }}
+            - name: VAULTGATE_OIDC_CLIENT_ID
+              value: {{ $fe.oidcClientId | quote }}
+            {{- if .Values.tls.enabled }}
+            # Its certificate from cert-manager, reloaded by the image when renewed.
+            - name: VAULTGATE_TLS_CERT_FILE
+              value: /etc/vaultgate/tls/tls.crt
+            - name: VAULTGATE_TLS_KEY_FILE
+              value: /etc/vaultgate/tls/tls.key
+            {{- end }}
+          ports:
+            - { name: http, containerPort: {{ $fe.port }} }
+          {{- $scheme := ternary "HTTPS" "HTTP" .Values.tls.enabled }}
+          readinessProbe: { httpGet: { path: /healthz, port: http, scheme: {{ $scheme }} } }
+          livenessProbe: { httpGet: { path: /healthz, port: http, scheme: {{ $scheme }} } }
+          securityContext: {{- include "vaultgate.containerSecurityContext" . | nindent 12 }}
+          resources: {{- toYaml $fe.resources | nindent 12 }}
+          volumeMounts:
+            # The settings and headers written at start, and nginx's own files.
+            - { name: tmp, mountPath: /tmp }
+            {{- if .Values.tls.enabled }}
+            - { name: tls, mountPath: /etc/vaultgate/tls, readOnly: true }
+            {{- end }}
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 16Mi } }
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret: { secretName: {{ include "vaultgate.fullname" $ctx }}-tls, defaultMode: 0440 }
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+  {{- if .Values.ingress.enabled }}
+  {{- with .Values.ingress.serviceAnnotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+spec:
+  selector: {{- include "vaultgate.selector" $ctx | nindent 4 }}
+  ports:
+    - { name: http, port: {{ $fe.port }}, targetPort: http }
+{{- with $fe.nodePort }}
+---
+# The app on every node (local clusters).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}-nodeport
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  type: NodePort
+  selector: {{- include "vaultgate.selector" $ctx | nindent 4 }}
+  ports:
+    - { name: http, port: {{ $fe.port }}, targetPort: http, nodePort: {{ . }} }
+{{- end }}
+{{- if .Values.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels: {{- include "vaultgate.selector" $ctx | nindent 6 }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# In: its port, from anyone (it serves public files). Out: nothing at all, not even
+# DNS; the browser makes every call the app needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "vaultgate.fullname" $ctx }}
+  labels: {{- include "vaultgate.labels" $ctx | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "vaultgate.selector" $ctx | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - { port: http }
+  egress: []
+{{- end }}
+{{- end }}
