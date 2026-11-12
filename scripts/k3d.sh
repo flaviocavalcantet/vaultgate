@@ -23,6 +23,9 @@
 #                          tests: what the API, the gateway and the cluster must refuse
 #   scripts/k3d.sh zap     OWASP ZAP against the API and the gateway (passive and active
 #                          scans); its reports go to VAULTGATE_ZAP_DIR (zap-reports)
+#   scripts/k3d.sh dev-cert  copy the cluster's localhost certificate and key to
+#                          VAULTGATE_DEV_TLS_DIR (~/.vaultgate/dev-tls), for the
+#                          frontend's development server over HTTPS (`npm run dev:k3d`)
 #   scripts/k3d.sh down    delete the cluster
 #
 # Argo CD deploys what is in git, not the working tree: it syncs VAULTGATE_REVISION
@@ -292,6 +295,34 @@ up() {
   log "ready: web app $FRONTEND, OpenBao https://localhost:8200, API $API, gateway https://localhost:8888 (TLS: trust $ROOT_CA), Keycloak $KEYCLOAK, Mailpit http://localhost:8025, Grafana http://localhost:3000 (admin/admin), Prometheus http://localhost:9090, Alertmanager http://localhost:9093"
 }
 
+# The localhost certificate (deploy/k3d/pki) for the frontend's development server,
+# written to <dir> with the key readable only by its owner. It lasts a day: run it again
+# when the browser says it has expired.
+dev_cert() { # dev_cert <dir>
+  local dir=$1 tmp
+  kubectl -n cert-manager wait --for=condition=Ready certificate/vaultgate-dev-localhost --timeout=120s >/dev/null
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  tmp=$(mktemp -d "$dir/.new.XXXXXX")
+  (
+    umask 077
+    for file in tls.crt tls.key; do
+      kubectl -n cert-manager get secret vaultgate-dev-localhost-tls -o "jsonpath={.data.${file//./\\.}}" |
+        base64 -d >"$tmp/$file"
+    done
+  )
+  # The chain (the certificate, then the intermediate) must verify for localhost
+  # against the root the browser trusts.
+  openssl verify -CAfile "$ROOT_CA" -untrusted "$tmp/tls.crt" -verify_hostname localhost \
+    -purpose sslserver "$tmp/tls.crt" >/dev/null || {
+    rm -rf "$tmp"
+    return 1
+  }
+  mv "$tmp/tls.crt" "$tmp/tls.key" "$dir/"
+  rmdir "$tmp"
+  echo "localhost certificate in $dir, $(openssl x509 -in "$dir/tls.crt" -noout -enddate)"
+}
+
 restart() {
   kubectl -n vaultgate rollout restart deployment
   kubectl -n vaultgate rollout status deployment --timeout=300s
@@ -400,6 +431,11 @@ check_pki() {
     fi
   done
   python3 scripts/pki.py check-service localhost:8000 localhost:8888 localhost:8080
+  log "the development server's localhost certificate (make dev-cert) verifies against the root"
+  local devtls
+  devtls=$(mktemp -d)
+  dev_cert "$devtls"
+  rm -rf "$devtls"
   log "PostgreSQL: the API logs in with its own short-lived credentials, over TLS, verified; without TLS PostgreSQL refuses"
   kubectl -n vaultgate exec -i deploy/vaultgate-api -c api -- python - <scripts/postgres_tls_check.py
   log "mutual TLS: the API's internal port wants the gateway's client certificate, not none or a server's"
@@ -502,6 +538,7 @@ up) up ;;
 images) images && restart ;;
 check) check ;;
 zap) zap ;;
+dev-cert) dev_cert "${VAULTGATE_DEV_TLS_DIR:-$HOME/.vaultgate/dev-tls}" ;;
 down) k3d cluster delete "$CLUSTER" ;;
 *)
   sed -n '2,20p' "$0"
