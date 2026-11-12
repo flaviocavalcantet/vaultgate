@@ -183,6 +183,10 @@ jobs:
       - name: Install certutil, for Chromium to trust the cluster's root
         run: sudo apt-get install -y -q libnss3-tools
       - run: make k3d-browser
+        env:
+          # Temporary: vaultgate-frontend #15's tests (test code only) against the same
+          # app image. Removed when #15 merges and its commit is pinned.
+          VAULTGATE_FRONTEND_TESTS_REF: 30399036f50c9a0c96faa3575d14b1e5d8b20f44
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
