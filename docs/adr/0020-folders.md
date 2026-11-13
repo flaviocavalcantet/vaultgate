@@ -49,6 +49,9 @@ on each file.** Moving or renaming a file or folder changes rows, never an objec
 - **At most 16 levels.** Deep enough for any filing scheme, and it bounds every walk up
   or down a tree. A move is refused if the folder would land inside itself or one of
   its own subfolders, or if the deepest folder it holds would end up deeper than 16.
+  Placing a folder (creating it in another, or moving it) takes a lock on the owner's
+  whole tree first, so two moves that each pass alone (A into B, B into A) can't
+  together make a cycle or a tree too deep.
 - **Listings by folder.** `GET /files` lists the top level, `?folder_id=` a folder;
   `GET /folders` likewise with `parent_id`, by name. `GET /folders/{id}` returns the
   path from the top level for breadcrumbs.

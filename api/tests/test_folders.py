@@ -4,13 +4,15 @@ import importlib.util
 import uuid
 
 from sqlalchemy import select, text, update
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.conftest import API_ROOT, requires_db
 from tests.test_audit import events
 from tests.test_files import as_user, create
-from vaultgate_api import audit
+from vaultgate_api import audit, folders
 from vaultgate_api.folders import MAX_DEPTH
-from vaultgate_api.models import File, User
+from vaultgate_api.models import File, Folder, User
 
 pytestmark = requires_db
 
@@ -315,3 +317,39 @@ def test_numbered_names_keep_their_extension_and_fit() -> None:
     assert numbered(".env", 2) == ".env (2)"
     long = numbered("x" * 250 + ".pdf", 12)
     assert len(long) == 255 and long.endswith(" (12).pdf")
+
+
+async def test_placements_in_one_tree_wait_for_each_other(engine) -> None:
+    """Two moves that each pass the checks alone (A into B, B into A) must not run at
+    once: a placement holds the owner's tree lock until its transaction ends."""
+    async with engine.connect() as first, engine.connect() as second:
+        await first.begin()
+        await second.begin()
+        holder = AsyncSession(bind=first)
+        owner = User(issuer="https://test", subject=f"tree-lock-{uuid.uuid4()}")
+        holder.add(owner)
+        await holder.flush()
+        parent = Folder(owner_id=owner.id, name="parent")
+        holder.add(parent)
+        await holder.flush()
+        await folders.check_placement(holder, owner.id, parent.id)  # takes the lock
+
+        waiter = AsyncSession(bind=second)
+        await waiter.execute(text("SET LOCAL lock_timeout = '200ms'"))
+        try:
+            await folders.check_placement(waiter, owner.id, uuid.uuid4())
+        except DBAPIError as error:
+            assert "lock timeout" in str(error.orig)
+        else:
+            raise AssertionError("the second placement did not wait for the first")
+        # Another owner's tree is not held up.
+        await second.rollback()
+        await second.begin()
+        other = AsyncSession(bind=second)
+        await other.execute(text("SET LOCAL lock_timeout = '200ms'"))
+        await other.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"vaultgate-folder-tree:{uuid.uuid4()}"},
+        )
+        await first.rollback()
+        await second.rollback()

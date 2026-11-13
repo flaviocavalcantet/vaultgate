@@ -123,9 +123,18 @@ async def check_placement(
     session, owner_id: uuid.UUID, parent_id: uuid.UUID | None, *, moving: Folder | None = None
 ) -> None:
     """Refuse a folder (new, or `moving`) under `parent_id` when the parent isn't the
-    caller's, when it would sit inside itself, or when the tree would get too deep."""
+    caller's, when it would sit inside itself, or when the tree would get too deep.
+    Takes the owner's tree lock first; callers take a folder's name lock after it, never
+    before, so the two locks are always taken in the same order."""
     if parent_id is None:
         return
+    # One lock for the owner's whole tree, before reading it: two moves that each pass
+    # the checks alone (A into B and B into A) would otherwise make a cycle together,
+    # or a tree too deep. Held until the transaction ends; placements are rare.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"vaultgate-folder-tree:{owner_id}"},
+    )
     parent = await own_folder(session, parent_id, owner_id)
     ancestors = await path(session, parent)
     if moving is not None and any(f.id == moving.id for f in ancestors):
