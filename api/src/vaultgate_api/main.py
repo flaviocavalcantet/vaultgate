@@ -141,6 +141,7 @@ protected.include_router(policies.router)
 protected.include_router(files.router)
 protected.include_router(folders.router)
 protected.include_router(shares.router)
+protected.include_router(shares.folder_router)
 protected.include_router(shared_with_me.router)
 app.include_router(protected)
 

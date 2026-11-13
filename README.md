@@ -403,27 +403,30 @@ To try the scanner and the scan state by hand, see [Try the PII scanner](docs/lo
 
 ### Sharing
 
-The owner of a file shares it with one recipient, named by email address (M5):
+The owner of a file, or of a folder with everything in it (M12.6), shares it with one recipient, named by email address (M5):
 
 - `POST /files/{id}/shares` with `{"recipient_email", "recipient_kind": "external" | "internal", "expires_in_days", "max_downloads"}` needs the `share` action and a file the scan allows to be shared. It returns the share and its link, whose token is shown only then; only the token's SHA-256 is stored. An **external** recipient proves the address with a code sent to it (below); an **internal** one signs in, with a verified email equal to the address (below). See [ADR 0006](docs/adr/0006-sharing.md).
 - Links last 7 days (`VAULTGATE_SHARE_DEFAULT_DAYS`, at most `VAULTGATE_SHARE_MAX_DAYS`, 30) and allow 5 downloads (`VAULTGATE_SHARE_DEFAULT_DOWNLOADS`, at most `VAULTGATE_SHARE_MAX_DOWNLOADS`, 100); the owner chooses within those bounds. A file has at most `VAULTGATE_MAX_ACTIVE_SHARES_PER_FILE` (50) usable shares at once.
 - `GET /files/{id}/shares` lists them with their state (`active`, `expired`, `used`, `revoked`); `DELETE /files/{id}/shares/{share_id}` revokes one at once. Revoking needs only ownership, so a user who may no longer share can still take links back.
+- **A folder** is shared the same way, at `/folders/{id}/shares` (`POST`, `GET`, `DELETE .../{share_id}`), with the `share` action ([ADR 0020](docs/adr/0020-folders.md)). The recipient sees its live contents at every level: files added later appear, files moved out or deleted are gone. Only files that can be downloaded now are listed (uploaded, and clean or released for sharing); files being scanned or held are left out for the recipient, and shown to the owner as they are in their own listing. One download limit covers all its files. Deleting the folder ends its shares.
 - The token travels in the link's query string (`.../shares/access?token=...`), which is never logged. Logs name the share, never the recipient's address.
 
 **External recipients** have no account. The link's token and a code sent to the address authorize them, on public routes:
 
-1. `GET /shares/access?token=...` tells what the link is: the kind of recipient, a hint of the address (`b***@example.com`), the expiry and the downloads left. Nothing about the file before the address is proven.
+1. `GET /shares/access?token=...` tells what the link is: a `file` or a `folder` (`kind`), the kind of recipient, a hint of the address (`b***@example.com`), the expiry and the downloads left. Nothing about the file before the address is proven.
 2. `POST /shares/access/code` with `{"token"}` emails a 6-digit code to the address. It lasts 10 minutes (`VAULTGATE_SHARE_CODE_TTL_SECONDS`) and allows 5 tries (`VAULTGATE_SHARE_CODE_ATTEMPTS`). At most 5 codes per share an hour (`VAULTGATE_SHARE_CODE_SENDS_PER_HOUR`), 60 s apart (`VAULTGATE_SHARE_CODE_RESEND_SECONDS`), and 50 an hour across one owner's shares (`VAULTGATE_SHARE_CODES_PER_OWNER_PER_HOUR`); more get `429`. The email is fixed text with only the code: nothing a user typed (file name, display name) goes into a message VaultGate sends to an address they chose.
 3. `POST /shares/access/verify` with `{"token", "code"}` returns a **grant**, shown once, that lasts 30 minutes (`VAULTGATE_SHARE_GRANT_TTL_SECONDS`). A code works once.
-4. `POST /shares/access/downloads` with `{"token", "grant"}` returns a single-use download intent for the gateway, as for an owner's download.
+4. For a folder, `POST /shares/access/contents` with `{"token", "grant", "folder_id"}` lists one of its folders (none: the shared folder): its `path` from the shared folder down, its subfolders and the files that can be downloaded now.
+5. `POST /shares/access/downloads` with `{"token", "grant"}` returns a single-use download intent for the gateway, as for an owner's download; for a folder, with the `file_id` of a file in it, at any level.
 
 Codes and grants are stored as hashes. Every step re-checks that the share is active and that the scan lets the file be shared, and the gateway's consume checks again and counts the download against the share. A revoke, an expiry, the last download or a rescan into quarantine therefore applies at once, also to grants and intents already handed out; a deactivated owner ends their shares too. The owner's own access policies (networks, hours) do not govern the recipient: the owner decided when sharing, and revokes the link to end it.
 
 **Internal recipients** are VaultGate users. They sign in as for anything else; a share is theirs when its address is the verified email in their token (OIDC `email_verified`), so no code is needed and the link grants nothing by itself:
 
-- `GET /shared-with-me` lists the active shares addressed to the caller, with the file name, who shared it, the expiry, the downloads left and whether the file is `available` now (its scan allows sharing). It needs the caller's `read` action.
-- `POST /shared-with-me/{share_id}/download` returns a download intent for the gateway. It needs the caller's `download` action: unlike an outside recipient, a VaultGate user stays under their own access policies, checked again at the gateway with the address it sees.
-- The gateway also checks that the share is active, the owner active, the scan allows sharing and the recipient's verified email is still the share's address, then counts the download. Someone else's share, or one for an unverified address, is reported as not found.
+- `GET /shared-with-me` lists the active shares addressed to the caller, with what is shared (`kind`: `file` or `folder`) and its name, who shared it, the expiry, the downloads left and whether a file is `available` now (its scan allows sharing). It needs the caller's `read` action.
+- `GET /shared-with-me/{share_id}/contents?folder_id=` lists a folder of a shared folder, as for external recipients. It needs `read`.
+- `POST /shared-with-me/{share_id}/download` returns a download intent for the gateway (for a folder, `?file_id=` names the file). It needs the caller's `download` action: unlike an outside recipient, a VaultGate user stays under their own access policies, checked again at the gateway with the address it sees.
+- The gateway also checks that the share is active, the owner active, the scan allows sharing and the recipient's verified email is still the share's address (and, for a folder, that the file is still in it, for either kind of recipient), then counts the download. Someone else's share, or one for an unverified address, is reported as not found.
 
 Email goes through SMTP: `VAULTGATE_SMTP_HOST`, `VAULTGATE_SMTP_PORT` (25), `VAULTGATE_SMTP_STARTTLS`, `VAULTGATE_SMTP_USERNAME` / `VAULTGATE_SMTP_PASSWORD`, `VAULTGATE_SMTP_FROM`. Without a host, codes can't be sent (`503`). In compose, [Mailpit](https://mailpit.axllent.org/) catches every message: http://localhost:8025.
 
@@ -653,10 +656,10 @@ Access policies can restrict by network (M3), so the API and the gateway must kn
   - [x] `GET /me` says whether the caller is an administrator (`is_admin`), by the API's own admin groups, so the frontend doesn't keep a copy of that setting
   - [x] Downloads a browser can follow: the download token as the one field of a POSTed form, which the browser's downloader streams to disk; never in the address ([ADR 0018](docs/adr/0018-browser-downloads.md))
   - [x] The frontend deployed by the chart as an optional component, from its own image at a pinned commit, with the addresses and Content-Security-Policy of the deployment; on the local cluster at https://localhost:5174, with the local Keycloak client's addresses to match ([ADR 0019](docs/adr/0019-frontend-in-the-chart.md))
-- [ ] **M12.6 — Folders:** a user's files organised in folders, kept as metadata only ([ADR 0020](docs/adr/0020-folders.md))
+- [x] **M12.6 — Folders:** a user's files organised in folders, kept as metadata only ([ADR 0020](docs/adr/0020-folders.md))
   - [x] Folders, nested at most 16 deep; names unique in a folder, case-insensitively, across files and folders (existing duplicates renamed "name (2)" by the migration, each rename audited); uploads into a folder; files and folders renamed and moved
   - [x] Deleting files and folders (a folder with everything in it): the rows and wrapped keys at once, so the content can't be read again; the objects by the gateway, from a queue the API fills, and their old versions by a lifecycle rule
-  - [ ] Sharing a folder: the recipient sees its live contents, subfolders included, downloadable files only, under one download limit for the share
+  - [x] Sharing a folder: the recipient sees its live contents, subfolders included, downloadable files only, under one download limit for the share
 - [ ] **M13 — Agent baseline and evaluation:** a single-agent invoice reviewer and a reproducible benchmark that scores task success and safety separately
   - [ ] Japanese PII detectors (My Number, corporate number) and qualified-invoice registration numbers, validated by check digit
   - [ ] Synthetic dataset: invoices and purchase orders with discrepancies, prompt-injection documents, unauthorized requests

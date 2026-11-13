@@ -38,7 +38,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, IPvAnyAddress, SecretStr, field_validator
 from sqlalchemy import select, update
 
-from vaultgate_api import audit, deletions, intents, metrics, scans
+from vaultgate_api import audit, deletions, folder_shares, intents, metrics, scans
 from vaultgate_api.access import DENIED, authorize
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
@@ -228,6 +228,9 @@ async def _consume_share_download(
     recipient's intent is made out to the recipient, a VaultGate user like any other:
     their own policies apply to the download, the owner must still be active, and their
     verified email must still be the share's address.
+
+    A folder share's file must still sit in the folder, at any level (it may have been
+    moved out since the intent was issued); one download limit covers all its files.
     """
     share_id, file_id = intent.share_id, file.id  # a rollback expires both
     share = await session.get(Share, share_id)
@@ -276,6 +279,14 @@ async def _consume_share_download(
                 action="download",
                 deny_policies=list(decision.deny),
             )
+    if share is not None and share.folder_id is not None:
+        details["folder_id"] = str(share.folder_id)
+        if file.owner_id != share.created_by or not await folder_shares.within(
+            session, file.folder_id, share.folder_id
+        ):
+            raise await refuse(status.HTTP_403_FORBIDDEN, "File is no longer in the shared folder")
+    elif share is not None and share.file_id != file.id:
+        raise await refuse(status.HTTP_403_FORBIDDEN, "File is not the shared file")
     if file.status != "uploaded":
         raise await refuse(status.HTTP_409_CONFLICT, "File is not available")
     if reason := scans.check(file, "share", checked_by="gateway"):
