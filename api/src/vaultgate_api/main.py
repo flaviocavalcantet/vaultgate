@@ -27,6 +27,7 @@ from vaultgate_api.routers import (
     admin_nodes,
     audit,
     files,
+    folders,
     health,
     me,
     node_enrollment,
@@ -138,6 +139,7 @@ protected.include_router(admin_nodes.router)
 protected.include_router(audit.router)
 protected.include_router(policies.router)
 protected.include_router(files.router)
+protected.include_router(folders.router)
 protected.include_router(shares.router)
 protected.include_router(shared_with_me.router)
 app.include_router(protected)

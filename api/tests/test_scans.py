@@ -17,9 +17,9 @@ from vaultgate_api.internal import internal_app
 from vaultgate_api.models import AuditEvent, File
 
 
-async def scanned_upload(public, internal, provider, queue) -> tuple[str, str]:
+async def scanned_upload(public, internal, provider, queue, name="report.pdf") -> tuple[str, str]:
     """Upload a file; returns its id and the scan id sent to the queue."""
-    created = await uploaded(public, internal, provider)
+    created = await uploaded(public, internal, provider, name=name)
     file_id = created["file"]["id"]
     [(_, scan_id)] = [s for s in queue.sent if str(s[0]) == file_id]
     return file_id, str(scan_id)
@@ -248,9 +248,9 @@ async def test_resender_sends_requests_never_sent_and_stuck_ones(
     public, internal, _ = scanner
     now = datetime.now(UTC)
     old = now - timedelta(seconds=settings.scan_resend_after_seconds + 1)
-    recent, _ = await scanned_upload(public, internal, provider, queue)
-    stuck, stuck_scan = await scanned_upload(public, internal, provider, queue)
-    never_sent, never_scan = await scanned_upload(public, internal, provider, queue)
+    recent, _ = await scanned_upload(public, internal, provider, queue, "recent.pdf")
+    stuck, stuck_scan = await scanned_upload(public, internal, provider, queue, "stuck.pdf")
+    never_sent, never_scan = await scanned_upload(public, internal, provider, queue, "never.pdf")
     await _set_scan(session, stuck, scan_requested_at=old)
     await _set_scan(session, never_sent, scan_attempts=0, scan_requested_at=now)
     queue.sent.clear()

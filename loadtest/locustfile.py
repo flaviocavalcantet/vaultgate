@@ -148,7 +148,9 @@ class VaultUser(HttpUser):
 
     def upload(self, name: str, size: int, data, label: str | None = None) -> str | None:
         """Register a file and stream it to the gateway; returns its ID. `label` names the
-        upload in the results (the size by default)."""
+        upload in the results (the size by default). Names are unique in a folder
+        (ADR 0020), so each upload's gets a prefix of its own."""
+        name = f"{os.urandom(6).hex()}-{name}"
         created = self.client.post(
             "/files", json={"name": name, "size": size}, headers=self.auth, name="POST /files"
         )

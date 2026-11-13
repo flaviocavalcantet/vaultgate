@@ -139,7 +139,8 @@ def check_authorization(api: str, alice: str, bob: str) -> tuple[str, dict]:
         assert status == 403, f"alice {method} {path}: {status}"
     print(f"ok  alice, not an administrator, gets 403 on all {len(admin)} /admin routes")
 
-    status, body = request(api, "POST", "/files", alice, {"name": "negative.txt", "size": 5})
+    name = f"negative-{uuid.uuid4().hex[:8]}.txt"  # names are unique in a folder
+    status, body = request(api, "POST", "/files", alice, {"name": name, "size": 5})
     assert status == 201, f"POST /files: {status} (403: run scripts/seed_policies.py first)"
     created = json.loads(body)
     file_id = created["file"]["id"]

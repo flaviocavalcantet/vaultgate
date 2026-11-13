@@ -78,10 +78,11 @@ async def test_each_user_has_their_own_request_limit(clients, provider, small_li
 @requires_db
 async def test_starting_transfers_has_a_limit_of_its_own(clients, provider, small_limits) -> None:
     public, _ = clients
-    body = {"name": "a.txt", "size": 1}
-    for _ in range(2):
+    for n in range(2):
+        body = {"name": f"{n}.txt", "size": 1}
         response = await public.post("/files", json=body, headers=as_user(provider))
         assert response.status_code == 201
+    body = {"name": "2.txt", "size": 1}
     assert (await public.post("/files", json=body, headers=as_user(provider))).status_code == 429
     # Other requests still have their own allowance.
     assert (await public.get("/me", headers=as_user(provider))).status_code == 200

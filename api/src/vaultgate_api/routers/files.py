@@ -1,5 +1,8 @@
-"""Files owned by the caller: create (with an upload intent), list, inspect, and get a
-download intent.
+"""Files owned by the caller: create (with an upload intent), list, inspect, rename or
+move, and get a download intent.
+
+Files sit in one of the caller's folders or at the top level (M12.6, ADR 0020); names are
+unique in a folder, across files and folders, case-insensitively (vaultgate_api.folders).
 
 Another user's file is reported as not found, never as forbidden, so file IDs cannot
 be probed for existence. Every route first needs its action allowed by the access
@@ -18,8 +21,9 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
-from vaultgate_api import audit, intents, scans
+from vaultgate_api import audit, folders, intents, scans
 from vaultgate_api.access import DownloaderDep, ReaderDep, UploaderDep
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
@@ -36,21 +40,13 @@ class FileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     size: int = Field(ge=0)
     content_type: str = Field(default="application/octet-stream", max_length=255)
+    # The caller's folder to put it in; none for the top level.
+    folder_id: uuid.UUID | None = None
 
     @field_validator("name")
     @classmethod
     def plain_file_name(cls, value: str) -> str:
-        # A display name only (storage keys come from the file ID), but reject anything
-        # that could be mistaken for a path or break headers when the file is served.
-        if (
-            value in {".", ".."}
-            or any(c in value for c in "/\\")
-            or any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
-        ):
-            raise ValueError(
-                "must be a plain file name without path separators or control characters"
-            )
-        return value
+        return folders.plain_name(value)
 
     @field_validator("content_type")
     @classmethod
@@ -84,6 +80,7 @@ class ScanOut(BaseModel):
 class FileOut(BaseModel):
     id: uuid.UUID
     name: str
+    folder_id: uuid.UUID | None
     content_type: str
     declared_size: int
     status: str
@@ -118,6 +115,7 @@ class FileOut(BaseModel):
         return cls(
             id=file.id,
             name=file.name,
+            folder_id=file.folder_id,
             content_type=file.content_type,
             declared_size=file.declared_size,
             status=file.status,
@@ -131,6 +129,19 @@ class FileOut(BaseModel):
         )
 
 
+class FileChange(BaseModel):
+    """A rename, a move, or both. `folder_id` given as null moves to the top level;
+    left out, the file stays where it is."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    folder_id: uuid.UUID | None = None
+
+    @field_validator("name")
+    @classmethod
+    def plain_file_name(cls, value: str | None) -> str | None:
+        return None if value is None else folders.plain_name(value)
+
+
 class TransferOut(BaseModel):
     url: str
     token: str
@@ -140,6 +151,30 @@ class TransferOut(BaseModel):
 class FileCreated(BaseModel):
     file: FileOut
     upload: TransferOut
+
+
+_NAME_TAKEN = "Something named “{name}” is already here; choose another name"
+
+
+async def _own_file(session, file_id: uuid.UUID, owner_id: uuid.UUID) -> File:
+    file = await session.get(File, file_id)
+    if file is None or file.owner_id != owner_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
+    return file
+
+
+async def _commit_name(session, name: str) -> None:
+    """Commit, turning the unique index's refusal into the same 409 as `claim_name`'s
+    (the lock makes it rare: only a writer that skipped the lock could hit it)."""
+    try:
+        await session.commit()
+    except IntegrityError as error:
+        await session.rollback()
+        if "uq_files_owner_folder_name" in str(error.orig):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, detail=_NAME_TAKEN.format(name=name)
+            ) from None
+        raise
 
 
 class FilePage(BaseModel):
@@ -173,10 +208,14 @@ async def create_file(body: FileCreate, user: UploaderDep, session: SessionDep) 
             413,
             detail=f"Files are limited to {settings.max_upload_bytes} bytes",
         )
+    if body.folder_id is not None:
+        await folders.own_folder(session, body.folder_id, user.id)
+    await folders.claim_name(session, user.id, body.folder_id, body.name)
     file_id = uuid.uuid4()
     file = File(
         id=file_id,
         owner_id=user.id,
+        folder_id=body.folder_id,
         name=body.name,
         content_type=body.content_type,
         declared_size=body.size,
@@ -197,9 +236,10 @@ async def create_file(body: FileCreate, user: UploaderDep, session: SessionDep) 
         actor_id=user.id,
         target_kind="file",
         target_id=file.id,
-        details={"name": file.name, "declared_size": file.declared_size},
+        details={"name": file.name, "declared_size": file.declared_size}
+        | ({"folder_id": str(file.folder_id)} if file.folder_id else {}),
     )
-    await session.commit()
+    await _commit_name(session, file.name)
     await session.refresh(file)
     url = f"{settings.gateway_public_url.rstrip('/')}/uploads/{file.id}"
     return FileCreated(
@@ -211,15 +251,21 @@ async def create_file(body: FileCreate, user: UploaderDep, session: SessionDep) 
 async def list_files(
     user: ReaderDep,
     session: SessionDep,
+    folder_id: uuid.UUID | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> FilePage:
-    """The caller's files, newest first."""
-    mine = File.owner_id == user.id
-    total = await session.scalar(select(func.count()).select_from(File).where(mine))
+    """The caller's files in one of their folders (none: the top level), newest first."""
+    if folder_id is not None:
+        await folders.own_folder(session, folder_id, user.id)
+    where = (
+        File.owner_id == user.id,
+        File.folder_id.is_(None) if folder_id is None else File.folder_id == folder_id,
+    )
+    total = await session.scalar(select(func.count()).select_from(File).where(*where))
     files = await session.scalars(
         select(File)
-        .where(mine)
+        .where(*where)
         .order_by(File.created_at.desc(), File.id)
         .limit(limit)
         .offset(offset)
@@ -231,9 +277,44 @@ async def list_files(
 
 @router.get("/{file_id}")
 async def get_file(file_id: uuid.UUID, user: ReaderDep, session: SessionDep) -> FileOut:
-    file = await session.get(File, file_id)
-    if file is None or file.owner_id != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
+    return FileOut.of(await _own_file(session, file_id, user.id))
+
+
+@router.patch("/{file_id}")
+async def change_file(
+    file_id: uuid.UUID, body: FileChange, user: UploaderDep, session: SessionDep
+) -> FileOut:
+    """Rename a file, move it to another folder, or both. Only the metadata changes: the
+    stored object, its key and its scan stay as they are."""
+    file = await _own_file(session, file_id, user.id)
+    moving = "folder_id" in body.model_fields_set and body.folder_id != file.folder_id
+    renaming = body.name is not None and body.name != file.name
+    if not moving and not renaming:
+        return FileOut.of(file)
+    folder_id = body.folder_id if moving else file.folder_id
+    name = body.name if renaming else file.name
+    if moving and folder_id is not None:
+        await folders.own_folder(session, folder_id, user.id)
+    await folders.claim_name(session, user.id, folder_id, name, keep=file.id)
+    details = {}
+    if moving:
+        details |= {
+            "from_folder_id": str(file.folder_id) if file.folder_id else None,
+            "to_folder_id": str(folder_id) if folder_id else None,
+        }
+    if renaming:
+        details |= {"from": file.name, "to": name}
+    file.folder_id, file.name = folder_id, name
+    await audit.record(
+        session,
+        "file.moved" if moving else "file.renamed",
+        actor_id=user.id,
+        target_kind="file",
+        target_id=file.id,
+        details=details,
+    )
+    await _commit_name(session, name)
+    await session.refresh(file)
     return FileOut.of(file)
 
 
@@ -242,9 +323,7 @@ async def create_download(
     file_id: uuid.UUID, user: DownloaderDep, session: SessionDep
 ) -> TransferOut:
     """A single-use download intent for one of the caller's uploaded files."""
-    file = await session.get(File, file_id)
-    if file is None or file.owner_id != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
+    file = await _own_file(session, file_id, user.id)
     if file.status != "uploaded":
         raise HTTPException(status.HTTP_409_CONFLICT, detail="File is not available")
     if reason := scans.check(file, "download", checked_by="api"):

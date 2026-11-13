@@ -47,9 +47,11 @@ async def recipients(scanner, session, mailer):
     return scanner
 
 
-async def shared(recipients, provider, queue, findings=(), **body) -> tuple[str, str, str]:
+async def shared(
+    recipients, provider, queue, findings=(), name="report.pdf", **body
+) -> tuple[str, str, str]:
     """A clean (or flagged) file shared with bob; returns its id, the share id, the token."""
-    file_id, _ = await with_verdict(recipients, provider, queue, findings=findings)
+    file_id, _ = await with_verdict(recipients, provider, queue, findings=findings, name=name)
     if findings:
         await recipients[0].post(
             f"/admin/files/{file_id}/release",
@@ -252,7 +254,7 @@ async def test_grants_must_be_right_and_current(recipients, provider, queue, mai
     assert (await downloads(public, token, "no grant yet")).status_code == 403
     grant = await verified(public, mailer, token)
     assert (await downloads(public, token, grant + "x")).status_code == 403
-    _, _, other = await shared(recipients, provider, queue)
+    _, _, other = await shared(recipients, provider, queue, name="other.pdf")
     assert (await downloads(public, other, grant)).status_code == 403  # another share's
     await session.execute(
         update(ShareVerification)
@@ -347,7 +349,7 @@ async def test_codes_are_capped_per_owner(recipients, provider, queue, mailer, m
     """Code emails go to addresses the owner chose: one owner can't send many."""
     monkeypatch.setattr(settings, "share_codes_per_owner_per_hour", 2)
     public, _, _ = recipients
-    tokens = [(await shared(recipients, provider, queue))[2] for _ in range(3)]
+    tokens = [(await shared(recipients, provider, queue, name=f"{n}.pdf"))[2] for n in range(3)]
     for token in tokens[:2]:
         assert (await public.post("/shares/access/code", json={"token": token})).status_code == 202
     capped = await public.post("/shares/access/code", json={"token": tokens[2]})

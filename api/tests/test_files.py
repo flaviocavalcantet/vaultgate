@@ -90,8 +90,8 @@ async def test_size_above_limit_is_413(clients, provider) -> None:
 async def test_open_uploads_per_user_are_capped(clients, provider, monkeypatch) -> None:
     public, _ = clients
     monkeypatch.setattr(settings, "max_open_uploads_per_user", 2)
-    await create(public, provider)
-    await create(public, provider)
+    await create(public, provider, name="first.pdf")
+    await create(public, provider, name="second.pdf")
     payload = {"name": "third.pdf", "size": 1}
     response = await public.post("/files", json=payload, headers=as_user(provider))
     assert response.status_code == 429
@@ -355,8 +355,8 @@ def test_internal_api_has_no_docs() -> None:
 # --- downloads ------------------------------------------------------------------
 
 
-async def uploaded(public, internal, provider, sub="alice") -> dict:
-    created = await create(public, provider, sub=sub)
+async def uploaded(public, internal, provider, sub="alice", name="report.pdf") -> dict:
+    created = await create(public, provider, sub=sub, name=name)
     await consume(internal, created)
     done = await internal.post(
         f"/internal/files/{created['file']['id']}/complete",

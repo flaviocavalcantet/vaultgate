@@ -95,6 +95,37 @@ FILE_STATUSES = ("pending", "uploading", "uploaded", "failed")
 SCAN_STATUSES = ("pending", "scanned", "unscannable")
 
 
+class Folder(Base):
+    """A folder of one user's, at the top level (parent_id NULL) or in another of
+    theirs (M12.6, ADR 0020). Metadata only: files keep their storage keys wherever they
+    sit. Names are unique in a folder, case-insensitively, together with its files'
+    (vaultgate_api.folders)."""
+
+    __tablename__ = "folders"
+    __table_args__ = (
+        Index(
+            "uq_folders_owner_parent_name",
+            "owner_id",
+            "parent_id",
+            func.lower(text("name")),
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), index=True
+    )
+    # Deleting a folder deletes what it holds, in the application (it removes stored
+    # objects too); the database refuses to orphan a folder.
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("folders.id", ondelete="RESTRICT"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class File(Base):
     """A file in the vault. Bytes live in object storage, encrypted by the gateway.
 
@@ -111,11 +142,25 @@ class File(Base):
         CheckConstraint("declared_size >= 0", name="declared_size"),
         CheckConstraint(f"scan_status IN {SCAN_STATUSES}", name="scan_status"),
         CheckConstraint("(scan_status IS NULL) = (scan_id IS NULL)", name="scan_id"),
+        # Unique in a folder, case-insensitively; a failed upload holds no name.
+        Index(
+            "uq_files_owner_folder_name",
+            "owner_id",
+            "folder_id",
+            func.lower(text("name")),
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+            postgresql_where=text("status <> 'failed'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     owner_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), index=True
+    )
+    # The folder the file sits in; NULL at the top level (M12.6).
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("folders.id", ondelete="RESTRICT"), index=True
     )
     name: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(255))
