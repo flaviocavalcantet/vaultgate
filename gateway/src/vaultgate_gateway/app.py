@@ -28,7 +28,7 @@ import tornado.web
 from opentelemetry import context, trace
 from opentelemetry.trace import SpanKind, StatusCode
 
-from vaultgate_gateway import cors, metrics, tracing
+from vaultgate_gateway import cors, deletions, metrics, tracing
 from vaultgate_gateway.api_client import ApiUnavailable, IntentRefused, InternalApi, UploadGrant
 from vaultgate_gateway.clientip import IPNetwork, client_ip
 from vaultgate_gateway.crypto import DecryptionError, Decryptor, Encryptor
@@ -854,10 +854,9 @@ async def main() -> None:
         client_reloading = asyncio.get_running_loop().create_task(  # noqa: F841
             client_reloader.run(settings.tls_reload_interval_seconds)
         )
+    services = services_from_settings(api_context)
     # xheaders stays off: client addresses come from clientip, against trusted_proxies.
-    make_app(
-        services_from_settings(api_context), settings.trusted_proxies, settings.cors_origins
-    ).listen(
+    make_app(services, settings.trusted_proxies, settings.cors_origins).listen(
         settings.port,
         max_body_size=settings.max_upload_bytes,
         ssl_options=ssl_context,
@@ -866,6 +865,17 @@ async def main() -> None:
         # is never cut by it.
         idle_connection_timeout=settings.idle_connection_timeout_seconds,
     )
+    # Objects of deleted files (ADR 0020), on every replica: claims never overlap.
+    if settings.deletion_interval_seconds > 0:
+        deleting = asyncio.get_running_loop().create_task(  # noqa: F841
+            deletions.run(
+                services.api,
+                services.s3,
+                services.bucket,
+                interval=settings.deletion_interval_seconds,
+                batch=settings.deletion_batch,
+            )
+        )
     logger.info(
         "gateway listening",
         extra={

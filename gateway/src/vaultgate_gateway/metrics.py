@@ -66,3 +66,12 @@ DOWNLOAD_FAILURES = Counter(
     "Downloads that did not complete, by reason",
     ["reason"],
 )
+OBJECT_DELETIONS = Counter(
+    "vaultgate_gateway_object_deletions_total",
+    "Objects of deleted files, by outcome (deleted, failed, refused: a key that is not a file's)",
+    ["outcome"],
+)
+OBJECT_DELETIONS_PENDING = Gauge(
+    "vaultgate_gateway_object_deletions_pending",
+    "Objects of deleted files waiting in the API's queue, as of this gateway's last claim",
+)

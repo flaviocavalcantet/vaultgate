@@ -42,6 +42,19 @@ class DownloadGrant:
     limit_key: str = ""
 
 
+@dataclass(frozen=True)
+class ObjectToDelete:
+    id: int
+    storage_key: str
+
+
+@dataclass(frozen=True)
+class ClaimedDeletions:
+    items: list[ObjectToDelete]
+    # Waiting in the API's queue, claimed or not.
+    pending: int
+
+
 class InternalApi:
     def __init__(
         self,
@@ -158,3 +171,17 @@ class InternalApi:
 
     async def fail(self, file_id: uuid.UUID) -> None:
         await self._post("fail", f"/internal/files/{file_id}/fail", {})
+
+    async def claim_deletions(self, limit: int) -> ClaimedDeletions:
+        """Objects of deleted files to delete, held for this gateway a few minutes."""
+        data = await self._post("claim deletions", "/internal/deletions/claim", {"limit": limit})
+        try:
+            return ClaimedDeletions(
+                items=[ObjectToDelete(int(i["id"]), str(i["storage_key"])) for i in data["items"]],
+                pending=int(data["pending"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            raise ApiUnavailable("incomplete deletion claim") from None
+
+    async def confirm_deletions(self, ids: list[int]) -> None:
+        await self._post("confirm deletions", "/internal/deletions/done", {"ids": ids})

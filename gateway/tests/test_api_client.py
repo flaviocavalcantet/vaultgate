@@ -37,6 +37,11 @@ class FakeInternal(tornado.web.RequestHandler):
                 if self.application.settings.get("incomplete"):
                     grant["wrapped_key"] = None
             self.write(grant)
+        elif status == 200 and path == "deletions/claim":
+            self.write(
+                self.application.settings.get("claim")
+                or {"items": [{"id": 7, "storage_key": "files/x"}], "pending": 3}
+            )
         else:
             self.write({})
 
@@ -140,3 +145,21 @@ class InternalApiTest(AsyncHTTPTestCase):
             assert self.calls == []
             return
         raise AssertionError("missing secret should not call the API")
+
+    @gen_test
+    async def test_claims_and_confirms_deletions(self) -> None:
+        claimed = await self.client().claim_deletions(50)
+        assert [(i.id, i.storage_key) for i in claimed.items] == [(7, "files/x")]
+        assert claimed.pending == 3
+        await self.client().confirm_deletions([7])
+        assert [(path, body) for path, _, body in self.calls] == [
+            ("deletions/claim", {"limit": 50}),
+            ("deletions/done", {"ids": [7]}),
+        ]
+        assert all(auth == f"Bearer {SECRET}" for _, auth, _ in self.calls)
+
+    @gen_test
+    async def test_an_incomplete_claim_is_unavailable(self) -> None:
+        self._app.settings["claim"] = {"items": [{"id": 1}], "pending": 1}
+        with self.assertRaises(ApiUnavailable):
+            await self.client().claim_deletions(1)

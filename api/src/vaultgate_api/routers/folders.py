@@ -1,5 +1,5 @@
-"""The caller's folders (M12.6, ADR 0020): create, list, inspect with their path, rename
-and move.
+"""The caller's folders (M12.6, ADR 0020): create, list, inspect with their path and
+totals, rename, move, and delete with everything in them.
 
 Folders follow files' rules: another user's folder is reported as not found, and every
 route needs its action allowed by the access policies, `read` to look and `upload` to
@@ -14,12 +14,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
-from vaultgate_api import audit, folders
+from vaultgate_api import audit, deletions, folders
 from vaultgate_api.access import ReaderDep, UploaderDep
 from vaultgate_api.db import SessionDep
-from vaultgate_api.models import Folder
+from vaultgate_api.models import File, Folder
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,15 @@ class FolderDetail(FolderOut):
     path: list[PathEntry]
 
 
+class FolderTotals(BaseModel):
+    """What the folder holds, at every level below it: what deleting it would delete."""
+
+    folders: int
+    files: int
+    # The stored size of its uploaded files.
+    bytes: int
+
+
 class FolderPage(BaseModel):
     items: list[FolderOut]
     total: int
@@ -97,7 +106,7 @@ async def create_folder(body: FolderCreate, user: UploaderDep, session: SessionD
         target_id=folder.id,
         details={"name": folder.name, "parent_id": str(body.parent_id) if body.parent_id else None},
     )
-    await session.commit()
+    await folders.commit(session, folder.name)
     await session.refresh(folder)
     logger.info("folder created", extra={"folder_id": str(folder.id)})
     return FolderOut.of(folder)
@@ -173,6 +182,64 @@ async def change_folder(
         target_id=folder.id,
         details=details,
     )
-    await session.commit()
+    await folders.commit(session, name)
     await session.refresh(folder)
     return FolderOut.of(folder)
+
+
+async def _totals(session, ids: list) -> FolderTotals:
+    files, size = (
+        await session.execute(
+            select(func.count(), func.coalesce(func.sum(File.size), 0)).where(
+                File.folder_id.in_(ids)
+            )
+        )
+    ).one()
+    return FolderTotals(folders=len(ids) - 1, files=files, bytes=size)
+
+
+@router.get("/{folder_id}/totals")
+async def folder_totals(folder_id: uuid.UUID, user: ReaderDep, session: SessionDep) -> FolderTotals:
+    """How many folders and files the folder holds at every level, and their size: what
+    a client shows before asking to delete it."""
+    folder = await folders.own_folder(session, folder_id, user.id)
+    return await _totals(session, [i for i, _ in await folders.subtree(session, folder.id)])
+
+
+@router.delete("/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_folder(folder_id: uuid.UUID, user: UploaderDep, session: SessionDep) -> None:
+    """Delete a folder with everything in it, at every level: each file as
+    `DELETE /files/{id}` would (vaultgate_api.deletions), then the folders."""
+    folder = await folders.own_folder(session, folder_id, user.id)
+    # No folder can be created in, or moved into, the tree meanwhile (the tree lock),
+    # nor a file added to it (the rows' locks, which adding a file waits on).
+    await folders.lock_tree(session, user.id)
+    below = await folders.subtree(session, folder.id)
+    ids = [i for i, _ in below]
+    await session.execute(select(Folder.id).where(Folder.id.in_(ids)).with_for_update())
+    totals = await _totals(session, ids)
+    files = await session.scalars(select(File).where(File.folder_id.in_(ids)))
+    await deletions.delete_files(
+        session, files, actor_id=user.id, reason=f"folder {folder.id} deleted"
+    )
+    name, parent_id = folder.name, folder.parent_id
+    session.expunge(folder)
+    # Deepest first: a folder can't be deleted while another sits in it.
+    for depth in sorted({d for _, d in below}, reverse=True):
+        level = [i for i, d in below if d == depth]
+        await session.execute(delete(Folder).where(Folder.id.in_(level)))
+    await audit.record(
+        session,
+        "folder.deleted",
+        actor_id=user.id,
+        target_kind="folder",
+        target_id=folder_id,
+        details={
+            "name": name,
+            "parent_id": str(parent_id) if parent_id else None,
+            "folders": totals.folders,
+            "files": totals.files,
+            "bytes": totals.bytes,
+        },
+    )
+    await session.commit()
