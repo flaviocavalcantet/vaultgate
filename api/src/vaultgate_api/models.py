@@ -198,6 +198,27 @@ class File(Base):
     )
 
 
+class ObjectDeletion(Base):
+    """A stored object to delete, queued when its file is (M12.6, ADR 0020). The API
+    can't delete objects (least privilege): the gateway claims these, deletes them and
+    reports back (vaultgate_api.deletions). The file's row, and with it the wrapped
+    data key, is gone by then, so the object can't be decrypted whatever happens to it.
+    """
+
+    __tablename__ = "object_deletions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    storage_key: Mapped[str] = mapped_column(String(512))
+    # The file it held (no foreign key: the row is gone), for the audit log.
+    file_id: Mapped[uuid.UUID]
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # A gateway's claim; past it, another may take the deletion over.
+    claimed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    attempts: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
+
+
 class ScanFinding(Base):
     """How many matches of one kind of personal data the scanner found in a file.
 

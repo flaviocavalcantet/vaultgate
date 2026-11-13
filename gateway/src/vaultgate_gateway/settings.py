@@ -71,6 +71,11 @@ class Settings:
     part_size: int = int(_env("PART_SIZE", str(8 * 1024 * 1024)))
     # How much ciphertext a download reads from S3 at a time.
     read_size: int = int(_env("READ_SIZE", str(256 * 1024)))
+    # Deleting the objects of deleted files (vaultgate_gateway.deletions, ADR 0020): how
+    # often to ask the API for more when the queue was drained (0: never), and how many
+    # at a time.
+    deletion_interval_seconds: float = float(_env("DELETION_INTERVAL_SECONDS", "30"))
+    deletion_batch: int = int(_env("DELETION_BATCH", "100"))
 
 
 settings = Settings()

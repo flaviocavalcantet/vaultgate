@@ -25,7 +25,8 @@ then, as alice:
    its hash chain verifies: a text with a test card number and CPFs
    is quarantined with those counts and cannot be downloaded until carol releases it,
    a rescan puts it back in quarantine, and an encrypted PDF is unscannable with the
-   reason;
+   reason. Last, alice deletes a file: the API forgets it at once, and the gateway
+   deletes its object from S3 and says so in the audit log;
 8. finds the upload's trace in Tempo and checks that it runs from the gateway through
    the API and the scan queue to the scanner worker, and that Loki holds log lines
    from all three services under its trace_id.
@@ -264,6 +265,7 @@ def run(args) -> None:
     check_internal_share(args.api, file_id, sha256, alice, bob, carol)
     check_scans(args, alice, carol)
     check_audit(args.api, file_id, carol)
+    check_deletion(args, alice, carol)
 
     # 8. Traces, linked to the logs.
     if args.skip_traces:
@@ -380,6 +382,39 @@ def check_audit(api: str, file_id: str, carol: str) -> None:
     print(
         f"ok  audit: the file's history is recorded and the chain of {verified['events']} events verifies"
     )
+
+
+def check_deletion(args, alice: str, carol: str) -> None:
+    """A deleted file is gone from the API at once, and its object from S3 once the
+    gateway's deletion worker has run (every 30 s), which it records (ADR 0020)."""
+    api = args.api
+    file_id = upload_bytes(api, alice, f"{RUN}-deleted.bin", os.urandom(1024))
+    object_url = f"{args.s3}/{args.bucket}/files/{file_id}"
+    with urllib.request.urlopen(object_url) as response:
+        assert response.status == 200
+    status, _ = api_call(api, "DELETE", f"/files/{file_id}", alice)
+    assert status == 204, f"DELETE /files: {status}"
+    status, _ = api_call(api, "GET", f"/files/{file_id}", alice)
+    assert status == 404, f"a deleted file is still listed: {status}"
+    print("ok  a deleted file is gone from the API at once")
+
+    def object_gone() -> bool:
+        try:
+            urllib.request.urlopen(object_url).close()
+        except urllib.error.HTTPError as error:
+            return error.code == 404
+        return False
+
+    def confirmed() -> bool:
+        path = f"/admin/audit?target_id={file_id}&action=file.object_deleted"
+        status, page = api_call(api, "GET", path, carol)
+        return status == 200 and any(e["actor_kind"] == "gateway" for e in page["items"])
+
+    deadline = time.monotonic() + 90
+    while not (object_gone() and confirmed()):
+        assert time.monotonic() < deadline, "the gateway did not delete the object in 90 s"
+        time.sleep(3)
+    print("ok  the gateway deleted its object from S3 and recorded it")
 
 
 def upload_bytes(api: str, token: str, name: str, data: bytes) -> str:

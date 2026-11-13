@@ -7,6 +7,12 @@ variable "name" {
   description = "Name prefix for created resources."
 }
 
+variable "deleted_object_days" {
+  type        = number
+  default     = 1
+  description = "Days the versions of a deleted file's object are kept before S3 expires them (ADR 0020)."
+}
+
 resource "aws_kms_key" "vault" {
   description             = "${var.name} key-encryption key"
   deletion_window_in_days = 7
@@ -49,6 +55,11 @@ resource "aws_s3_bucket_versioning" "vault" {
 
 # Parts of a multipart upload that was never completed or aborted (gateway crash,
 # lost connection to S3) are invisible but billed; S3 deletes them after a day.
+#
+# A deleted file's object (ADR 0020): the gateway's delete leaves a delete marker over
+# its version, which S3 expires after deleted_object_days, and then the marker. File
+# keys are never written twice, so only a deleted file's object has a noncurrent
+# version. Its wrapped key went with the file's row, so it can't be decrypted meanwhile.
 resource "aws_s3_bucket_lifecycle_configuration" "vault" {
   bucket = aws_s3_bucket.vault.id
   rule {
@@ -57,6 +68,15 @@ resource "aws_s3_bucket_lifecycle_configuration" "vault" {
     filter {}
     abort_incomplete_multipart_upload { days_after_initiation = 1 }
   }
+  rule {
+    id     = "expire-deleted-files"
+    status = "Enabled"
+    filter { prefix = "files/" }
+    noncurrent_version_expiration { noncurrent_days = var.deleted_object_days }
+    expiration { expired_object_delete_marker = true }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.vault]
 }
 
 output "bucket_name" { value = aws_s3_bucket.vault.bucket }

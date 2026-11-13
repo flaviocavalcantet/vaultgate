@@ -10,6 +10,10 @@ address the gateway saw (ADR 0004), refuses intents of deactivated users, and, f
 downloads, refuses files the scan does not allow (quarantine, ADR 0005). A refusal
 leaves the intent unspent.
 
+Files deleted by their owners leave their stored objects to the gateway, the one service
+allowed to delete objects: it claims them from `/internal/deletions/claim` and confirms
+each one deleted (vaultgate_api.deletions).
+
 A completed upload gets a scan request (vaultgate_api.scans). The scanner worker uses
 the `/internal/scans` routes: fetch what it needs to decrypt the object, then report
 findings or that the file could not be read.
@@ -26,7 +30,7 @@ import base64
 import hmac
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
@@ -34,7 +38,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, IPvAnyAddress, SecretStr, field_validator
 from sqlalchemy import select, update
 
-from vaultgate_api import audit, intents, metrics, scans
+from vaultgate_api import audit, deletions, intents, metrics, scans
 from vaultgate_api.access import DENIED, authorize
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
@@ -398,6 +402,51 @@ async def fail_upload(file_id: uuid.UUID, session: SessionDep) -> dict:
     file = await _finish(session, file_id, {"status": "failed"}, "upload.failed")
     logger.info("upload failed", extra={"file_id": str(file.id)})
     return {"status": file.status}
+
+
+# How long a gateway holds the deletions it claimed before another may take them.
+DELETION_LEASE = timedelta(minutes=5)
+
+
+class DeletionClaim(BaseModel):
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class ObjectToDelete(BaseModel):
+    id: int
+    storage_key: str
+
+
+class ClaimedDeletions(BaseModel):
+    items: list[ObjectToDelete]
+    # Waiting in the queue, claimed or not, after this claim: for the gateway's metrics.
+    pending: int
+
+
+class DeletionsDone(BaseModel):
+    ids: list[int] = Field(max_length=500)
+
+
+@router.post("/deletions/claim")
+async def claim_deletions(body: DeletionClaim, session: SessionDep) -> ClaimedDeletions:
+    """Objects of deleted files for the gateway to delete, held for it a few minutes."""
+    claimed = await deletions.claim(session, limit=body.limit, lease=DELETION_LEASE)
+    pending = await deletions.pending(session)
+    await session.commit()
+    return ClaimedDeletions(
+        items=[ObjectToDelete(id=c.id, storage_key=c.storage_key) for c in claimed],
+        pending=pending,
+    )
+
+
+@router.post("/deletions/done")
+async def deletions_done(body: DeletionsDone, session: SessionDep) -> dict:
+    """The gateway deleted these objects: take them off the queue and record it."""
+    done = await deletions.confirm(session, body.ids)
+    await session.commit()
+    if done:
+        logger.info("objects deleted", extra={"count": len(done)})
+    return {"confirmed": len(done)}
 
 
 class ScanJob(BaseModel):

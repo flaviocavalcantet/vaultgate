@@ -21,9 +21,8 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 
-from vaultgate_api import audit, folders, intents, scans
+from vaultgate_api import audit, deletions, folders, intents, scans
 from vaultgate_api.access import DownloaderDep, ReaderDep, UploaderDep
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
@@ -153,28 +152,11 @@ class FileCreated(BaseModel):
     upload: TransferOut
 
 
-_NAME_TAKEN = "Something named “{name}” is already here; choose another name"
-
-
 async def _own_file(session, file_id: uuid.UUID, owner_id: uuid.UUID) -> File:
     file = await session.get(File, file_id)
     if file is None or file.owner_id != owner_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="File not found")
     return file
-
-
-async def _commit_name(session, name: str) -> None:
-    """Commit, turning the unique index's refusal into the same 409 as `claim_name`'s
-    (the lock makes it rare: only a writer that skipped the lock could hit it)."""
-    try:
-        await session.commit()
-    except IntegrityError as error:
-        await session.rollback()
-        if "uq_files_owner_folder_name" in str(error.orig):
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, detail=_NAME_TAKEN.format(name=name)
-            ) from None
-        raise
 
 
 class FilePage(BaseModel):
@@ -239,7 +221,7 @@ async def create_file(body: FileCreate, user: UploaderDep, session: SessionDep) 
         details={"name": file.name, "declared_size": file.declared_size}
         | ({"folder_id": str(file.folder_id)} if file.folder_id else {}),
     )
-    await _commit_name(session, file.name)
+    await folders.commit(session, file.name)
     await session.refresh(file)
     url = f"{settings.gateway_public_url.rstrip('/')}/uploads/{file.id}"
     return FileCreated(
@@ -313,9 +295,19 @@ async def change_file(
         target_id=file.id,
         details=details,
     )
-    await _commit_name(session, name)
+    await folders.commit(session, name)
     await session.refresh(file)
     return FileOut.of(file)
+
+
+@router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_file(file_id: uuid.UUID, user: UploaderDep, session: SessionDep) -> None:
+    """Delete a file at once: its row and wrapped key (so it can't be decrypted again),
+    its shares and scan results; the gateway then deletes the stored object
+    (vaultgate_api.deletions). Works whatever the file's state, quarantined included."""
+    file = await _own_file(session, file_id, user.id)
+    await deletions.delete_files(session, [file], actor_id=user.id)
+    await session.commit()
 
 
 @router.post("/{file_id}/download", status_code=status.HTTP_201_CREATED)

@@ -15,6 +15,7 @@ import uuid
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from vaultgate_api.models import File, Folder
 
@@ -37,6 +38,10 @@ def plain_name(value: str) -> str:
             "or leading or trailing spaces"
         )
     return value
+
+
+NAME_TAKEN = "Something named “{name}” is already here; choose another name"
+FOLDER_NOT_FOUND = "Folder not found"
 
 
 def _lock_key(owner_id: uuid.UUID, folder_id: uuid.UUID | None) -> str:
@@ -76,7 +81,7 @@ async def claim_name(
     if (await session.scalar(file_taken.limit(1))) or (await session.scalar(folder_taken.limit(1))):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            detail=f"Something named “{name}” is already here; choose another name",
+            detail=NAME_TAKEN.format(name=name),
         )
 
 
@@ -85,7 +90,7 @@ async def own_folder(session, folder_id: uuid.UUID, owner_id: uuid.UUID) -> Fold
     files are, so IDs can't be probed."""
     folder = await session.get(Folder, folder_id)
     if folder is None or folder.owner_id != owner_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Folder not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=FOLDER_NOT_FOUND)
     return folder
 
 
@@ -128,13 +133,7 @@ async def check_placement(
     before, so the two locks are always taken in the same order."""
     if parent_id is None:
         return
-    # One lock for the owner's whole tree, before reading it: two moves that each pass
-    # the checks alone (A into B and B into A) would otherwise make a cycle together,
-    # or a tree too deep. Held until the transaction ends; placements are rare.
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"vaultgate-folder-tree:{owner_id}"},
-    )
+    await lock_tree(session, owner_id)
     parent = await own_folder(session, parent_id, owner_id)
     ancestors = await path(session, parent)
     if moving is not None and any(f.id == moving.id for f in ancestors):
@@ -145,3 +144,52 @@ async def check_placement(
             status.HTTP_409_CONFLICT,
             detail=f"Folders nest at most {MAX_DEPTH} deep",
         )
+
+
+async def lock_tree(session, owner_id: uuid.UUID) -> None:
+    """One lock for the owner's whole tree of folders, taken before reading it to place
+    or delete a folder: two moves that each pass the checks alone (A into B and B into
+    A) would otherwise make a cycle together, or a tree too deep, and a folder could be
+    created in one being deleted. Held until the transaction ends; these are rare. A
+    folder's name lock (`claim_name`) is only ever taken after it."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"vaultgate-folder-tree:{owner_id}"},
+    )
+
+
+async def subtree(session, folder_id: uuid.UUID) -> list[tuple[uuid.UUID, int]]:
+    """The folder and every folder below it, with their depth below it (0: itself)."""
+    rows = await session.execute(
+        text(
+            """
+            WITH RECURSIVE below(id, depth) AS (
+                SELECT CAST(:id AS uuid), 0
+                UNION ALL
+                SELECT f.id, b.depth + 1 FROM folders f JOIN below b ON f.parent_id = b.id
+                WHERE b.depth < :limit
+            )
+            SELECT id, depth FROM below
+            """
+        ),
+        {"id": folder_id, "limit": MAX_DEPTH},
+    )
+    return [(row.id, row.depth) for row in rows]
+
+
+async def commit(session, name: str) -> None:
+    """Commit a change that placed an item by name, answering as `claim_name` and
+    `own_folder` would for what only the database caught: a clash with a writer that
+    skipped the name lock, or a folder deleted between the check and the commit."""
+    try:
+        await session.commit()
+    except IntegrityError as error:
+        await session.rollback()
+        message = str(error.orig)
+        if "uq_files_owner_folder_name" in message or "uq_folders_owner_parent_name" in message:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, detail=NAME_TAKEN.format(name=name)
+            ) from None
+        if "fk_files_folder_id_folders" in message or "fk_folders_parent_id_folders" in message:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=FOLDER_NOT_FOUND) from None
+        raise

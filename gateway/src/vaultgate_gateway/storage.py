@@ -39,6 +39,12 @@ async def _call(fn, **kwargs):
         raise StorageUnavailable(type(exc).__name__) from None
 
 
+async def delete_object(client, bucket: str, key: str) -> None:
+    """Delete an object. In the versioned vault bucket this leaves a delete marker over
+    its versions, which the bucket's lifecycle rule expires (ADR 0020)."""
+    await _call(client.delete_object, Bucket=bucket, Key=key)
+
+
 class MultipartWriter:
     def __init__(self, client, bucket: str, key: str, *, part_size: int) -> None:
         if part_size < 5 * 1024 * 1024:

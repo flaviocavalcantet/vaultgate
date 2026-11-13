@@ -1,7 +1,7 @@
 # ADR 0020: Folders
 
-**Status:** Accepted (folders, names, moves and renames); deletion and folder sharing
-follow in the same milestone (M12.6)
+**Status:** Accepted (folders, names, moves, renames and deletion); folder sharing
+follows in the same milestone (M12.6)
 
 ## Context
 
@@ -61,17 +61,44 @@ on each file.** Moving or renaming a file or folder changes rows, never an objec
 - **Audited:** `folder.created`, `folder.moved`, `folder.renamed`, `file.moved` and
   `file.renamed`, with the before and after.
 
-### Deletion (next step)
+### Deletion
 
-Deleting a file or a folder (with everything in it) removes the rows at once, wrapped
-data keys included: without its key the object can't be decrypted, whatever copies of
-it remain (crypto-shredding). The objects themselves go too, without giving the API
-delete rights: the API adds their keys to a deletion queue table in the same
-transaction, and the gateway, which already holds `DeleteObject`, drains it through its
-internal mTLS endpoint. The bucket is versioned, so a lifecycle rule expires noncurrent
-versions and removes the delete markers left behind. Shares of deleted files end at
-once. An upload still streaming when its file is deleted is refused when it completes,
-and the gateway deletes an object the API refuses to record, as it does today.
+**A deleted file is unreadable from the moment its deletion commits; its object goes
+soon after, deleted by the gateway.**
+
+- **Rows and keys at once.** Deleting a file removes its row in one transaction, and
+  with it (by cascade) its scan findings, releases, shares, share verifications and
+  intents. The wrapped data key was in the row: without it the object can't be
+  decrypted, whatever copies of it remain (crypto-shredding). Shares end at once, and
+  an intent issued before can't be consumed.
+- **Objects by the gateway, from a queue.** The API has no S3 rights (least privilege)
+  and keeps none for this: the same transaction adds the object's key to
+  `object_deletions`. Each gateway, which already holds `DeleteObject`, claims a batch
+  through its internal mTLS endpoint (`FOR UPDATE SKIP LOCKED`, so replicas never take
+  the same rows), deletes the objects and confirms them; the confirmation is audited
+  (`file.object_deleted`, by the gateway). A claim lasts 5 minutes: one not confirmed
+  by then (the gateway died, S3 refused) is claimed again.
+- **Only files' keys.** The gateway deletes only `files/<uuid>` keys and refuses, counts
+  and logs anything else: a compromised API could otherwise use the queue to have the
+  gateway delete objects it has no business with.
+- **Old versions by a lifecycle rule.** The bucket is versioned, so a delete leaves a
+  delete marker over the object's version. A rule on `files/` expires noncurrent
+  versions after a day (`deleted_object_days`) and then removes the expired delete
+  marker. File keys are never written twice, so only deleted files have noncurrent
+  versions. Deleting versions directly would need `ListBucketVersions` too, for no gain:
+  the content is already unreadable.
+- **A folder with everything in it.** `DELETE /folders/{id}` deletes every file in it
+  at every level, as above, then its folders, deepest first. It takes the owner's tree
+  lock (no folder can be created in it or moved into it meanwhile) and locks the
+  folders' rows, which adding or moving a file into one of them waits on; such a
+  request then finds the folder gone (`404`). `GET /folders/{id}/totals` counts what
+  would go, for a client to show before asking.
+- **The same action.** Deleting needs `upload`, like every change to one's own files.
+- **Uploads in flight.** An upload still streaming when its file is deleted is refused
+  when it completes (the row is gone), and the gateway deletes the object it wrote, as
+  it does for any upload the API refuses.
+- **Audited:** `file.deleted` (with the name, folder, state and size, and the folder's
+  deletion as the reason when it was one) and `folder.deleted` (with what it held).
 
 ### Folder sharing (after deletion)
 
@@ -89,3 +116,9 @@ inside the shared folder, along with the scan and the count it checks today.
   different folders don't wait on each other.
 - Users whose names clashed see some renamed, with the reason in the audit log.
 - A folder tree is walked by recursive queries bounded by the depth limit.
+- Deletion can't be undone: there is no bin. The key is gone at once, so even a restore
+  of the bucket's versions brings back nothing readable; a database backup taken before
+  the deletion still holds the key, for as long as backups are kept.
+- A backlog of objects waiting for the gateway shows in
+  `vaultgate_gateway_object_deletions_pending`, and refused keys in
+  `vaultgate_gateway_object_deletions_total{outcome="refused"}`.
