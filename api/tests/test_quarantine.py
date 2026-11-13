@@ -26,9 +26,9 @@ def download(public, provider, file_id: str, sub: str = "alice"):
     return public.post(f"/files/{file_id}/download", headers=as_user(provider, sub))
 
 
-async def with_verdict(scanner, provider, queue, outcome="scanned", findings=()):
+async def with_verdict(scanner, provider, queue, outcome="scanned", findings=(), name="report.pdf"):
     public, internal, scanner_client = scanner
-    file_id, scan_id = await scanned_upload(public, internal, provider, queue)
+    file_id, scan_id = await scanned_upload(public, internal, provider, queue, name)
     if outcome != "pending":
         response = await report(scanner_client, scan_id, outcome, findings=list(findings))
         assert response.status_code == 200
@@ -189,10 +189,13 @@ async def test_a_pending_file_is_not_rescanned(scanner, provider, queue):
 async def test_admins_list_files_by_verdict(scanner, provider, queue, monkeypatch):
     public, _, _ = scanner
     ids = {
-        "pending": (await with_verdict(scanner, provider, queue, "pending"))[0],
-        "clean": (await with_verdict(scanner, provider, queue, findings=EMAIL))[0],
-        "quarantined": (await with_verdict(scanner, provider, queue, findings=CARD))[0],
-        "unscannable": (await with_verdict(scanner, provider, queue, "unscannable"))[0],
+        verdict: (await with_verdict(scanner, provider, queue, outcome, found, f"{verdict}.pdf"))[0]
+        for verdict, outcome, found in [
+            ("pending", "pending", ()),
+            ("clean", "scanned", EMAIL),
+            ("quarantined", "scanned", CARD),
+            ("unscannable", "unscannable", ()),
+        ]
     }
 
     async def listed(verdict: str | None = None) -> set[str]:

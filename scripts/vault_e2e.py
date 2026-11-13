@@ -55,6 +55,10 @@ from pathlib import Path
 
 from keycloak_smoke import login, wait_for, wait_for_api
 
+# Names are unique in a folder (ADR 0020): this run's files carry its own prefix, so a
+# rerun against the same cluster doesn't clash with the last one's.
+RUN = os.urandom(4).hex()
+
 MiB = 1024 * 1024
 ROOT = Path(__file__).resolve().parent.parent
 E2E_POLICY = "e2e: "  # prefix of the temporary policies this check creates
@@ -172,7 +176,7 @@ def run(args) -> None:
 
     # 1. Register and upload.
     status, created = api_call(
-        args.api, "POST", "/files", alice, {"name": "e2e-relatório.bin", "size": size}
+        args.api, "POST", "/files", alice, {"name": f"{RUN}-e2e-relatório.bin", "size": size}
     )
     assert status == 201, f"POST /files: {status} (403: run scripts/seed_policies.py first)"
     file_id, upload_intent = created["file"]["id"], created["upload"]
@@ -232,7 +236,8 @@ def run(args) -> None:
     assert status == 404, f"bob got a download intent for alice's file: {status}"
     print("ok  bob cannot download alice's file")
 
-    status, short = api_call(args.api, "POST", "/files", alice, {"name": "short.bin", "size": 10})
+    body = {"name": f"{RUN}-short.bin", "size": 10}
+    status, short = api_call(args.api, "POST", "/files", alice, body)
     assert status == 201, status
     connection, path = _connection(short["upload"]["url"])
     connection.request(
@@ -518,7 +523,7 @@ def check_scans(args, alice: str, carol: str) -> None:
     api = args.api
     # Well-known test values, valid by their check digits.
     text = b"Card 4111 1111 1111 1111, CPF 529.982.247-25 and 111.444.777-35.\n"
-    pii = upload_bytes(api, alice, "pii.txt", text)
+    pii = upload_bytes(api, alice, f"{RUN}-pii.txt", text)
     scan = scan_result(api, alice, pii)
     findings = {f["kind"]: f["count"] for f in scan["findings"]}
     assert scan["verdict"] == "quarantined", scan
@@ -554,7 +559,8 @@ def check_scans(args, alice: str, carol: str) -> None:
     print("ok  quarantine: a rescan ends the release")
 
     encrypted = (ROOT / "scanner/internal/extract/testdata/encrypted.pdf").read_bytes()
-    scan = scan_result(args.api, alice, upload_bytes(args.api, alice, "locked.pdf", encrypted))
+    locked = upload_bytes(args.api, alice, f"{RUN}-locked.pdf", encrypted)
+    scan = scan_result(args.api, alice, locked)
     assert scan["verdict"] == "unscannable" and scan["reason"] == "PDF is encrypted", scan
     print("ok  scan: an encrypted PDF is unscannable, with the reason")
 

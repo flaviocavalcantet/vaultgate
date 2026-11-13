@@ -214,7 +214,7 @@ async def test_owners_list_and_revoke_shares(sharing, provider, queue, session):
     # Someone else's file, or a share of another file: not found.
     assert (await public.get(path, headers=as_user(provider, "bob"))).status_code == 404
     assert (await public.delete(revoke, headers=as_user(provider, "bob"))).status_code == 404
-    other, _ = await with_verdict(sharing, provider, queue)
+    other, _ = await with_verdict(sharing, provider, queue, name="other.pdf")
     wrong = f"/files/{other}/shares/{first['id']}"
     assert (await public.delete(wrong, headers=as_user(provider))).status_code == 404
 
