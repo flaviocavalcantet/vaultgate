@@ -20,7 +20,8 @@ then, as alice:
    (from Mailpit), verifies it, downloads the file through the gateway (counted against
    the share), and loses access when alice revokes the link; shares it with bob as a
    VaultGate user, who finds it under /shared-with-me and downloads it while carol
-   can't. Then it checks the other
+   can't; shares a folder with bob, who lists it and downloads a file inside it, until
+   alice moves the file out. Then it checks the other
    verdicts and quarantine, and finally that the audit log holds the file's history and
    its hash chain verifies: a text with a test card number and CPFs
    is quarantined with those counts and cannot be downloaded until carol releases it,
@@ -263,6 +264,7 @@ def run(args) -> None:
     # 7. Share links, PII scans by the worker, quarantine, and the audit log.
     check_shares(args, file_id, sha256, alice)
     check_internal_share(args.api, file_id, sha256, alice, bob, carol)
+    check_folder_share(args.api, alice, bob)
     check_scans(args, alice, carol)
     check_audit(args.api, file_id, carol)
     check_deletion(args, alice, carol)
@@ -552,6 +554,47 @@ def check_internal_share(
     assert status == 404, f"carol downloaded bob's share: {status}"
     assert api_call(api, "DELETE", f"/files/{file_id}/shares/{share_id}", alice)[0] == 204
     print("ok  shares: bob, signed in with his verified email, downloads a file shared with him")
+
+
+def check_folder_share(api: str, alice: str, bob: str) -> None:
+    """A folder shared with bob: he lists it and downloads a file in a subfolder through
+    the gateway; moved out of the folder, the file is no longer his (ADR 0020)."""
+    status, top = api_call(api, "POST", "/folders", alice, {"name": f"{RUN}-shared"})
+    assert status == 201, f"POST /folders: {status}"
+    body = {"name": "inner", "parent_id": top["id"]}
+    status, inner = api_call(api, "POST", "/folders", alice, body)
+    assert status == 201, f"POST /folders (inner): {status}"
+    data = os.urandom(2048)
+    file_id = upload_bytes(api, alice, f"{RUN}-in-folder.bin", data)
+    status, _ = api_call(api, "PATCH", f"/files/{file_id}", alice, {"folder_id": inner["id"]})
+    assert status == 200, f"PATCH /files: {status}"
+    assert scan_result(api, alice, file_id)["verdict"] == "clean"
+    status, created = api_call(
+        api,
+        "POST",
+        f"/folders/{top['id']}/shares",
+        alice,
+        {"recipient_email": "bob@example.com", "recipient_kind": "internal"},
+    )
+    assert status == 201, f"folder share: {status}"
+    share_id = created["share"]["id"]
+    status, listing = api_call(
+        api, "GET", f"/shared-with-me/{share_id}/contents?folder_id={inner['id']}", bob
+    )
+    assert status == 200 and [f["id"] for f in listing["files"]] == [file_id], listing
+    path = f"/shared-with-me/{share_id}/download?file_id={file_id}"
+    status, intent = api_call(api, "POST", path, bob)
+    assert status == 201, f"folder share download intent: {status}"
+    status, _, got_sha256, _ = download(intent["url"], intent["token"])
+    assert (status, got_sha256) == (200, hashlib.sha256(data).hexdigest()), status
+    status, intent = api_call(api, "POST", path, bob)
+    assert status == 201, f"second intent: {status}"
+    status, _ = api_call(api, "PATCH", f"/files/{file_id}", alice, {"folder_id": None})
+    assert status == 200, f"moving the file out: {status}"
+    status, _, _, _ = download(intent["url"], intent["token"])
+    assert status == 403, f"a file moved out of the folder was still served: {status}"
+    assert api_call(api, "DELETE", f"/folders/{top['id']}", alice)[0] == 204
+    print("ok  shares: bob downloads a file inside a folder shared with him, until it is moved out")
 
 
 def check_scans(args, alice: str, carol: str) -> None:

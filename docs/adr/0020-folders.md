@@ -1,7 +1,6 @@
 # ADR 0020: Folders
 
-**Status:** Accepted (folders, names, moves, renames and deletion); folder sharing
-follows in the same milestone (M12.6)
+**Status:** Accepted
 
 ## Context
 
@@ -100,13 +99,32 @@ soon after, deleted by the gateway.**
 - **Audited:** `file.deleted` (with the name, folder, state and size, and the folder's
   deletion as the reason when it was one) and `folder.deleted` (with what it held).
 
-### Folder sharing (after deletion)
+### Folder sharing
 
-A share can be of a folder: the recipient sees its live contents, subfolders included,
-and only the files they can download now (clean, or released for sharing); files being
-scanned or held are hidden from them, and shown to the owner as they are. One download
-limit covers the whole share. The gateway's consume checks that the file asked for is
-inside the shared folder, along with the scan and the count it checks today.
+**A share names a file or a folder; a folder share shows its live contents.**
+
+- **One kind of share.** `shares` gains `folder_id`; exactly one of `file_id` and
+  `folder_id` is set. Everything else stays: the recipient kinds, the link token, the
+  code and grant for external recipients, expiry, revoking, and the gateway counting
+  each download. Deleting the folder deletes its shares (cascade).
+- **Live contents.** The recipient sees the folder as it is now, at every level: files
+  added later appear, files moved out or deleted are gone. A snapshot would need a
+  copy of the tree per share and would go stale; the owner keeps control by moving
+  things out, or revoking.
+- **Downloadable files only.** A listing holds subfolders and the files that can be
+  downloaded now (uploaded, clean or released for sharing). Files being scanned or held
+  are left out for the recipient, so a listing never says a file exists that can't be
+  had; the owner sees them, with their state, in their own listing.
+- **Checked again at every step.** Creating a folder share needs the `share` action but
+  no scan (the contents change); each file is checked when listed, when a download
+  intent is issued, and at the gateway's consume, which also checks that the file is
+  still in the folder at any level (it may have been moved out since) and counts the
+  download.
+- **One download limit** for the share across all its files, as the owner chose it.
+- **Names after proof.** An external recipient sees what the link is (a file or a
+  folder) and nothing named in it until their address is proven, as for a file.
+- **Audited** like file shares, with the folder as the target of `share.created` and
+  `share.revoked`, and the file (with the share and folder) for downloads.
 
 ## Consequences
 

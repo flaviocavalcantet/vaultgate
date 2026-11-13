@@ -7,8 +7,11 @@ proves they hold its address with a code sent there.
    the address is proven).
 2. `POST /shares/access/code` emails a 6-digit code to the share's address.
 3. `POST /shares/access/verify` takes the code and returns a grant, shown once.
-4. `POST /shares/access/downloads` takes the grant and returns a download intent for
-   the gateway, like an owner's download.
+4. For a folder share, `POST /shares/access/contents` takes the grant and lists a
+   folder of the share: its subfolders and the files that can be downloaded now
+   (vaultgate_api.folder_shares).
+5. `POST /shares/access/downloads` takes the grant (and, for a folder, the file) and
+   returns a download intent for the gateway, like an owner's download.
 
 Every step re-checks that the share is active and that the file's scan lets it be
 shared (ADR 0005), and the gateway's consume checks again and counts the download
@@ -22,6 +25,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -30,13 +34,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
-from vaultgate_api import audit, intents, metrics, scans
+from vaultgate_api import audit, folder_shares, intents, metrics, scans
 from vaultgate_api.config import settings
 from vaultgate_api.db import SessionDep
 from vaultgate_api.mail import MailerDep, MailUnavailable
 from vaultgate_api.models import File, Share, ShareVerification, User
 from vaultgate_api.routers.files import TransferOut
-from vaultgate_api.routers.shares import hash_token, state
+from vaultgate_api.routers.shares import audit_target, hash_token, state
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,8 @@ Token = Field(min_length=1, max_length=256)
 
 
 class AccessOut(BaseModel):
+    # What is shared; its name is told only after the address is proven.
+    kind: Literal["file", "folder"]
     recipient_kind: Literal["external", "internal"]
     # The address with most of its local part hidden, so the recipient knows which
     # inbox to look in without the link revealing it.
@@ -71,6 +77,15 @@ class GrantOut(BaseModel):
 class DownloadIn(BaseModel):
     token: str = Token
     grant: str = Token
+    # For a folder share: the file in it to download.
+    file_id: uuid.UUID | None = None
+
+
+class ContentsIn(BaseModel):
+    token: str = Token
+    grant: str = Token
+    # A folder of the share; none for the shared folder itself.
+    folder_id: uuid.UUID | None = None
 
 
 def _hint(email: str) -> str:
@@ -78,23 +93,30 @@ def _hint(email: str) -> str:
     return f"{local[:1]}***@{domain}"
 
 
-async def _share(session, token: str, *, lock: bool = False) -> tuple[Share, File]:
-    """The active share the token names, and its file, or a refusal."""
+async def _share(session, token: str, *, lock: bool = False) -> tuple[Share, File | None]:
+    """The active share the token names, and its file (none for a folder share, whose
+    folder exists while the share does), or a refusal."""
     query = select(Share).where(Share.token_hash == hash_token(token))
     share = await session.scalar(query.with_for_update() if lock else query)
     if share is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Share not found")
     if (current := state(share)) != "active":
         raise HTTPException(status.HTTP_410_GONE, detail=f"Share is {current}")
-    file = await session.get(File, share.file_id)
     owner = await session.get(User, share.created_by)
-    if file is None or file.status != "uploaded" or owner is None or not owner.is_active:
+    if owner is None or not owner.is_active:
+        raise HTTPException(status.HTTP_410_GONE, detail="Share is not available")
+    if share.folder_id is not None:
+        return share, None
+    file = await session.get(File, share.file_id)
+    if file is None or file.status != "uploaded":
         raise HTTPException(status.HTTP_410_GONE, detail="File is not available")
     return share, file
 
 
-def _shareable(file: File) -> None:
-    if reason := scans.check(file, "share", checked_by="api"):
+def _shareable(file: File | None) -> None:
+    """A shared file the scan allows to be shared; a folder's files are checked one by
+    one when listed and downloaded."""
+    if file is not None and (reason := scans.check(file, "share", checked_by="api")):
         raise HTTPException(status.HTTP_409_CONFLICT, detail=reason)
 
 
@@ -131,6 +153,7 @@ async def describe_share(
     and how many downloads it has left."""
     share, _ = await _share(session, token)
     return AccessOut(
+        kind="folder" if share.folder_id is not None else "file",
         recipient_kind=share.recipient_kind,
         recipient_hint=_hint(share.recipient_email),
         expires_at=share.expires_at,
@@ -187,7 +210,7 @@ async def send_code(body: TokenIn, session: SessionDep, mailer: MailerDep) -> di
     v.last_sent_at = now
     code_hash = v.code_hash
     to, hint = share.recipient_email, _hint(share.recipient_email)
-    audit_target = {"target_kind": "file", "target_id": share.file_id}
+    where = audit_target(share)
     audit_details = {"share_id": share_id, "recipient_email": to}
     # Committed before the mail goes out: the share's lock must not wait on a slow mail
     # server, or downloads, revokes and checks of this share would wait with it.
@@ -220,7 +243,7 @@ async def send_code(body: TokenIn, session: SessionDep, mailer: MailerDep) -> di
             status.HTTP_503_SERVICE_UNAVAILABLE, detail="The code could not be sent; try later"
         ) from None
     await audit.record(
-        session, "share.code_sent", actor_kind="recipient", details=audit_details, **audit_target
+        session, "share.code_sent", actor_kind="recipient", details=audit_details, **where
     )
     await session.commit()
     metrics.SHARE_CODES_SENT.inc()
@@ -238,11 +261,7 @@ async def verify_code(body: VerifyIn, session: SessionDep) -> GrantOut:
     v = await _verification(session, share)
     now = datetime.now(UTC)
 
-    audit_fields = {
-        "actor_kind": "recipient",
-        "target_kind": "file",
-        "target_id": share.file_id,
-    }
+    audit_fields = {"actor_kind": "recipient", **audit_target(share)}
     audit_details = {"share_id": share_id, "recipient_email": share.recipient_email}
 
     async def refuse(result: str, detail: str) -> HTTPException:
@@ -287,25 +306,42 @@ async def verify_code(body: VerifyIn, session: SessionDep) -> GrantOut:
     return GrantOut(grant=grant, expires_at=v.grant_expires_at)
 
 
-@router.post("/downloads", status_code=status.HTTP_201_CREATED)
-async def create_share_download(body: DownloadIn, session: SessionDep) -> TransferOut:
-    """A single-use download intent for the shared file. The gateway counts it against
-    the share's downloads when it starts."""
-    share, file = await _share(session, body.token)
-    _external(share)
+async def _granted(session, share: Share, grant: str) -> None:
     v = await session.get(ShareVerification, share.id)
     now = datetime.now(UTC)
     if (
         v is None
         or v.grant_hash is None
         or v.grant_expires_at <= now
-        or not hmac.compare_digest(_hash(body.grant), v.grant_hash)
+        or not hmac.compare_digest(_hash(grant), v.grant_hash)
     ):
         # Not audited: a wrong grant proves nothing about who sent it, and anyone with
         # the link could send many. Checks of a code that was sent (bounded by the sends
         # and tries) are audited.
         logger.info("share grant refused", extra={"share_id": str(share.id)})
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Grant not valid; verify again")
+
+
+@router.post("/contents")
+async def share_contents(body: ContentsIn, session: SessionDep) -> folder_shares.SharedContents:
+    """A folder of a folder share, once the address is proven: its subfolders and the
+    files that can be downloaded now."""
+    share, _ = await _share(session, body.token)
+    _external(share)
+    await _granted(session, share, body.grant)
+    if share.folder_id is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="This share is of a file")
+    return await folder_shares.contents(session, share, body.folder_id)
+
+
+@router.post("/downloads", status_code=status.HTTP_201_CREATED)
+async def create_share_download(body: DownloadIn, session: SessionDep) -> TransferOut:
+    """A single-use download intent for the shared file, or a file in the shared
+    folder. The gateway counts it against the share's downloads when it starts."""
+    share, _ = await _share(session, body.token)
+    _external(share)
+    await _granted(session, share, body.grant)
+    file = await folder_shares.shared_file(session, share, body.file_id)
     _shareable(file)
     token, expires_at = await intents.issue(
         session,
@@ -320,7 +356,7 @@ async def create_share_download(body: DownloadIn, session: SessionDep) -> Transf
         "share.download_issued",
         actor_kind="recipient",
         target_kind="file",
-        target_id=share.file_id,
+        target_id=file.id,
         details={"share_id": str(share.id), "recipient_email": share.recipient_email},
     )
     await session.commit()

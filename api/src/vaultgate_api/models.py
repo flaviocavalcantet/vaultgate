@@ -265,7 +265,10 @@ SHARE_KINDS = ("external", "internal")
 
 
 class Share(Base):
-    """A link to one file for one recipient, named by email address.
+    """A link to one file, or one folder with all it holds (M12.6, ADR 0020), for one
+    recipient, named by email address. A folder share shows its live contents; the
+    recipient sees and downloads only the files that may be shared at the time, and one
+    download limit covers them all.
 
     An external recipient proves they hold the address with a code sent to it; an
     internal one signs in, with a verified email equal to the address. The link's token
@@ -278,11 +281,16 @@ class Share(Base):
         CheckConstraint(f"recipient_kind IN {SHARE_KINDS}", name="recipient_kind"),
         CheckConstraint("max_downloads > 0", name="max_downloads"),
         CheckConstraint("downloads >= 0 AND downloads <= max_downloads", name="downloads"),
+        CheckConstraint("(file_id IS NULL) <> (folder_id IS NULL)", name="target"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    file_id: Mapped[uuid.UUID] = mapped_column(
+    # What is shared: a file, or a folder (exactly one).
+    file_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("files.id", ondelete="CASCADE"), index=True
+    )
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("folders.id", ondelete="CASCADE"), index=True
     )
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     # Lower case; the address the recipient must prove.
