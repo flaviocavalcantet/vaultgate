@@ -2,8 +2,9 @@ name: Release
 
 # A release is a vX.Y.Z tag on a commit of main whose CI run passed. Nothing is
 # rebuilt: the images CI published for that commit (ghcr.io/<owner>/vaultgate-<api|
-# gateway|scanner>:<commit>, the ones its k3d job tested) get the version as a second tag, and the GitHub Release is
-# made from the notes reviewed with the change (docs/releases/vX.Y.Z.md).
+# gateway|scanner>:<commit>, the ones its k3d job tested) get the version as a second
+# tag, and the GitHub Release is made from the notes reviewed with the change
+# (docs/releases/vX.Y.Z.md).
 
 on:
   push:
