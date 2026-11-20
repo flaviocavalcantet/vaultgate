@@ -691,6 +691,10 @@ Extras, after everything above.
 
 - [ ] First trust by cloud instance identity on GCP (the instance identity token, a JWT Google signs, for VaultGate's audience) and Azure (attested data), alike AWS's (M11)
 
+## Releases
+
+A release is a `vX.Y.Z` tag on a commit of `main` whose CI run passed, with its notes in `docs/releases/vX.Y.Z.md`, reviewed with the change that brings the versions to X.Y.Z (the API, the gateway, the scanner and the chart's `appVersion`; `scripts/release_check.sh vX.Y.Z` checks them all). Pushing the tag runs the Release workflow. It refuses a commit without a successful CI run on `main`, and rebuilds nothing: the images CI published and tested for that commit get the version as a second tag (the same digests), and the GitHub Release is made from the notes. Each release names the [vaultgate-frontend](https://github.com/flaviocavalcantet/vaultgate-frontend) release it pairs with, the one its local cluster runs.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
