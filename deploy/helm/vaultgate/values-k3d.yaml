@@ -16,7 +16,7 @@ corsOrigins: ["http://localhost:5173", "https://localhost:5173", "https://localh
 frontend:
   enabled: true
   image:
-    tag: bf04f8970849dfe81833399ab34518bc5d12363d
+    tag: af2a70b1bb416c29a6f70452c676e305b3b09f47
   replicas: 1
   nodePort: 30174
 
