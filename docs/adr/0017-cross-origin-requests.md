@@ -39,8 +39,8 @@ Two ways to let it in:
   route runs, so they don't count against a user's rate limit; on the gateway they
   spend no intent and hold no transfer slot. They are logged, counted and traced like
   any request.
-- **Methods and headers** are the ones the frontend uses: `GET`, `POST`, `PUT` and
-  `DELETE` on the API, `PUT` on uploads and `GET` on downloads; `Authorization` and
+- **Methods and headers** are the ones the frontend uses: `GET`, `POST`, `PUT`,
+  `PATCH` (renaming and moving files and folders, M12.6) and `DELETE` on the API, `PUT` on uploads and `GET` on downloads; `Authorization` and
   `Content-Type`. A page may read `Retry-After` and `X-Request-ID`, and on a download
   its name, length and digest.
 - **Only the public ports.** The API's internal port and the nodes' port are for

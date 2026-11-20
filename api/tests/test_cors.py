@@ -70,9 +70,18 @@ def test_another_origin_is_not_named() -> None:
     assert "access-control-allow-origin" not in refused.headers
 
 
+def test_the_frontends_methods_pass_the_preflight() -> None:
+    api = client([FRONTEND])
+    # PATCH renames and moves files and folders (M12.6).
+    for method in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        response = api.options("/open", headers=preflight(FRONTEND, method))
+        assert response.status_code == 200, method
+        assert method in response.headers["access-control-allow-methods"]
+
+
 def test_a_method_or_header_off_the_list_fails_the_preflight() -> None:
     api = client([FRONTEND])
-    assert api.options("/open", headers=preflight(FRONTEND, "PATCH")).status_code == 400
+    assert api.options("/open", headers=preflight(FRONTEND, "TRACE")).status_code == 400
     assert api.options("/open", headers=preflight(FRONTEND, "GET", "x-evil")).status_code == 400
 
 

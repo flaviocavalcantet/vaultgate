@@ -17,8 +17,9 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-# What the frontend sends and reads. Preflights are cached ten minutes.
-METHODS = ["GET", "POST", "PUT", "DELETE"]
+# What the frontend sends and reads (PATCH: renaming and moving files and folders,
+# M12.6). Preflights are cached ten minutes.
+METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 REQUEST_HEADERS = ["Authorization", "Content-Type"]
 EXPOSED_HEADERS = ["X-Request-ID", "Retry-After"]
 MAX_AGE_SECONDS = 600
