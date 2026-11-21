@@ -4,7 +4,8 @@ name: Release
 # rebuilt: the images CI published for that commit (ghcr.io/<owner>/vaultgate-<api|
 # gateway|scanner>:<commit>, the ones its k3d job tested) get the version as a second
 # tag, and the GitHub Release is made, or updated, from the notes reviewed with the
-# change (docs/releases/vX.Y.Z.md).
+# change (docs/releases/vX.Y.Z.md). Attached to it: the Helm chart, packaged to run this
+# release's images, and an SBOM (SPDX JSON) of each image, made by Trivy.
 #
 # The tag can be pushed with git, or created by publishing a release on GitHub (whose
 # text this then replaces with the notes). Run by hand with a tag, it does the same for
@@ -82,6 +83,39 @@ jobs:
             echo "ok  $image:$TAG = $COMMIT ($released)"
           done
 
+      # The chart as it is at the tag, but defaulting to this release's images (the
+      # repository's default is `main`, which moves). The frontend stays opt-in, its tag
+      # the deployment's to set (the notes name the frontend release it pairs with).
+      - uses: azure/setup-helm@v5
+      - name: Package the chart
+        run: |
+          mkdir -p "$RUNNER_TEMP/assets"
+          values=deploy/helm/vaultgate/values.yaml
+          grep -qx '  tag: main' "$values" || { echo "no '  tag: main' in $values" >&2; exit 1; }
+          sed -i "s/^  tag: main$/  tag: $TAG/" "$values"
+          helm lint deploy/helm/vaultgate
+          helm package deploy/helm/vaultgate -d "$RUNNER_TEMP/assets"
+          git checkout -- "$values"
+          ls "$RUNNER_TEMP/assets"
+
+      # What is in each released image, package by package, from the very image the
+      # version names (by digest).
+      # Signed in as the job, so it works whether or not the packages are public; the
+      # token goes in by name (-e NAME), never on a command line.
+      - name: SBOM of each image
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for service in api gateway scanner; do
+            image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/vaultgate-$service"
+            digest=$(docker buildx imagetools inspect "$image:$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD -v "$RUNNER_TEMP/assets:/out" \
+              aquasec/trivy:0.76.2 image --quiet \
+              --format spdx-json --output "/out/vaultgate-$service-$TAG.spdx.json" "$image@$digest"
+          done
+          ls -l "$RUNNER_TEMP/assets"
+
       # Made from the notes, or, for a release already published on GitHub, given them.
       - name: Publish the release
         env:
@@ -93,3 +127,5 @@ jobs:
             gh release create "$TAG" --verify-tag --title "VaultGate $TAG" \
               --notes-file "docs/releases/$TAG.md"
           fi
+          # Replaced when the release is done again (a run by hand).
+          gh release upload "$TAG" "$RUNNER_TEMP"/assets/* --clobber
