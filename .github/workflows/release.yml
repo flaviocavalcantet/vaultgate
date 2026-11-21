@@ -100,12 +100,18 @@ jobs:
 
       # What is in each released image, package by package, from the very image the
       # version names (by digest).
+      # Signed in as the job, so it works whether or not the packages are public; the
+      # token goes in by name (-e NAME), never on a command line.
       - name: SBOM of each image
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           for service in api gateway scanner; do
             image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/vaultgate-$service"
             digest=$(docker buildx imagetools inspect "$image:$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')
-            docker run --rm -v "$RUNNER_TEMP/assets:/out" aquasec/trivy:0.76.2 image --quiet \
+            docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD -v "$RUNNER_TEMP/assets:/out" \
+              aquasec/trivy:0.76.2 image --quiet \
               --format spdx-json --output "/out/vaultgate-$service-$TAG.spdx.json" "$image@$digest"
           done
           ls -l "$RUNNER_TEMP/assets"
